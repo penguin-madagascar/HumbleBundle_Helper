@@ -55,7 +55,7 @@
             GM_xmlhttpRequest({
                 method: 'GET',
                 url,
-                headers: { 'Cache-Control': 'no-cache' },
+                headers: {'Cache-Control': 'no-cache'},
                 responseType: 'json',
                 onload: ({status, response}) => {
                     if (status === 200 && response && response.rgOwnedApps)
@@ -75,7 +75,7 @@
             GM_xmlhttpRequest({
                 method: 'GET',
                 url,
-                headers: { 'Cache-Control': 'no-cache' },
+                headers: {'Cache-Control': 'no-cache'},
                 responseType: 'json',
                 onload: ({status, response}) => {
                     if (status === 200 && response && response.rgWishlist)
@@ -127,7 +127,7 @@
                 loginLink.textContent = 'Login to Steam to check owned games';
                 loginLink.target = '_blank';
                 loginLink.style.color = '#fff';
-                loginLink.addEventListener('click', function() {
+                loginLink.addEventListener('click', function () {
                     const msg = document.createElement('div');
                     msg.textContent = 'Please refresh this page after login';
                     loginDiv.appendChild(msg);
@@ -169,7 +169,7 @@
                 });
             });
         });
-        ob.observe(document.body, { childList: true, subtree: true });
+        ob.observe(document.body, {childList: true, subtree: true});
     })();
 
     // Owned Games Check: Check a single game element and mark it as owned if it matches the user's owned app set
@@ -203,6 +203,70 @@
                 return;
             }
         }
+    }
+
+    // Region Restriction Check
+    getRegionLockInfo();
+
+    // Region Restriction Check: Collect region‑lock data embedded in the page and render it
+    function getRegionLockInfo() {
+        const productsInfo = {};
+        const splitedURL = location.href.split(/downloads\?key=([A-Za-z0-9]+)/);
+        if (splitedURL.length >= 2) {
+            const orderID = splitedURL[1];
+            const ApiURL = `https://www.humblebundle.com/api/v1/order/${orderID}?all_tpkds=true`;
+            console.log('Humble Key Restriction User Script::', `Request API ${ApiURL}`);
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: ApiURL,
+                onload: (res) => {
+                    const {status, responseText} = res;
+                    if (status === 200) {
+                        if (responseText !== '') {
+                            const products = JSON.parse(responseText).tpkd_dict.all_tpks;
+                            for (let product of products) {
+                                const humanName = product.human_name;
+                                productsInfo[humanName] = {};
+                                productsInfo[humanName].exclusive_countries = product.exclusive_countries || [];
+                                productsInfo[humanName].disallowed_countries = product.disallowed_countries || [];
+                                productsInfo[humanName].machine_name = product.machine_name;
+                                if (product.steam_app_id && product.steam_app_id !== '') {
+                                    productsInfo[humanName].steam_app_id = product.steam_app_id;
+                                }
+                            }
+                            setTimeout(() => {
+                                const disclaimers = document.querySelectorAll('.disclaimer');
+                                Object.values(productsInfo).forEach((info, idx) => insertRegionLockInfo(info, disclaimers[idx]));
+                            }, 1000);
+                        }
+                    } else {
+                        console.error('Humble Key Restriction User Script::', `Request order failed with ${status} HTTP status and ${responseText} content.`);
+                    }
+                },
+            });
+        }
+    }
+
+    function insertRegionLockInfo(productInfo, container) {
+        const insertElem = document.createElement('div');
+
+        // Region Restriction Check: Determine activation possibility for the current user
+        const restrictionInfo = document.createElement('span');
+        if (productInfo.exclusive_countries.length === 0 && productInfo.disallowed_countries.length === 0) {
+            restrictionInfo.textContent = `No Region Restrictions`;
+            restrictionInfo.setAttribute('style', `color:green; font-weight: bold; word-wrap:break-word; overflow:hidden;`);
+        } else if (productInfo.exclusive_countries.length > 0) {
+            restrictionInfo.textContent = `Exclusive countries: ${productInfo.exclusive_countries}`;
+            restrictionInfo.setAttribute('style', `color:red; font-weight: bold; word-wrap:break-word; overflow:hidden;`);
+        } else if (productInfo.disallowed_countries.length > 0) {
+            restrictionInfo.textContent = `Disallowed countries: ${productInfo.disallowed_countries}`;
+            restrictionInfo.setAttribute('style', `color:red; font-weight: bold; word-wrap:break-word; overflow:hidden;`);
+        }
+
+        insertElem.appendChild(document.createElement('br'));
+        insertElem.appendChild(restrictionInfo);
+        const target = container || document.querySelector('.disclaimer') || document.body;
+        if (target) target.appendChild(insertElem);
     }
 
 })();
