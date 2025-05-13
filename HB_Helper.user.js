@@ -13,7 +13,6 @@
 (function () {
     'use strict';
 
-    // style for owned games
     const style = document.createElement('style');
     style.textContent = `
     .tier-item-view.owned {
@@ -25,9 +24,10 @@
     }`;
     document.head.appendChild(style);
 
+    // Slug: Convert a string to a slug by lowercasing and removing non-alphanumeric characters
     const slug = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
-    // use GM_xmlhttpRequest so we're not blocked by CORS
+    // SearchApps: Query Steam community to search for applications matching a keyword and return results
     function searchApps(keyword) {
         return new Promise((resolve) => {
             GM_xmlhttpRequest({
@@ -43,9 +43,9 @@
         });
     }
 
-    // fetch owned apps, cache-busted
+    // Run: Fetch the set of owned Steam app IDs from the Steam API
     function fetchOwnedSet() {
-        const url = 'https://store.steampowered.com/dynamicstore/userdata/?_=' + Date.now(); // prevent caching
+        const url = 'https://store.steampowered.com/dynamicstore/userdata/?_=' + Date.now();
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
@@ -69,6 +69,9 @@
             owned = await fetchOwnedSet();
         } catch (e) {
             console.warn('[HB-Helper] Fetch owned games failed:', e);
+            // Login Prompt Display
+            // Description: Display a prompt linking to Steam login when fetch of owned games fails
+            // Comment: --
             const tierFilters = document.querySelector('.tier-filters');
             if (tierFilters) {
                 const loginDiv = document.createElement('div');
@@ -81,6 +84,9 @@
 
         if (owned.size === 0) {
             console.warn('[HB-Helper] No owned games found; maybe logged out');
+            // Login Prompt Display
+            // Description: Display a prompt linking to Steam login when no owned games are found
+            // Comment: --
             const tierFilters = document.querySelector('.tier-filters');
             if (tierFilters && !document.getElementById('hb-helper-login-reminder')) {
                 const loginDiv = document.createElement('div');
@@ -98,15 +104,21 @@
                     const msg = document.createElement('div');
                     msg.textContent = 'Please refresh this page after login';
                     loginDiv.appendChild(msg);
-                }); // on click: append refresh message
+                });
                 loginDiv.appendChild(loginLink);
                 tierFilters.parentNode.insertBefore(loginDiv, tierFilters);
             }
         }
 
+        // Owned Games Check
+        // Description: Highlight games that the user already owns on the HumbleBundle page
+        // Comment: --
+        function markOwnedItems(ownedSet) {
+            document.querySelectorAll('.tier-item-view').forEach(el => markOne(el, ownedSet));
+        }
+
         markOwnedItems(owned);
 
-        // watch for new items added to page
         const ob = new MutationObserver(muts => {
             muts.forEach(mu => {
                 mu.addedNodes.forEach(n => {
@@ -119,11 +131,7 @@
         ob.observe(document.body, { childList: true, subtree: true });
     })();
 
-    // Owned Games Check
-    function markOwnedItems(ownedSet) {
-        document.querySelectorAll('.tier-item-view').forEach(el => markOne(el, ownedSet));
-    }
-
+    // Owned Games Check: Check a single game element and mark it as owned if it matches the user's owned app set
     async function markOne(viewEl, ownedSet) {
         if (viewEl.classList.contains('owned')) return;
         const titleEl = viewEl.querySelector('.item-title');
