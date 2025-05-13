@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         HumbleBundle Helper
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.1
-// @description  Highlight owned games in HumbleBundle bundles (name-based matching)
+// @version      0.0.2
+// @description  Highlight owned games in HumbleBundle bundles
 // @author       PenguinOfMadagascar
 // @match        https://www.humblebundle.com/*
 // @grant        GM_xmlhttpRequest
+// @connect      store.steampowered.com
+// @connect      steamcommunity.com
 // ==/UserScript==
 
 (function () {
@@ -24,12 +26,12 @@
 
     const slug = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
+    // use GM_xmlhttpRequest so we're not blocked by CORS
     function searchApps(keyword) {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: 'https://steamcommunity.com/actions/SearchApps/'
-                    + encodeURIComponent(keyword),
+                url: 'https://steamcommunity.com/actions/SearchApps/' + encodeURIComponent(keyword),
                 responseType: 'json',
                 onload: ({status, response}) => {
                     if (status === 200 && Array.isArray(response)) resolve(response);
@@ -40,19 +42,22 @@
         });
     }
 
+    // fetch owned apps, cache-busted
     function fetchOwnedSet() {
+        const url = 'https://store.steampowered.com/dynamicstore/userdata/?_=' + Date.now(); // prevent caching
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: 'https://store.steampowered.com/dynamicstore/userdata/',
-                withCredentials: true,
+                url,
+                headers: { 'Cache-Control': 'no-cache' },
                 responseType: 'json',
                 onload: ({status, response}) => {
                     if (status === 200 && response && response.rgOwnedApps)
                         resolve(new Set(response.rgOwnedApps));
-                    else reject('Failed to fetch owned apps');
+                    else
+                        reject('Failed to fetch owned apps');
                 },
-                onerror: reject
+                onerror: () => reject('Network error fetching owned apps'),
             });
         });
     }
@@ -63,21 +68,29 @@
             owned = await fetchOwnedSet();
         } catch (e) {
             console.warn('[HB-Helper] Fetch owned games failed:', e);
+            const tierFilters = document.querySelector('.tier-filters');
+            if (tierFilters) {
+                const loginDiv = document.createElement('div');
+                loginDiv.id = 'hb-helper-login-reminder';
+                loginDiv.textContent = 'Login to Steam to highlight owned games';
+                tierFilters.parentNode.insertBefore(loginDiv, tierFilters);
+            }
             return;
         }
 
         markOwnedItems(owned);
 
+        // watch for new items added to page
         const ob = new MutationObserver(muts => {
             muts.forEach(mu => {
                 mu.addedNodes.forEach(n => {
                     if (n.nodeType === 1 && n.matches('.tier-item-view')) markOne(n, owned);
-                    else if (n.nodeType === 1) n.querySelectorAll &&
-                    n.querySelectorAll('.tier-item-view').forEach(v => markOne(v, owned));
+                    else if (n.nodeType === 1 && n.querySelectorAll)
+                        n.querySelectorAll('.tier-item-view').forEach(v => markOne(v, owned));
                 });
             });
         });
-        ob.observe(document.body, {childList: true, subtree: true});
+        ob.observe(document.body, { childList: true, subtree: true });
     })();
 
     // Owned Games Check
