@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HumbleBundle Helper
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.2
+// @version      0.0.3
 // @description  Highlight owned games in HumbleBundle bundles
 // @author       PenguinOfMadagascar
 // @match        https://www.humblebundle.com/*
