@@ -20,7 +20,12 @@
       background: rgba(100,255,100,.35) !important;
       border-radius: 8px !important;
       padding: 6px !important;
-      margin: 0 !important;
+    }
+    .tier-item-view.wishlist {
+      box-sizing: border-box !important;
+      background: rgba(100,100,255,.35) !important;
+      border-radius: 8px !important;
+      padding: 6px !important;
     }`;
     document.head.appendChild(style);
 
@@ -63,10 +68,32 @@
         });
     }
 
+    // Run: fetchWishlistSet: Fetch the set of Steam app IDs in the user's wishlist from the Steam API
+    function fetchWishlistSet() {
+        const url = 'https://store.steampowered.com/dynamicstore/userdata/?_=' + Date.now();
+        return new Promise((resolve) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                headers: { 'Cache-Control': 'no-cache' },
+                responseType: 'json',
+                onload: ({status, response}) => {
+                    if (status === 200 && response && response.rgWishlist)
+                        resolve(new Set(response.rgWishlist));
+                    else
+                        resolve(new Set());
+                },
+                onerror: () => resolve(new Set()),
+            });
+        });
+    }
+
     (async function run() {
         let owned;
+        let wishlist;
         try {
             owned = await fetchOwnedSet();
+            wishlist = await fetchWishlistSet();
         } catch (e) {
             console.warn('[HB-Helper] Fetch owned games failed:', e);
             // Login Prompt Display
@@ -117,14 +144,28 @@
             document.querySelectorAll('.tier-item-view').forEach(el => markOne(el, ownedSet));
         }
 
+        // Wishlist Games Highlight
+        // Description: Highlight games that the user has on their Steam wishlist on the HumbleBundle page
+        // Comment: --
+        function markWishlistItems(wishlistSet) {
+            document.querySelectorAll('.tier-item-view').forEach(el => markWishlistOne(el, wishlistSet));
+        }
+
         markOwnedItems(owned);
+        markWishlistItems(wishlist);
 
         const ob = new MutationObserver(muts => {
             muts.forEach(mu => {
                 mu.addedNodes.forEach(n => {
-                    if (n.nodeType === 1 && n.matches('.tier-item-view')) markOne(n, owned);
-                    else if (n.nodeType === 1 && n.querySelectorAll)
-                        n.querySelectorAll('.tier-item-view').forEach(v => markOne(v, owned));
+                    if (n.nodeType === 1 && n.matches('.tier-item-view')) {
+                        markOne(n, owned);
+                        markWishlistOne(n, wishlist);
+                    } else if (n.nodeType === 1 && n.querySelectorAll) {
+                        n.querySelectorAll('.tier-item-view').forEach(v => {
+                            markOne(v, owned);
+                            markWishlistOne(v, wishlist);
+                        });
+                    }
                 });
             });
         });
@@ -143,6 +184,22 @@
             if (!ownedSet.has(+app.appid)) continue;
             if (slug(app.name) === titleSlug) {
                 viewEl.classList.add('owned');
+                return;
+            }
+        }
+    }
+
+    async function markWishlistOne(viewEl, wishlistSet) {
+        if (viewEl.classList.contains('wishlist')) return;
+        const titleEl = viewEl.querySelector('.item-title');
+        if (!titleEl) return;
+        const title = titleEl.textContent.trim();
+        const titleSlug = slug(title);
+        const results = await searchApps(title);
+        for (const app of results) {
+            if (!wishlistSet.has(+app.appid)) continue;
+            if (slug(app.name) === titleSlug) {
+                viewEl.classList.add('wishlist');
                 return;
             }
         }
