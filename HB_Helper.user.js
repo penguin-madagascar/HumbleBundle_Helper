@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HumbleBundle Helper
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.3
+// @version      0.0.4
 // @description  Highlight owned games in HumbleBundle bundles
 // @author       PenguinOfMadagascar
 // @match        https://www.humblebundle.com/*
@@ -26,6 +26,12 @@
       background: rgba(100,100,255,.35) !important;
       border-radius: 8px !important;
       padding: 6px !important;
+    }
+    .choice-content.js-open-choice-modal.owned {
+      background: rgba(100,255,100,.35) !important;
+    }
+    .choice-content.js-open-choice-modal.wishlist {
+      background: rgba(100,100,255,.35) !important;
     }`;
     document.head.appendChild(style);
 
@@ -89,8 +95,7 @@
     }
 
     (async function run() {
-        let owned;
-        let wishlist;
+        let owned, wishlist;
         try {
             owned = await fetchOwnedSet();
             wishlist = await fetchWishlistSet();
@@ -141,14 +146,14 @@
         // Description: Highlight games that the user already owns on the HumbleBundle page
         // Comment: --
         function markOwnedItems(ownedSet) {
-            document.querySelectorAll('.tier-item-view').forEach(el => markOne(el, ownedSet));
+            document.querySelectorAll('.tier-item-view, .choice-content.js-open-choice-modal').forEach(el => markOne(el, ownedSet));
         }
 
         // Wishlist Games Highlight
         // Description: Highlight games that the user has on their Steam wishlist on the HumbleBundle page
         // Comment: --
         function markWishlistItems(wishlistSet) {
-            document.querySelectorAll('.tier-item-view').forEach(el => markWishlistOne(el, wishlistSet));
+            document.querySelectorAll('.tier-item-view, .choice-content.js-open-choice-modal').forEach(el => markWishlistOne(el, wishlistSet));
         }
 
         markOwnedItems(owned);
@@ -160,8 +165,15 @@
                     if (n.nodeType === 1 && n.matches('.tier-item-view')) {
                         markOne(n, owned);
                         markWishlistOne(n, wishlist);
+                    } else if (n.nodeType === 1 && n.matches('.choice-content.js-open-choice-modal')) {
+                        markOne(n, owned);
+                        markWishlistOne(n, wishlist);
                     } else if (n.nodeType === 1 && n.querySelectorAll) {
                         n.querySelectorAll('.tier-item-view').forEach(v => {
+                            markOne(v, owned);
+                            markWishlistOne(v, wishlist);
+                        });
+                        n.querySelectorAll('.choice-content.js-open-choice-modal').forEach(v => {
                             markOne(v, owned);
                             markWishlistOne(v, wishlist);
                         });
@@ -175,7 +187,7 @@
     // Owned Games Check: Check a single game element and mark it as owned if it matches the user's owned app set
     async function markOne(viewEl, ownedSet) {
         if (viewEl.classList.contains('owned')) return;
-        const titleEl = viewEl.querySelector('.item-title');
+        const titleEl = viewEl.querySelector('.item-title, .content-choice-title');
         if (!titleEl) return;
         const title = titleEl.textContent.trim();
         const titleSlug = slug(title);
@@ -191,7 +203,7 @@
 
     async function markWishlistOne(viewEl, wishlistSet) {
         if (viewEl.classList.contains('wishlist')) return;
-        const titleEl = viewEl.querySelector('.item-title');
+        const titleEl = viewEl.querySelector('.item-title, .content-choice-title');
         if (!titleEl) return;
         const title = titleEl.textContent.trim();
         const titleSlug = slug(title);
