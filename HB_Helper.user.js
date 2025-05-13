@@ -13,6 +13,7 @@
 (function () {
     'use strict';
 
+    // style for owned games
     const style = document.createElement('style');
     style.textContent = `
     .tier-item-view.owned {
@@ -76,6 +77,31 @@
                 tierFilters.parentNode.insertBefore(loginDiv, tierFilters);
             }
             return;
+        }
+
+        if (owned.size === 0) {
+            console.warn('[HB-Helper] No owned games found; maybe logged out');
+            const tierFilters = document.querySelector('.tier-filters');
+            if (tierFilters && !document.getElementById('hb-helper-login-reminder')) {
+                const loginDiv = document.createElement('div');
+                loginDiv.id = 'hb-helper-login-reminder';
+                loginDiv.style.background = 'rgba(0, 0, 0, 0.5)';
+                loginDiv.style.padding = '10px';
+                loginDiv.style.margin = '8px 0';
+                loginDiv.style.borderRadius = '4px';
+                const loginLink = document.createElement('a');
+                loginLink.href = 'https://store.steampowered.com/login/';
+                loginLink.textContent = 'Login to Steam to check owned games';
+                loginLink.target = '_blank';
+                loginLink.style.color = '#fff';
+                loginLink.addEventListener('click', function() {
+                    const msg = document.createElement('div');
+                    msg.textContent = 'Please refresh this page after login';
+                    loginDiv.appendChild(msg);
+                }); // on click: append refresh message
+                loginDiv.appendChild(loginLink);
+                tierFilters.parentNode.insertBefore(loginDiv, tierFilters);
+            }
         }
 
         markOwnedItems(owned);
