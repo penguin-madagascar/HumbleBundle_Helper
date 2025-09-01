@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HumbleBundle Helper
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.4
+// @version      0.0.5
 // @description  Highlight owned games in HumbleBundle bundles
 // @author       PenguinOfMadagascar
 // @match        https://www.humblebundle.com/*
@@ -32,6 +32,21 @@
     }
     .choice-content.js-open-choice-modal.wishlist {
       background: rgba(100,100,255,.35) !important;
+    }
+    #steamgifts-discussion {
+      box-sizing: border-box !important;
+      margin: 8px 0 !important;
+    }
+    #steamgifts-discussion a {
+      display: inline-block !important;
+      background: #3b7bbf !important;
+      color: #fff !important;
+      padding: 6px 10px !important;
+      border-radius: 4px !important;
+      text-decoration: none !important;
+    }
+    #steamgifts-discussion a:hover {
+      opacity: .9 !important;
     }`;
     document.head.appendChild(style);
 
@@ -94,8 +109,67 @@
         });
     }
 
+    function getBundleTitle() {
+        const meta = document.querySelector('meta[property="og:title"]');
+        if (meta && meta.content) return meta.content.trim();
+        const logo = document.querySelector('.bundle-logo');
+        if (logo && logo.getAttribute('alt')) return logo.getAttribute('alt').trim();
+        return document.title.trim();
+    }
+
+    function injectSteamGiftsButton() {
+        function buildSteamGiftsSearchUrl() {
+            function firstValidWord(s) {
+                const m = s.match(/[A-Za-z0-9]+/);
+                if (m) return m[0];
+                const p = s.trim().split(/\s+/)[0];
+                return p || 'Bundle';
+            }
+
+            const title = getBundleTitle();
+            const word = firstValidWord(title);
+            const term = `[Humble Bundle] ${word}`;
+            return 'https://www.steamgifts.com/discussions/search?q=' + encodeURIComponent(term);
+        }
+
+        const url = buildSteamGiftsSearchUrl();
+        let container = document.getElementById('steamgifts-discussion');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'steamgifts-discussion';
+            const link = document.createElement('a');
+            link.id = 'hb-helper-steamgifts-link';
+            link.href = url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = 'Search SteamGifts discussions (for potential region lock)';
+            container.appendChild(link);
+        } else {
+            const link = container.querySelector('#hb-helper-steamgifts-link');
+            if (link) link.href = url;
+        }
+
+        const loginDiv = document.getElementById('hb-helper-login-reminder');
+        if (loginDiv) {
+            loginDiv.insertAdjacentElement('afterend', container);
+            return;
+        }
+
+        const tierFilters = document.querySelector('.tier-filters');
+        if (tierFilters) {
+            if (container.parentNode !== tierFilters.parentNode) {
+                tierFilters.parentNode.insertBefore(container, tierFilters.nextSibling);
+            }
+            return;
+        }
+
+        const target = document.querySelector('.js-basic-info-view') || document.querySelector('.bundle-page') || document.body;
+        if (container.parentNode !== target) target.appendChild(container);
+    }
+
     (async function run() {
         let owned, wishlist;
+        injectSteamGiftsButton();
         try {
             owned = await fetchOwnedSet();
             wishlist = await fetchWishlistSet();
@@ -111,6 +185,7 @@
                 loginDiv.textContent = 'Login to Steam to highlight owned games';
                 tierFilters.parentNode.insertBefore(loginDiv, tierFilters);
             }
+            injectSteamGiftsButton();
             return;
         }
 
@@ -140,6 +215,7 @@
                 loginDiv.appendChild(loginLink);
                 tierFilters.parentNode.insertBefore(loginDiv, tierFilters);
             }
+            injectSteamGiftsButton();
         }
 
         // Owned Games Check
@@ -182,6 +258,7 @@
             });
         });
         ob.observe(document.body, {childList: true, subtree: true});
+        injectSteamGiftsButton();
     })();
 
     // Owned Games Check: Check a single game element and mark it as owned if it matches the user's owned app set
@@ -220,7 +297,7 @@
     // Region Restriction Check
     getRegionLockInfo();
 
-    // Region Restriction Check: Collect region‑lock data embedded in the page and render it
+    // Region Restriction Check: Collect region-lock data embedded in the page and render it
     function getRegionLockInfo() {
         const productsInfo = {};
         const splitedURL = location.href.split(/downloads\?key=([A-Za-z0-9]+)/);
