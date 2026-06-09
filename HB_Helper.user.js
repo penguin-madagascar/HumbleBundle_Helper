@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         HumbleBundle Helper
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.5
+// @version      0.0.7
 // @description  Highlight owned games in HumbleBundle bundles
 // @author       PenguinOfMadagascar
 // @match        https://www.humblebundle.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      store.steampowered.com
 // @connect      steamcommunity.com
+// @connect      api.xiaoheihe.cn
 // ==/UserScript==
 
 (function () {
@@ -47,15 +48,39 @@
     }
     #steamgifts-discussion a:hover {
       opacity: .9 !important;
+    }
+    #hb-helper-price-summary {
+      box-sizing: border-box !important;
+      background: rgba(0, 0, 0, 0.5) !important;
+      color: #fff !important;
+      padding: 10px !important;
+      margin: 8px 0 !important;
+      border-radius: 4px !important;
+      line-height: 1.5 !important;
+    }
+    #hb-helper-price-summary .hb-helper-price-title {
+      font-weight: bold !important;
+      margin-bottom: 4px !important;
+    }
+    #hb-helper-price-summary .hb-helper-price-value {
+      font-weight: bold !important;
     }`;
     document.head.appendChild(style);
 
     // Slug: Convert a string to a slug by lowercasing and removing non-alphanumeric characters
     const slug = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const appSearchCache = new Map();
+    let bundlePriceTotalsPromise;
+    const europeanSteamCountries = new Set([
+        'AT', 'BE', 'CY', 'DE', 'EE', 'ES', 'FI', 'FR', 'GR', 'HR',
+        'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'SI', 'SK',
+    ]);
 
     // SearchApps: Query Steam community to search for applications matching a keyword and return results
     function searchApps(keyword) {
-        return new Promise((resolve) => {
+        if (appSearchCache.has(keyword)) return appSearchCache.get(keyword);
+
+        const request = new Promise((resolve) => {
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: 'https://steamcommunity.com/actions/SearchApps/' + encodeURIComponent(keyword),
@@ -67,6 +92,8 @@
                 onerror: () => resolve([])
             });
         });
+        appSearchCache.set(keyword, request);
+        return request;
     }
 
     // Run: Fetch the set of owned Steam app IDs from the Steam API
@@ -117,6 +144,24 @@
         return document.title.trim();
     }
 
+    function isGamesBundlePage() {
+        return location.pathname.startsWith('/games/');
+    }
+
+    function ensureBundlePriceSummary(anchor) {
+        if (!isGamesBundlePage()) return;
+
+        let summary = document.getElementById('hb-helper-price-summary');
+        if (!summary) {
+            summary = document.createElement('div');
+            summary.id = 'hb-helper-price-summary';
+            summary.textContent = 'Loading Steam price totals...';
+        }
+        if (anchor.nextElementSibling !== summary) {
+            anchor.insertAdjacentElement('afterend', summary);
+        }
+    }
+
     function injectSteamGiftsButton() {
         function buildSteamGiftsSearchUrl() {
             function firstValidWord(s) {
@@ -152,6 +197,7 @@
         const loginDiv = document.getElementById('hb-helper-login-reminder');
         if (loginDiv) {
             loginDiv.insertAdjacentElement('afterend', container);
+            ensureBundlePriceSummary(container);
             return;
         }
 
@@ -160,16 +206,19 @@
             if (container.parentNode !== tierFilters.parentNode) {
                 tierFilters.parentNode.insertBefore(container, tierFilters.nextSibling);
             }
+            ensureBundlePriceSummary(container);
             return;
         }
 
         const target = document.querySelector('.js-basic-info-view') || document.querySelector('.bundle-page') || document.body;
         if (container.parentNode !== target) target.appendChild(container);
+        ensureBundlePriceSummary(container);
     }
 
     (async function run() {
         let owned, wishlist;
         injectSteamGiftsButton();
+        loadBundlePriceTotals();
         try {
             owned = await fetchOwnedSet();
             wishlist = await fetchWishlistSet();
@@ -260,6 +309,153 @@
         ob.observe(document.body, {childList: true, subtree: true});
         injectSteamGiftsButton();
     })();
+
+    function gmRequest(url, responseType = 'json') {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                responseType,
+                onload: ({status, response, responseText}) => {
+                    if (status !== 200) {
+                        reject(new Error(`Request failed with HTTP ${status}`));
+                        return;
+                    }
+                    resolve(responseType === 'json' ? response : responseText || response);
+                },
+                onerror: () => reject(new Error('Network request failed')),
+            });
+        });
+    }
+
+    async function fetchSteamCountryCode() {
+        const html = await gmRequest(`https://store.steampowered.com/?l=english&_=${Date.now()}`, 'text');
+        const steamPage = new DOMParser().parseFromString(html, 'text/html');
+        const userInfoText = steamPage.querySelector('#application_config')?.getAttribute('data-userinfo');
+        const userInfo = JSON.parse(userInfoText);
+        if (!userInfo.logged_in) throw new Error('Login to Steam to load regional prices');
+        return userInfo.country_code.toUpperCase();
+    }
+
+    function getXiaoheiheRegionCode(steamCountryCode) {
+        const countryCode = steamCountryCode.toLowerCase();
+        const regionAliases = {
+            gb: 'uk',
+        };
+        return regionAliases[countryCode]
+            || (europeanSteamCountries.has(steamCountryCode) ? 'eu' : countryCode);
+    }
+
+    async function fetchXiaoheihePriceHistory(appId, steamCountryCode) {
+        const params = new URLSearchParams({
+            appid: appId,
+            platf: 'steam',
+            cc: getXiaoheiheRegionCode(steamCountryCode),
+            days: '720',
+        });
+        const data = await gmRequest(
+            `https://api.xiaoheihe.cn/game/get_game_prices/history/v2?${params}`
+        );
+        const prices = data.result?.prices;
+        if (data.status !== 'ok' || !prices?.length) {
+            throw new Error(`Xiaoheihe has no ${steamCountryCode} price for Steam app ${appId}`);
+        }
+
+        const latest = prices.at(-1);
+        const current = Number(latest.price);
+        const discount = Number(latest.discount);
+        const previousFullPrice = prices.findLast(price => Number(price.discount) === 0);
+        const original = discount > 0
+            ? Number(previousFullPrice?.price) || current / (1 - discount / 100)
+            : current;
+        const lowest = Number(data.result.lowest_info?.price)
+            || Math.min(...prices.map(price => Number(price.price)));
+        const price = {current, original, lowest, currency: latest.currency};
+        if (Object.values(price).some(value => value === undefined || value === null)
+            || [current, original, lowest].some(value => !Number.isFinite(value))) {
+            throw new Error(`Invalid Xiaoheihe price for Steam app ${appId}`);
+        }
+        return price;
+    }
+
+    function getBundleGameTitles() {
+        return Array.from(document.querySelectorAll(
+            '.tier-item-view .item-title, .choice-content.js-open-choice-modal .content-choice-title'
+        ), title => title.textContent.trim()).filter(Boolean);
+    }
+
+    async function waitForBundleGameTitles() {
+        for (let i = 0; i < 20; i++) {
+            const titles = getBundleGameTitles();
+            if (titles.length > 0) return [...new Set(titles)];
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        return [];
+    }
+
+    async function findSteamAppId(title) {
+        const titleSlug = slug(title);
+        const results = await searchApps(title);
+        const app = results.find(result => slug(result.name) === titleSlug);
+        return app ? Number(app.appid) : null;
+    }
+
+    function renderBundlePriceTotals({
+        region, currencyCode, gameCount, totalCount, current, original, lowest
+    }) {
+        const summary = document.getElementById('hb-helper-price-summary');
+        if (!summary) return;
+        const currency = new Intl.NumberFormat('zh-CN', {
+            style: 'currency',
+            currency: currencyCode,
+        });
+        summary.innerHTML = `
+            <div class="hb-helper-price-title">Steam price totals (${region}, ${currencyCode})</div>
+            <div>Current: <span class="hb-helper-price-value">${currency.format(current)}</span></div>
+            <div>Original: <span class="hb-helper-price-value">${currency.format(original)}</span></div>
+            <div>Historical low: <span class="hb-helper-price-value">${currency.format(lowest)}</span></div>
+            <div>${gameCount}/${totalCount} games matched</div>`;
+    }
+
+    function loadBundlePriceTotals() {
+        if (!isGamesBundlePage() || bundlePriceTotalsPromise) return bundlePriceTotalsPromise;
+
+        bundlePriceTotalsPromise = (async () => {
+            const steamCountryCode = await fetchSteamCountryCode();
+            const titles = await waitForBundleGameTitles();
+            if (titles.length === 0) throw new Error('No games found on this bundle page');
+
+            const appIds = [...new Set((await Promise.all(titles.map(findSteamAppId))).filter(Boolean))];
+            const prices = [];
+            for (const appId of appIds) {
+                try {
+                    prices.push(await fetchXiaoheihePriceHistory(appId, steamCountryCode));
+                } catch (error) {
+                    console.warn('[HB-Helper] Fetch price failed:', error);
+                }
+            }
+            if (prices.length === 0) throw new Error('No Steam prices matched this bundle');
+
+            const totals = prices.reduce((total, price) => ({
+                current: total.current + price.current,
+                original: total.original + price.original,
+                lowest: total.lowest + price.lowest,
+            }), {current: 0, original: 0, lowest: 0});
+            renderBundlePriceTotals({
+                region: steamCountryCode,
+                currencyCode: prices[0].currency,
+                gameCount: prices.length,
+                totalCount: titles.length,
+                ...totals,
+            });
+        })().catch(error => {
+            console.warn('[HB-Helper] Load bundle price totals failed:', error);
+            const summary = document.getElementById('hb-helper-price-summary');
+            if (summary) summary.textContent = error.message;
+        });
+
+        return bundlePriceTotalsPromise;
+    }
 
     // Owned Games Check: Check a single game element and mark it as owned if it matches the user's owned app set
     async function markOne(viewEl, ownedSet) {
