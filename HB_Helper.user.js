@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         HumbleBundle Helper
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.8
-// @description  Highlight owned games in HumbleBundle bundles
+// @version      0.0.9
+// @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @author       PenguinOfMadagascar
 // @match        https://www.humblebundle.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      store.steampowered.com
 // @connect      steamcommunity.com
 // @connect      api.xiaoheihe.cn
+// @connect      api.frankfurter.dev
 // ==/UserScript==
 
 (function () {
@@ -75,7 +76,29 @@
     }
     #hb-helper-price-summary .hb-helper-price-title {
       font-weight: bold !important;
+    }
+    #hb-helper-price-summary .hb-helper-price-header {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: space-between !important;
+      gap: 12px !important;
       margin-bottom: 4px !important;
+    }
+    #hb-helper-price-scope {
+      flex: 0 0 auto !important;
+      background: rgba(255, 255, 255, 0.15) !important;
+      border: 1px solid rgba(255, 255, 255, 0.4) !important;
+      border-radius: 4px !important;
+      color: #fff !important;
+      cursor: pointer !important;
+      padding: 3px 8px !important;
+    }
+    #hb-helper-price-scope:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.25) !important;
+    }
+    #hb-helper-price-scope:disabled {
+      cursor: default !important;
+      opacity: 0.5 !important;
     }
     #hb-helper-price-summary .hb-helper-price-value {
       font-weight: bold !important;
@@ -86,10 +109,13 @@
     const slug = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
     const appSearchCache = new Map();
     const priceHistoryCache = new Map();
+    const exchangeRateCache = new Map();
     let steamCountryCodePromise;
     let pageRefreshTimer;
     let priceTotalsRunId = 0;
     let lastPriceTitlesKey = '';
+    let lastPriceResult;
+    let priceScope = 'all';
     let steamLoginRequired = false;
     let ownedApps;
     let wishlistApps;
@@ -187,6 +213,11 @@
         return element.textContent.replace(/\s+/g, ' ').trim();
     }
 
+    function normalizeCurrencyCode(value) {
+        const match = String(value || '').trim().toUpperCase().match(/^[A-Z]{3}$/);
+        return match ? match[0] : null;
+    }
+
     function findTextAnchor(pattern) {
         return Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, div'))
             .filter(element => pattern.test(normalizedText(element)))
@@ -216,6 +247,57 @@
     function getChoicePeriod() {
         const heading = findTextAnchor(choiceMonthPattern);
         return heading ? normalizedText(heading).replace(/\s+GAMES$/i, '') : '';
+    }
+
+    function findCurrencyInPriceText(text) {
+        const currencyPatterns = [
+            [/\bUSD\b|US\$/i, 'USD'],
+            [/\bCAD\b|CA\$/i, 'CAD'],
+            [/\bAUD\b|A\$/i, 'AUD'],
+            [/\bNZD\b|NZ\$/i, 'NZD'],
+            [/\bHKD\b|HK\$/i, 'HKD'],
+            [/\bSGD\b|SG\$/i, 'SGD'],
+            [/\bEUR\b|€/i, 'EUR'],
+            [/\bGBP\b|£/i, 'GBP'],
+            [/\bUAH\b|₴/i, 'UAH'],
+            [/\bRUB\b|₽/i, 'RUB'],
+            [/\bINR\b|₹/i, 'INR'],
+            [/\bBRL\b|R\$/i, 'BRL'],
+            [/\bPLN\b|zł/i, 'PLN'],
+            [/\bKRW\b|₩/i, 'KRW'],
+            [/\bCNY\b|CN¥/i, 'CNY'],
+            [/\bJPY\b|¥/i, 'JPY'],
+            [/\bCHF\b/i, 'CHF'],
+            [/\$/i, 'USD'],
+        ];
+        return currencyPatterns.find(([pattern]) => pattern.test(text))?.[1] || null;
+    }
+
+    function findHumbleCurrencyCode() {
+        const currencyElements = document.querySelectorAll(
+            'meta[property="product:price:currency"], '
+            + '[itemprop="priceCurrency"], [data-currency-code], [data-currency]'
+        );
+        for (const element of currencyElements) {
+            const code = normalizeCurrencyCode(
+                element.content
+                || element.getAttribute('content')
+                || element.getAttribute('data-currency-code')
+                || element.getAttribute('data-currency')
+                || element.textContent
+            );
+            if (code) return code;
+        }
+
+        for (const script of document.querySelectorAll('script:not([src])')) {
+            const match = script.textContent.match(
+                /"(?:currency|currency_code|currencyCode)"\s*:\s*"([A-Z]{3})"/i
+            );
+            if (match) return match[1].toUpperCase();
+        }
+
+        const payAnchor = findTextAnchor(/^Pay at least .+ for (?:these )?\d+ items?[.!]?$/i);
+        return findCurrencyInPriceText(payAnchor?.textContent || document.body.innerText);
     }
 
     function buildSteamGiftsSearchUrl() {
@@ -346,6 +428,7 @@
 
         steamLoginRequired = ownedApps.size === 0;
         if (steamLoginRequired) console.warn('[HB-Helper] No owned games found; maybe logged out');
+        renderPriceTotals();
         refreshHelperPage();
     })();
 
@@ -438,6 +521,27 @@
         }
     }
 
+    async function fetchExchangeRate(baseCurrency, quoteCurrency) {
+        if (baseCurrency === quoteCurrency) return 1;
+        const cacheKey = `${baseCurrency}:${quoteCurrency}`;
+        if (exchangeRateCache.has(cacheKey)) return exchangeRateCache.get(cacheKey);
+
+        const request = gmRequest(
+            `https://api.frankfurter.dev/v2/rate/${baseCurrency}/${quoteCurrency}`
+        ).then(data => {
+            const rate = Number(data.rate);
+            if (!Number.isFinite(rate)) throw new Error('Invalid Frankfurter exchange rate');
+            return rate;
+        });
+        exchangeRateCache.set(cacheKey, request);
+        try {
+            return await request;
+        } catch (error) {
+            exchangeRateCache.delete(cacheKey);
+            throw error;
+        }
+    }
+
     function getVisibleGameTitles() {
         return Array.from(document.querySelectorAll(
             '.tier-item-view .item-title, '
@@ -455,21 +559,62 @@
         return app ? Number(app.appid) : null;
     }
 
-    function renderBundlePriceTotals({
-        region, currencyCode, gameCount, totalCount, current, original, lowest
-    }) {
-        const summary = document.getElementById('hb-helper-price-summary');
-        if (!summary) return;
-        const currency = new Intl.NumberFormat('zh-CN', {
+    function formatPrice(value, currencyCode) {
+        return new Intl.NumberFormat('zh-CN', {
             style: 'currency',
             currency: currencyCode,
-        });
+        }).format(value);
+    }
+
+    function renderPriceTotals() {
+        if (!lastPriceResult) return;
+        const summary = document.getElementById('hb-helper-price-summary');
+        if (!summary) return;
+
+        const {
+            region, currencyCode, humbleCurrencyCode, exchangeRate, games
+        } = lastPriceResult;
+        const canFilterOwned = ownedApps && !steamLoginRequired;
+        if (!canFilterOwned) priceScope = 'all';
+        const selectedGames = priceScope === 'unowned'
+            ? games.filter(game => !game.appId || !ownedApps.has(game.appId))
+            : games;
+        const pricedGames = selectedGames.filter(game => game.price);
+        const totals = pricedGames.reduce((total, game) => ({
+            current: total.current + game.price.current,
+            original: total.original + game.price.original,
+            lowest: total.lowest + game.price.lowest,
+        }), {current: 0, original: 0, lowest: 0});
+        const formatTotal = value => {
+            const steamPrice = formatPrice(value, currencyCode);
+            if (!humbleCurrencyCode || !exchangeRate) return steamPrice;
+            return `${steamPrice} (HB: ${formatPrice(value * exchangeRate, humbleCurrencyCode)})`;
+        };
+        const scopeLabel = priceScope === 'all' ? 'Show unowned' : 'Show all';
+        const scopeDescription = canFilterOwned
+            ? 'Toggle between all games and games not owned on Steam'
+            : 'Login to Steam to filter out owned games';
+
         summary.innerHTML = `
-            <div class="hb-helper-price-title">Steam price totals (${region}, ${currencyCode})</div>
-            <div>Current: <span class="hb-helper-price-value">${currency.format(current)}</span></div>
-            <div>Original: <span class="hb-helper-price-value">${currency.format(original)}</span></div>
-            <div>Historical low: <span class="hb-helper-price-value">${currency.format(lowest)}</span></div>
-            <div>${gameCount}/${totalCount} games matched</div>`;
+            <div class="hb-helper-price-header">
+                <div class="hb-helper-price-title">
+                    Steam price totals (${region}, ${currencyCode})
+                </div>
+                <button id="hb-helper-price-scope" type="button"
+                    title="${scopeDescription}" ${canFilterOwned ? '' : 'disabled'}>
+                    ${scopeLabel}
+                </button>
+            </div>
+            <div>Current: <span class="hb-helper-price-value">${formatTotal(totals.current)}</span></div>
+            <div>Original: <span class="hb-helper-price-value">${formatTotal(totals.original)}</span></div>
+            <div>Historical low: <span class="hb-helper-price-value">${formatTotal(totals.lowest)}</span></div>
+            <div>${pricedGames.length}/${selectedGames.length} games matched
+                (${priceScope === 'all' ? 'all items' : 'unowned items'})</div>`;
+
+        summary.querySelector('#hb-helper-price-scope')?.addEventListener('click', () => {
+            priceScope = priceScope === 'all' ? 'unowned' : 'all';
+            renderPriceTotals();
+        });
     }
 
     function schedulePriceTotalsReload(force = false) {
@@ -490,33 +635,56 @@
         const runId = ++priceTotalsRunId;
         const summary = document.getElementById('hb-helper-price-summary');
         if (summary) summary.textContent = 'Loading Steam price totals...';
+        lastPriceResult = null;
 
         try {
+            const humbleCurrencyCode = findHumbleCurrencyCode();
             const steamCountryCode = await fetchSteamCountryCode();
-            const appIds = [...new Set((await Promise.all(titles.map(findSteamAppId))).filter(Boolean))];
-            const prices = [];
+            const resolvedGames = await Promise.all(titles.map(async title => ({
+                title,
+                appId: await findSteamAppId(title),
+            })));
+            const games = resolvedGames.filter((game, index) =>
+                !game.appId
+                || resolvedGames.findIndex(other => other.appId === game.appId) === index
+            );
+            const appIds = games.map(game => game.appId).filter(Boolean);
+            const pricesByAppId = new Map();
             for (const appId of appIds) {
                 try {
-                    prices.push(await fetchXiaoheihePriceHistory(appId, steamCountryCode));
+                    pricesByAppId.set(
+                        appId,
+                        await fetchXiaoheihePriceHistory(appId, steamCountryCode)
+                    );
                 } catch (error) {
                     console.warn('[HB-Helper] Fetch price failed:', error);
                 }
             }
-            if (prices.length === 0) throw new Error('No Steam prices matched this bundle');
+            if (pricesByAppId.size === 0) throw new Error('No Steam prices matched this bundle');
             if (runId !== priceTotalsRunId) return;
 
-            const totals = prices.reduce((total, price) => ({
-                current: total.current + price.current,
-                original: total.original + price.original,
-                lowest: total.lowest + price.lowest,
-            }), {current: 0, original: 0, lowest: 0});
-            renderBundlePriceTotals({
+            const currencyCode = pricesByAppId.values().next().value.currency;
+            let exchangeRate;
+            if (humbleCurrencyCode && humbleCurrencyCode !== currencyCode) {
+                try {
+                    exchangeRate = await fetchExchangeRate(currencyCode, humbleCurrencyCode);
+                } catch (error) {
+                    console.warn('[HB-Helper] Fetch exchange rate failed:', error);
+                }
+            }
+            if (runId !== priceTotalsRunId) return;
+
+            lastPriceResult = {
                 region: steamCountryCode,
-                currencyCode: prices[0].currency,
-                gameCount: prices.length,
-                totalCount: titles.length,
-                ...totals,
-            });
+                currencyCode,
+                humbleCurrencyCode,
+                exchangeRate,
+                games: games.map(game => ({
+                    ...game,
+                    price: pricesByAppId.get(game.appId) || null,
+                })),
+            };
+            renderPriceTotals();
         } catch (error) {
             if (runId !== priceTotalsRunId) return;
             console.warn('[HB-Helper] Load bundle price totals failed:', error);
