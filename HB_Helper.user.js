@@ -107,7 +107,38 @@
       margin-top: 4px !important;
     }
     #hb-helper-price-summary .hb-helper-match-details summary {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 6px !important;
+      background: rgba(255, 255, 255, 0.15) !important;
+      border: 1px solid rgba(255, 255, 255, 0.4) !important;
+      border-radius: 4px !important;
+      color: #fff !important;
       cursor: pointer !important;
+      list-style: none !important;
+      margin-top: 2px !important;
+      padding: 3px 8px !important;
+      user-select: none !important;
+    }
+    #hb-helper-price-summary .hb-helper-match-details summary::-webkit-details-marker {
+      display: none !important;
+    }
+    #hb-helper-price-summary .hb-helper-match-details summary::before {
+      content: '' !important;
+      border-bottom: 4px solid transparent !important;
+      border-left: 6px solid currentColor !important;
+      border-top: 4px solid transparent !important;
+      transition: transform 0.15s ease !important;
+    }
+    #hb-helper-price-summary .hb-helper-match-details summary:hover {
+      background: rgba(255, 255, 255, 0.25) !important;
+    }
+    #hb-helper-price-summary .hb-helper-match-details summary:focus-visible {
+      outline: 2px solid #fff !important;
+      outline-offset: 2px !important;
+    }
+    #hb-helper-price-summary .hb-helper-match-details[open] summary::before {
+      transform: rotate(90deg) !important;
     }
     #hb-helper-price-summary .hb-helper-match-group {
       margin-top: 4px !important;
