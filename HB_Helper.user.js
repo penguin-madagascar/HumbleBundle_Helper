@@ -1,8 +1,10 @@
 // ==UserScript==
 // @name         HumbleBundle Helper
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.10
+// @version      0.0.11
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
+// @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
+// @icon64       https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-64.png
 // @author       PenguinOfMadagascar
 // @match        https://www.humblebundle.com/*
 // @grant        GM_xmlhttpRequest
