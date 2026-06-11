@@ -9,6 +9,8 @@ download pages.
 - Adds a SteamGifts discussion search for potential region-lock reports.
 - Shows the total Steam current price, original price, and historical low for
   the games currently included by the Bundle Filters.
+- Matches Steam games and DLC through Steam Store search with Steam Community
+  search as a fallback.
 - Switches price totals between all bundle games and games not owned by the
   current Steam account.
 - Converts Steam totals to the currency displayed by Humble Bundle when the
@@ -34,7 +36,8 @@ below `YOUR GAMES` and above the current month's game heading.
 
 The price summary follows the active Bundle Filters. Use `Show unowned` or
 `Show all` in the top-right corner of the summary to change which games are
-included.
+included. If an item cannot be priced, expand the matching details to see
+whether Steam identification or regional price history is missing.
 
 ## Data Sources
 
@@ -43,5 +46,8 @@ included.
 - [Frankfurter](https://frankfurter.dev/) provides exchange rates when Steam
   and Humble Bundle use different currencies.
 
-Game matching uses Steam titles. Games without an exact Steam title match are
-excluded from the price total but remain in the matched-game denominator.
+Game matching normalizes punctuation, accents, trademark symbols, and numeric
+separators, but still requires an exact normalized Steam title. Bundle coupons
+and items not delivered through Steam are excluded. Items identified on Steam
+without Xiaoheihe regional price history remain listed separately from
+unidentified items.

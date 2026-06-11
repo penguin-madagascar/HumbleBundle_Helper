@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HumbleBundle Helper
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.9
+// @version      0.0.10
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @author       PenguinOfMadagascar
 // @match        https://www.humblebundle.com/*
@@ -102,14 +102,38 @@
     }
     #hb-helper-price-summary .hb-helper-price-value {
       font-weight: bold !important;
+    }
+    #hb-helper-price-summary .hb-helper-match-details {
+      margin-top: 4px !important;
+    }
+    #hb-helper-price-summary .hb-helper-match-details summary {
+      cursor: pointer !important;
+    }
+    #hb-helper-price-summary .hb-helper-match-group {
+      margin-top: 4px !important;
+    }
+    #hb-helper-price-summary .hb-helper-match-group ul {
+      margin: 2px 0 0 20px !important;
+      padding: 0 !important;
     }`;
     document.head.appendChild(style);
 
-    // Slug: Convert a string to a slug by lowercasing and removing non-alphanumeric characters
-    const slug = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const appSearchCache = new Map();
+    function normalizeSteamTitle(value) {
+        return String(value)
+            .replace(/[™®©℠]/g, '')
+            .replace(/&/g, 'and')
+            .normalize('NFKD')
+            .replace(/\p{M}/gu, '')
+            .toLowerCase()
+            .replace(/[^\p{L}\p{N}]/gu, '');
+    }
+
+    const communityAppSearchCache = new Map();
+    const storeAppSearchCache = new Map();
+    const steamAppMatchCache = new Map();
     const priceHistoryCache = new Map();
     const exchangeRateCache = new Map();
+    let bundleItemsByTitle;
     let steamCountryCodePromise;
     let pageRefreshTimer;
     let priceTotalsRunId = 0;
@@ -129,9 +153,10 @@
         'i'
     );
 
-    // SearchApps: Query Steam community to search for applications matching a keyword and return results
-    function searchApps(keyword) {
-        if (appSearchCache.has(keyword)) return appSearchCache.get(keyword);
+    function searchSteamCommunity(keyword) {
+        if (communityAppSearchCache.has(keyword)) {
+            return communityAppSearchCache.get(keyword);
+        }
 
         const request = new Promise((resolve) => {
             GM_xmlhttpRequest({
@@ -145,7 +170,70 @@
                 onerror: () => resolve([])
             });
         });
-        appSearchCache.set(keyword, request);
+        communityAppSearchCache.set(keyword, request);
+        return request;
+    }
+
+    function searchSteamStore(keyword) {
+        if (storeAppSearchCache.has(keyword)) return storeAppSearchCache.get(keyword);
+
+        const params = new URLSearchParams({
+            term: keyword,
+            f: 'games',
+            cc: 'US',
+            l: 'english',
+            use_store_query: '1',
+            use_search_spellcheck: '1',
+        });
+        const request = new Promise((resolve) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `https://store.steampowered.com/search/suggest?${params}`,
+                responseType: 'text',
+                onload: ({status, response, responseText}) => {
+                    if (status !== 200) {
+                        resolve([]);
+                        return;
+                    }
+                    const html = responseText || response || '';
+                    const searchPage = new DOMParser().parseFromString(html, 'text/html');
+                    const results = Array.from(
+                        searchPage.querySelectorAll('.match[data-ds-appid]')
+                    ).map(element => ({
+                        appid: Number(element.getAttribute('data-ds-appid')),
+                        name: element.querySelector('.match_name')?.textContent.trim() || '',
+                    })).filter(app => app.appid && app.name);
+                    resolve(results);
+                },
+                onerror: () => resolve([]),
+            });
+        });
+        storeAppSearchCache.set(keyword, request);
+        return request;
+    }
+
+    function findExactSteamApp(title, results) {
+        const normalizedTitle = normalizeSteamTitle(title);
+        const matches = new Map();
+        for (const app of results) {
+            const appId = Number(app.appid);
+            if (appId && normalizeSteamTitle(app.name) === normalizedTitle) {
+                matches.set(appId, {appid: appId, name: app.name});
+            }
+        }
+        return matches.size === 1 ? matches.values().next().value : null;
+    }
+
+    function findSteamApp(title) {
+        const cacheKey = normalizeSteamTitle(title);
+        if (steamAppMatchCache.has(cacheKey)) return steamAppMatchCache.get(cacheKey);
+
+        const request = (async () => {
+            const storeMatch = findExactSteamApp(title, await searchSteamStore(title));
+            if (storeMatch) return storeMatch;
+            return findExactSteamApp(title, await searchSteamCommunity(title));
+        })();
+        steamAppMatchCache.set(cacheKey, request);
         return request;
     }
 
@@ -542,6 +630,33 @@
         }
     }
 
+    function getBundleItemsByTitle() {
+        if (!isGamesBundlePage()) return null;
+        if (bundleItemsByTitle) return bundleItemsByTitle;
+
+        const dataElement = document.getElementById('webpack-bundle-page-data');
+        if (!dataElement) return null;
+        const itemData = JSON.parse(dataElement.textContent).bundleData?.tier_item_data;
+        if (!itemData) return null;
+
+        bundleItemsByTitle = new Map(
+            Object.values(itemData)
+                .filter(item => item.human_name)
+                .map(item => [normalizeSteamTitle(item.human_name), item])
+        );
+        return bundleItemsByTitle;
+    }
+
+    function isSteamBundleItem(item) {
+        return item.cta_badge?.badge !== 'coupon'
+            && Boolean(item.availability_icons?.delivery_to_platform?.['hb-steam']);
+    }
+
+    function shouldMatchSteamTitle(title) {
+        const item = getBundleItemsByTitle()?.get(normalizeSteamTitle(title));
+        return !item || isSteamBundleItem(item);
+    }
+
     function getVisibleGameTitles() {
         return Array.from(document.querySelectorAll(
             '.tier-item-view .item-title, '
@@ -549,14 +664,7 @@
         ))
             .filter(title => title.getClientRects().length > 0)
             .map(title => title.textContent.trim())
-            .filter(Boolean);
-    }
-
-    async function findSteamAppId(title) {
-        const titleSlug = slug(title);
-        const results = await searchApps(title);
-        const app = results.find(result => slug(result.name) === titleSlug);
-        return app ? Number(app.appid) : null;
+            .filter(title => title && shouldMatchSteamTitle(title));
     }
 
     function formatPrice(value, currencyCode) {
@@ -564,6 +672,37 @@
             style: 'currency',
             currency: currencyCode,
         }).format(value);
+    }
+
+    function appendMatchDetails(summary, unmatchedGames, unpricedGames) {
+        const groups = [
+            ['Steam item not found', unmatchedGames],
+            ['Regional price unavailable', unpricedGames],
+        ].filter(([, games]) => games.length > 0);
+        if (groups.length === 0) return;
+
+        const details = document.createElement('details');
+        details.className = 'hb-helper-match-details';
+        const detailsSummary = document.createElement('summary');
+        const missingCount = groups.reduce((total, [, games]) => total + games.length, 0);
+        detailsSummary.textContent = `Show ${missingCount} unpriced item${missingCount === 1 ? '' : 's'}`;
+        details.appendChild(detailsSummary);
+
+        for (const [label, games] of groups) {
+            const group = document.createElement('div');
+            group.className = 'hb-helper-match-group';
+            const heading = document.createElement('strong');
+            heading.textContent = `${label} (${games.length})`;
+            const list = document.createElement('ul');
+            for (const game of games) {
+                const item = document.createElement('li');
+                item.textContent = game.title;
+                list.appendChild(item);
+            }
+            group.append(heading, list);
+            details.appendChild(group);
+        }
+        summary.appendChild(details);
     }
 
     function renderPriceTotals() {
@@ -579,13 +718,17 @@
         const selectedGames = priceScope === 'unowned'
             ? games.filter(game => !game.appId || !ownedApps.has(game.appId))
             : games;
+        const matchedGames = selectedGames.filter(game => game.appId);
         const pricedGames = selectedGames.filter(game => game.price);
+        const unmatchedGames = selectedGames.filter(game => !game.appId);
+        const unpricedGames = matchedGames.filter(game => !game.price);
         const totals = pricedGames.reduce((total, game) => ({
             current: total.current + game.price.current,
             original: total.original + game.price.original,
             lowest: total.lowest + game.price.lowest,
         }), {current: 0, original: 0, lowest: 0});
         const formatTotal = value => {
+            if (!currencyCode || pricedGames.length === 0) return 'Unavailable';
             const steamPrice = formatPrice(value, currencyCode);
             if (!humbleCurrencyCode || !exchangeRate) return steamPrice;
             return `${steamPrice} (HB: ${formatPrice(value * exchangeRate, humbleCurrencyCode)})`;
@@ -594,11 +737,13 @@
         const scopeDescription = canFilterOwned
             ? 'Toggle between all games and games not owned on Steam'
             : 'Login to Steam to filter out owned games';
+        const priceRegion = currencyCode ? `${region}, ${currencyCode}` : region;
+        const scope = priceScope === 'all' ? 'all items' : 'unowned items';
 
         summary.innerHTML = `
             <div class="hb-helper-price-header">
                 <div class="hb-helper-price-title">
-                    Steam price totals (${region}, ${currencyCode})
+                    Steam price totals (${priceRegion})
                 </div>
                 <button id="hb-helper-price-scope" type="button"
                     title="${scopeDescription}" ${canFilterOwned ? '' : 'disabled'}>
@@ -608,8 +753,9 @@
             <div>Current: <span class="hb-helper-price-value">${formatTotal(totals.current)}</span></div>
             <div>Original: <span class="hb-helper-price-value">${formatTotal(totals.original)}</span></div>
             <div>Historical low: <span class="hb-helper-price-value">${formatTotal(totals.lowest)}</span></div>
-            <div>${pricedGames.length}/${selectedGames.length} games matched
-                (${priceScope === 'all' ? 'all items' : 'unowned items'})</div>`;
+            <div>${matchedGames.length}/${selectedGames.length} Steam items identified (${scope})</div>
+            <div>${pricedGames.length}/${matchedGames.length} identified items have price history</div>`;
+        appendMatchDetails(summary, unmatchedGames, unpricedGames);
 
         summary.querySelector('#hb-helper-price-scope')?.addEventListener('click', () => {
             priceScope = priceScope === 'all' ? 'unowned' : 'all';
@@ -640,10 +786,10 @@
         try {
             const humbleCurrencyCode = findHumbleCurrencyCode();
             const steamCountryCode = await fetchSteamCountryCode();
-            const resolvedGames = await Promise.all(titles.map(async title => ({
-                title,
-                appId: await findSteamAppId(title),
-            })));
+            const resolvedGames = await Promise.all(titles.map(async title => {
+                const app = await findSteamApp(title);
+                return {title, appId: app?.appid || null};
+            }));
             const games = resolvedGames.filter((game, index) =>
                 !game.appId
                 || resolvedGames.findIndex(other => other.appId === game.appId) === index
@@ -660,12 +806,11 @@
                     console.warn('[HB-Helper] Fetch price failed:', error);
                 }
             }
-            if (pricesByAppId.size === 0) throw new Error('No Steam prices matched this bundle');
             if (runId !== priceTotalsRunId) return;
 
-            const currencyCode = pricesByAppId.values().next().value.currency;
+            const currencyCode = pricesByAppId.values().next().value?.currency || null;
             let exchangeRate;
-            if (humbleCurrencyCode && humbleCurrencyCode !== currencyCode) {
+            if (currencyCode && humbleCurrencyCode && humbleCurrencyCode !== currencyCode) {
                 try {
                     exchangeRate = await fetchExchangeRate(currencyCode, humbleCurrencyCode);
                 } catch (error) {
@@ -692,37 +837,23 @@
         }
     }
 
-    // Owned Games Check: Check a single game element and mark it as owned if it matches the user's owned app set
-    async function markOne(viewEl, ownedSet) {
-        if (viewEl.classList.contains('owned')) return;
+    async function markGame(viewEl, appSet, className) {
+        if (viewEl.classList.contains(className)) return;
         const titleEl = viewEl.querySelector('.item-title, .content-choice-title');
         if (!titleEl) return;
         const title = titleEl.textContent.trim();
-        const titleSlug = slug(title);
-        const results = await searchApps(title);
-        for (const app of results) {
-            if (!ownedSet.has(+app.appid)) continue;
-            if (slug(app.name) === titleSlug) {
-                viewEl.classList.add('owned');
-                return;
-            }
-        }
+        if (!shouldMatchSteamTitle(title)) return;
+        const app = await findSteamApp(title);
+        if (app && appSet.has(app.appid)) viewEl.classList.add(className);
     }
 
-    async function markWishlistOne(viewEl, wishlistSet) {
-        if (viewEl.classList.contains('wishlist')) return;
-        const titleEl = viewEl.querySelector('.item-title, .content-choice-title');
-        if (!titleEl) return;
-        const title = titleEl.textContent.trim();
-        const titleSlug = slug(title);
-        const results = await searchApps(title);
-        for (const app of results) {
-            if (!wishlistSet.has(+app.appid)) continue;
-            if (slug(app.name) === titleSlug) {
-                viewEl.classList.add('wishlist');
-                return;
-            }
-        }
+    // Owned Games Check: Check a single game element and mark it as owned if it matches the user's owned app set
+    function markOne(viewEl, ownedSet) {
+        return markGame(viewEl, ownedSet, 'owned');
+    }
+
+    function markWishlistOne(viewEl, wishlistSet) {
+        return markGame(viewEl, wishlistSet, 'wishlist');
     }
 
     // Region Restriction Check
