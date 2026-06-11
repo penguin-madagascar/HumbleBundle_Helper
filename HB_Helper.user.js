@@ -4,6 +4,7 @@
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
 // @version      0.0.12
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
+// @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
 // @icon64       https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-64.png
 // @author       PenguinOfMadagascar
