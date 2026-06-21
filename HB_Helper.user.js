@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.12
+// @version      0.0.13
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -427,7 +427,7 @@
     function buildSteamGiftsSearchUrl() {
         let term;
         if (isChoicePage()) {
-            term = `[Humble Choice] ${getChoicePeriod()}`.trim();
+            term = `[Humble Bundle] ${getChoicePeriod()}`.trim();
         } else {
             const title = getBundleTitle();
             const word = title.match(/[A-Za-z0-9]+/)?.[0] || title.trim().split(/\s+/)[0] || 'Bundle';
