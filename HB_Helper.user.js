@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.13
+// @version      0.0.14
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -10,6 +10,8 @@
 // @author       PenguinOfMadagascar
 // @license      MIT
 // @match        https://www.humblebundle.com/*
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @connect      store.steampowered.com
 // @connect      steamcommunity.com
@@ -169,8 +171,12 @@
     const steamAppMatchCache = new Map();
     const priceHistoryCache = new Map();
     const exchangeRateCache = new Map();
+    const steamAccountCacheKey = 'steam-account-data-v1';
+    const steamRequestOptions = {
+        cookiePartition: {topLevelSite: 'https://store.steampowered.com'},
+    };
     let bundleItemsByTitle;
-    let steamCountryCodePromise;
+    let steamAccountDataPromise;
     let pageRefreshTimer;
     let priceTotalsRunId = 0;
     let lastPriceTitlesKey = '';
@@ -273,44 +279,70 @@
         return request;
     }
 
-    // Run: Fetch the set of owned Steam app IDs from the Steam API
-    function fetchOwnedSet() {
-        const url = 'https://store.steampowered.com/dynamicstore/userdata/?_=' + Date.now();
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url,
-                headers: {'Cache-Control': 'no-cache'},
-                responseType: 'json',
-                onload: ({status, response}) => {
-                    if (status === 200 && response && response.rgOwnedApps)
-                        resolve(new Set(response.rgOwnedApps));
-                    else
-                        reject('Failed to fetch owned apps');
-                },
-                onerror: () => reject('Network error fetching owned apps'),
-            });
-        });
+    function getCachedSteamAccountData() {
+        const data = GM_getValue(steamAccountCacheKey);
+        if (!data
+            || !/^[A-Z]{2}$/.test(data.countryCode)
+            || !Array.isArray(data.ownedApps)
+            || !Array.isArray(data.wishlistApps)) {
+            return null;
+        }
+        return data;
     }
 
-    // Run: fetchWishlistSet: Fetch the set of Steam app IDs in the user's wishlist from the Steam API
-    function fetchWishlistSet() {
-        const url = 'https://store.steampowered.com/dynamicstore/userdata/?_=' + Date.now();
-        return new Promise((resolve) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url,
-                headers: {'Cache-Control': 'no-cache'},
-                responseType: 'json',
-                onload: ({status, response}) => {
-                    if (status === 200 && response && response.rgWishlist)
-                        resolve(new Set(response.rgWishlist));
-                    else
-                        resolve(new Set());
-                },
-                onerror: () => resolve(new Set()),
-            });
-        });
+    function fetchSteamAccountData() {
+        if (!steamAccountDataPromise) {
+            steamAccountDataPromise = (async () => {
+                try {
+                    const html = await gmRequest(
+                        `https://store.steampowered.com/?l=english&_=${Date.now()}`,
+                        'text',
+                        steamRequestOptions
+                    );
+                    const steamPage = new DOMParser().parseFromString(html, 'text/html');
+                    const userInfoText = steamPage.querySelector('#application_config')
+                        ?.getAttribute('data-userinfo');
+                    const userInfo = JSON.parse(userInfoText || '{}');
+                    if (!userInfo.logged_in) throw new Error('Login to Steam to load account data');
+
+                    const userData = await gmRequest(
+                        `https://store.steampowered.com/dynamicstore/userdata/?_=${Date.now()}`,
+                        'json',
+                        {
+                            ...steamRequestOptions,
+                            headers: {'Cache-Control': 'no-cache'},
+                        }
+                    );
+                    if (!Array.isArray(userData?.rgOwnedApps)
+                        || !Array.isArray(userData?.rgWishlist)) {
+                        throw new Error('Steam returned invalid account data');
+                    }
+
+                    const data = {
+                        countryCode: userInfo.country_code.toUpperCase(),
+                        ownedApps: userData.rgOwnedApps,
+                        wishlistApps: userData.rgWishlist,
+                        updatedAt: Date.now(),
+                    };
+                    GM_setValue(steamAccountCacheKey, data);
+                    return data;
+                } catch (error) {
+                    const cachedData = getCachedSteamAccountData();
+                    if (!cachedData) throw error;
+                    console.warn('[HB-Helper] Using cached Steam account data:', error);
+                    return cachedData;
+                }
+            })();
+        }
+        return steamAccountDataPromise;
+    }
+
+    async function fetchOwnedSet() {
+        return new Set((await fetchSteamAccountData()).ownedApps);
+    }
+
+    async function fetchWishlistSet() {
+        return new Set((await fetchSteamAccountData()).wishlistApps);
     }
 
     function getBundleTitle() {
@@ -550,18 +582,18 @@
             return;
         }
 
-        steamLoginRequired = ownedApps.size === 0;
-        if (steamLoginRequired) console.warn('[HB-Helper] No owned games found; maybe logged out');
+        steamLoginRequired = false;
         renderPriceTotals();
         refreshHelperPage();
     })();
 
-    function gmRequest(url, responseType = 'json') {
+    function gmRequest(url, responseType = 'json', options = {}) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
                 url,
                 responseType,
+                ...options,
                 onload: ({status, response, responseText}) => {
                     if (status !== 200) {
                         reject(new Error(`Request failed with HTTP ${status}`));
@@ -575,21 +607,7 @@
     }
 
     async function fetchSteamCountryCode() {
-        if (!steamCountryCodePromise) {
-            steamCountryCodePromise = (async () => {
-                const html = await gmRequest(
-                    `https://store.steampowered.com/?l=english&_=${Date.now()}`,
-                    'text'
-                );
-                const steamPage = new DOMParser().parseFromString(html, 'text/html');
-                const userInfoText = steamPage.querySelector('#application_config')
-                    ?.getAttribute('data-userinfo');
-                const userInfo = JSON.parse(userInfoText);
-                if (!userInfo.logged_in) throw new Error('Login to Steam to load regional prices');
-                return userInfo.country_code.toUpperCase();
-            })();
-        }
-        return steamCountryCodePromise;
+        return (await fetchSteamAccountData()).countryCode;
     }
 
     function getXiaoheiheRegionCode(steamCountryCode) {
