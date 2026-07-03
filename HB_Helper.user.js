@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.19
+// @version      0.0.20
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -134,6 +134,54 @@
       cursor: default !important;
       opacity: 0.5 !important;
     }
+    .hb-helper-games-sort-heading {
+      display: inline-flex !important;
+      align-items: center !important;
+      margin-right: 12px !important;
+      vertical-align: middle !important;
+    }
+    #hb-helper-games-sort-controls {
+      display: inline-flex !important;
+      align-items: center !important;
+      flex-wrap: wrap !important;
+      gap: 6px !important;
+      vertical-align: middle !important;
+    }
+    #hb-helper-games-sort-controls button {
+      box-sizing: border-box !important;
+      background: rgba(255, 255, 255, 0.12) !important;
+      border: 1px solid rgba(255, 255, 255, 0.35) !important;
+      border-radius: 4px !important;
+      color: inherit !important;
+      cursor: pointer !important;
+      font: inherit !important;
+      font-size: 14px !important;
+      font-weight: 700 !important;
+      line-height: 1.2 !important;
+      min-height: 32px !important;
+      padding: 6px 10px !important;
+    }
+    #hb-helper-games-sort-controls button:hover {
+      background: rgba(255, 255, 255, 0.2) !important;
+    }
+    #hb-helper-games-sort-controls button:focus-visible {
+      outline: 2px solid currentColor !important;
+      outline-offset: 2px !important;
+    }
+    #hb-helper-games-sort-controls button.hb-helper-games-sort-active {
+      background: rgba(255, 255, 255, 0.28) !important;
+      border-color: currentColor !important;
+    }
+    @media (max-width: 640px) {
+      .hb-helper-games-sort-heading {
+        display: block !important;
+        margin-right: 0 !important;
+      }
+      #hb-helper-games-sort-controls {
+        display: flex !important;
+        margin-bottom: 10px !important;
+      }
+    }
     #hb-helper-price-summary .hb-helper-price-value {
       font-weight: bold !important;
     }
@@ -205,13 +253,32 @@
     let bundleItemsByTitle;
     let steamAccountDataPromise;
     let pageRefreshTimer;
+    let gamesLandingRefreshTimer;
     let priceTotalsRunId = 0;
     let lastPriceTitlesKey = '';
     let lastPriceResult;
     let priceScope = 'all';
+    let gamesLandingSortMode = 'default';
     let steamLoginRequired = false;
     let ownedApps;
     let wishlistApps;
+    const gamesLandingSortModes = [
+        {
+            key: 'default',
+            label: 'Default',
+            title: 'Use Humble Bundle default order',
+        },
+        {
+            key: 'ending',
+            label: 'Ending Soon',
+            title: 'Sort bundles by nearest end date',
+        },
+        {
+            key: 'newest',
+            label: 'Newly Added',
+            title: 'Sort bundles by newest start date',
+        },
+    ];
     const europeanSteamCountries = new Set([
         'AT', 'BE', 'CY', 'DE', 'EE', 'ES', 'FI', 'FR', 'GR', 'HR',
         'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'SI', 'SK',
@@ -385,8 +452,12 @@
         return document.title.trim();
     }
 
+    function isGamesLandingPage() {
+        return location.pathname === '/games' || location.pathname === '/games/';
+    }
+
     function isGamesBundlePage() {
-        return location.pathname.startsWith('/games/');
+        return location.pathname.startsWith('/games/') && !isGamesLandingPage();
     }
 
     function isChoicePage() {
@@ -401,6 +472,222 @@
 
     function normalizedText(element) {
         return element.textContent.replace(/\s+/g, ' ').trim();
+    }
+
+    function normalizeHumblePath(value) {
+        try {
+            return new URL(value, location.origin).pathname.replace(/\/$/, '') || '/';
+        } catch (error) {
+            return String(value || '').split(/[?#]/)[0].replace(/\/$/, '');
+        }
+    }
+
+    function parseHumbleDateTime(value) {
+        if (!value) return null;
+        const dateText = String(value);
+        const hasTimezone = /(?:Z|[+-]\d\d:\d\d)$/i.test(dateText);
+        const time = Date.parse(hasTimezone ? dateText : `${dateText}Z`);
+        return Number.isFinite(time) ? time : null;
+    }
+
+    function getGamesLandingProductData() {
+        const dataElement = document.getElementById('landingPage-json-data');
+        if (!dataElement) return null;
+
+        let pageData;
+        try {
+            pageData = JSON.parse(dataElement.textContent);
+        } catch (error) {
+            console.warn('[HB-Helper] Failed to parse Games landing data:', error);
+            return null;
+        }
+
+        const sections = pageData?.data?.games?.mosaic;
+        if (!Array.isArray(sections)) return null;
+
+        const products = [];
+        for (const section of sections) {
+            for (const product of section.products || []) {
+                if (product?.type !== 'bundle'
+                    || product.tile_stamp !== 'games'
+                    || !String(product.product_url || '').startsWith('/games/')) {
+                    continue;
+                }
+                products.push({
+                    productUrl: normalizeHumblePath(product.product_url),
+                    originalIndex: products.length,
+                    startTime: parseHumbleDateTime(product['start_date|datetime']),
+                    endTime: parseHumbleDateTime(product['end_date|datetime']),
+                });
+            }
+        }
+
+        return products.length > 1 ? products : null;
+    }
+
+    function findGamesLandingSection() {
+        return Array.from(document.querySelectorAll('.landing-mosaic-section'))
+            .find(section => findGamesLandingHeading(section)
+                && section.querySelector('.landing-page-mosaic .js-games-mosaic')) || null;
+    }
+
+    function findGamesLandingHeading(section) {
+        return Array.from(section.querySelectorAll(':scope > h3'))
+            .find(heading => normalizedText(heading) === 'Games') || null;
+    }
+
+    function getGamesLandingTileEntries(section, productByUrl) {
+        return Array.from(section.querySelectorAll('.tile-holder.js-tile-holder'))
+            .map((holder, domIndex) => {
+                const link = holder.matches('a[href]') ? holder : holder.querySelector('a[href]');
+                const product = productByUrl.get(normalizeHumblePath(link?.getAttribute('href')));
+                return product ? {holder, domIndex, product} : null;
+            })
+            .filter(Boolean);
+    }
+
+    function getGamesLandingSortState() {
+        const section = findGamesLandingSection();
+        const products = getGamesLandingProductData();
+        if (!section || !products) return null;
+
+        const productByUrl = new Map(products.map(product => [product.productUrl, product]));
+        const entries = getGamesLandingTileEntries(section, productByUrl);
+        if (entries.length !== products.length) return null;
+
+        return {section, entries};
+    }
+
+    function compareOptionalTime(a, b, direction) {
+        const aHasTime = Number.isFinite(a);
+        const bHasTime = Number.isFinite(b);
+        if (!aHasTime && !bHasTime) return 0;
+        if (!aHasTime) return 1;
+        if (!bHasTime) return -1;
+        return (a - b) * direction;
+    }
+
+    function compareGamesLandingEntries(a, b) {
+        let result = 0;
+        if (gamesLandingSortMode === 'ending') {
+            result = compareOptionalTime(a.product.endTime, b.product.endTime, 1);
+        } else if (gamesLandingSortMode === 'newest') {
+            result = compareOptionalTime(a.product.startTime, b.product.startTime, -1);
+        }
+
+        return result
+            || a.product.originalIndex - b.product.originalIndex
+            || a.domIndex - b.domIndex;
+    }
+
+    function renderGamesLandingSortControls() {
+        const controls = document.getElementById('hb-helper-games-sort-controls');
+        if (!controls) return;
+
+        gamesLandingSortModes.forEach(mode => {
+            const button = controls.querySelector(`[data-hb-helper-sort="${mode.key}"]`);
+            if (!button) return;
+            const isActive = mode.key === gamesLandingSortMode;
+            button.classList.toggle('hb-helper-games-sort-active', isActive);
+            button.setAttribute('aria-pressed', String(isActive));
+        });
+    }
+
+    function ensureGamesLandingSortControls(section) {
+        const heading = findGamesLandingHeading(section);
+        if (!heading) return null;
+        heading.classList.add('hb-helper-games-sort-heading');
+
+        let controls = document.getElementById('hb-helper-games-sort-controls');
+        if (!controls) {
+            controls = document.createElement('div');
+            controls.id = 'hb-helper-games-sort-controls';
+            controls.setAttribute('role', 'group');
+            controls.setAttribute('aria-label', 'Sort Games bundles');
+
+            for (const mode of gamesLandingSortModes) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = mode.label;
+                button.title = mode.title;
+                button.dataset.hbHelperSort = mode.key;
+                button.addEventListener('click', () => {
+                    gamesLandingSortMode = mode.key;
+                    renderGamesLandingSortControls();
+                    applyGamesLandingSort();
+                });
+                controls.appendChild(button);
+            }
+        }
+
+        if (heading.nextElementSibling !== controls) {
+            heading.insertAdjacentElement('afterend', controls);
+        }
+        renderGamesLandingSortControls();
+        return controls;
+    }
+
+    function getGamesLandingLayoutSlots(section) {
+        const layouts = Array.from(section.querySelectorAll('.mosaic-layout'))
+            .map(layout => ({
+                container: layout,
+                count: layout.querySelectorAll(':scope > .tile-holder.js-tile-holder').length,
+            }))
+            .filter(slot => slot.count > 0);
+
+        if (layouts.length) return layouts;
+
+        const fallbackContainer = section.querySelector('.js-games-mosaic');
+        const fallbackCount = fallbackContainer
+            ? fallbackContainer.querySelectorAll(':scope > .tile-holder.js-tile-holder').length
+            : 0;
+        return fallbackContainer && fallbackCount
+            ? [{container: fallbackContainer, count: fallbackCount}]
+            : [];
+    }
+
+    function applyGamesLandingSort(state = getGamesLandingSortState()) {
+        if (!state) return;
+
+        const sortedEntries = [...state.entries].sort(compareGamesLandingEntries);
+        const desiredHolders = sortedEntries.map(entry => entry.holder);
+        const currentHolders = state.entries.map(entry => entry.holder);
+        if (desiredHolders.every((holder, index) => holder === currentHolders[index])) return;
+
+        const slots = getGamesLandingLayoutSlots(state.section);
+        let holderIndex = 0;
+        for (const slot of slots) {
+            for (let i = 0; i < slot.count && holderIndex < desiredHolders.length; i++) {
+                slot.container.appendChild(desiredHolders[holderIndex]);
+                holderIndex++;
+            }
+        }
+    }
+
+    function removeGamesLandingSortControls() {
+        document.getElementById('hb-helper-games-sort-controls')?.remove();
+        document.querySelector('.hb-helper-games-sort-heading')
+            ?.classList.remove('hb-helper-games-sort-heading');
+    }
+
+    function refreshGamesLandingPage() {
+        const state = getGamesLandingSortState();
+        if (!state) {
+            removeGamesLandingSortControls();
+            return;
+        }
+        ensureGamesLandingSortControls(state.section);
+        applyGamesLandingSort(state);
+    }
+
+    function scheduleGamesLandingPageRefresh() {
+        clearTimeout(gamesLandingRefreshTimer);
+        gamesLandingRefreshTimer = setTimeout(refreshGamesLandingPage, 150);
+    }
+
+    function observeGamesLandingPageChanges() {
+        const observer = new MutationObserver(() => scheduleGamesLandingPageRefresh());
+        observer.observe(document.body, {childList: true, subtree: true});
     }
 
     function normalizeCurrencyCode(value) {
@@ -795,6 +1082,12 @@
     }
 
     (async function run() {
+        if (isGamesLandingPage()) {
+            observeGamesLandingPageChanges();
+            refreshGamesLandingPage();
+            return;
+        }
+
         if (!isPriceTotalsPage()) return;
         observePageChanges();
         refreshHelperPage(true);

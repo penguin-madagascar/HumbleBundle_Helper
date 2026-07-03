@@ -16,6 +16,8 @@ download pages.
   current Steam account.
 - Converts Steam totals to the currency displayed by Humble Bundle when the
   currencies differ.
+- Adds sorting controls to the Humble Games landing page for default order,
+  bundles ending soon, and newly added bundles.
 - Supports game bundle pages and the Humble Choice membership page.
 - Shows Steam key activation restrictions on Humble download pages.
 
@@ -34,6 +36,11 @@ owned-game checks, wishlist checks, and regional prices.
 On a game bundle page, the controls appear above
 `Pay at least [price] for these [number] items`. On Humble Choice, they appear
 below `YOUR GAMES` and above the current month's game heading.
+
+On the Humble Games landing page, sorting controls appear next to the `Games`
+heading. Use `Default` to restore Humble's original order, `Ending Soon` to
+show bundles closest to ending first, and `Newly Added` to show the newest
+bundles first.
 
 The price summary follows the active Bundle Filters. Use `Show unowned` or
 `Show all` in the top-right corner of the summary to change which games are
