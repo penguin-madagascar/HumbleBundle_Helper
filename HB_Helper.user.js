@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.17
+// @version      0.0.18
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -692,11 +692,37 @@
         return candidates[0] || null;
     }
 
+    function firstTextElement(scope, selectors) {
+        return Array.from(scope.querySelectorAll(selectors))
+            .find(element => normalizedText(element));
+    }
+
+    function findBundleDetailTitle(container, detailIndex) {
+        const localTitleEl = firstTextElement(
+            container,
+            '.item-title, .human-name-title, .content-choice-title, .product-title, .game-title, h1, h2, h3'
+        );
+        if (localTitleEl) return {title: normalizedText(localTitleEl), anchor: localTitleEl};
+
+        const tileTitleEl = Array.from(
+            document.querySelectorAll('.tier-item-view .item-title')
+        )[detailIndex];
+        if (tileTitleEl) return {title: normalizedText(tileTitleEl), anchor: tileTitleEl};
+
+        return {title: '', anchor: null};
+    }
+
+    function findChoiceModalTitle(modal) {
+        return firstTextElement(
+            modal,
+            '.human-name-title, .content-choice-title, .product-title, .game-title, h1, h2, h3'
+        );
+    }
+
     function getSteamStoreLinkTargets() {
         const targets = [];
-        document.querySelectorAll('.tier-item-details-view').forEach(container => {
-            const titleEl = container.querySelector('.item-title');
-            const title = titleEl?.textContent.trim();
+        document.querySelectorAll('.tier-item-details-view').forEach((container, detailIndex) => {
+            const {title, anchor: titleEl} = findBundleDetailTitle(container, detailIndex);
             if (!title) return;
             const platformRows = Array.from(
                 container.querySelectorAll('.delivery-and-oses.icons-and-blurbs')
@@ -711,12 +737,9 @@
             });
         });
 
-        document.querySelectorAll('#site-modal .human-name-title').forEach(titleEl => {
-            const container = titleEl.closest('#site-modal')
-                || titleEl.closest('.mobile-recommendation-slides')
-                || titleEl.closest('.humblemodal, [class*="modal"]')
-                || titleEl.parentElement;
-            const title = titleEl.textContent.trim();
+        document.querySelectorAll('#site-modal').forEach(container => {
+            const titleEl = findChoiceModalTitle(container);
+            const title = titleEl ? normalizedText(titleEl) : '';
             if (!container || !title) return;
             const platformPanel = findChoicePlatformPanel(container);
             targets.push({
