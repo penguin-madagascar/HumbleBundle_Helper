@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.16
+// @version      0.0.17
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -91,7 +91,10 @@
     .hb-helper-steam-store-row {
       box-sizing: border-box !important;
       display: block !important;
+      flex-basis: 100% !important;
+      grid-column: 1 / -1 !important;
       margin-top: 8px !important;
+      width: 100% !important;
     }
     .hb-helper-steam-store-link:hover {
       opacity: .9 !important;
@@ -640,7 +643,7 @@
         const {container, title} = target;
         const normalizedTitle = normalizeSteamTitle(title);
         let existingLink = getSteamStoreLink(container);
-        if (existingLink?.dataset.hbHelperTitle !== normalizedTitle) {
+        if (existingLink && existingLink.dataset.hbHelperTitle !== normalizedTitle) {
             removeSteamStoreLink(existingLink);
             existingLink = null;
         }
@@ -709,7 +712,8 @@
         });
 
         document.querySelectorAll('#site-modal .human-name-title').forEach(titleEl => {
-            const container = titleEl.closest('.mobile-recommendation-slides')
+            const container = titleEl.closest('#site-modal')
+                || titleEl.closest('.mobile-recommendation-slides')
                 || titleEl.closest('.humblemodal, [class*="modal"]')
                 || titleEl.parentElement;
             const title = titleEl.textContent.trim();
