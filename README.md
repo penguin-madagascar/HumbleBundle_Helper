@@ -6,6 +6,7 @@ download pages.
 ## Features
 
 - Highlights Steam-owned games in green and wishlisted games in blue.
+- Adds Steam Store links to expanded game details.
 - Adds a SteamGifts discussion search for potential region-lock reports.
 - Shows the total Steam current price, original price, and historical low for
   the games currently included by the Bundle Filters.
@@ -26,9 +27,9 @@ download pages.
 
 ## Usage
 
-Log in to Steam in the same browser before opening Humble Bundle. The script
-uses the current Steam account and Steam store region for owned-game checks and
-regional prices.
+Steam Store links use public Steam search and work without logging in to Steam.
+Log in to Steam in the same browser before opening Humble Bundle to enable
+owned-game checks, wishlist checks, and regional prices.
 
 On a game bundle page, the controls appear above
 `Pay at least [price] for these [number] items`. On Humble Choice, they appear

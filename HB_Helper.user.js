@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.14
+// @version      0.0.15
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -70,6 +70,20 @@
       text-decoration: none !important;
     }
     #steamgifts-discussion a:hover {
+      opacity: .9 !important;
+    }
+    .hb-helper-steam-store-link {
+      display: inline-block !important;
+      box-sizing: border-box !important;
+      background: #1b75bb !important;
+      color: #fff !important;
+      padding: 6px 10px !important;
+      margin: 8px 0 !important;
+      border-radius: 4px !important;
+      text-decoration: none !important;
+      font-weight: bold !important;
+    }
+    .hb-helper-steam-store-link:hover {
       opacity: .9 !important;
     }
     #hb-helper-price-summary {
@@ -279,6 +293,10 @@
         return request;
     }
 
+    function getSteamStoreUrl(appId) {
+        return `https://store.steampowered.com/app/${appId}/`;
+    }
+
     function getCachedSteamAccountData() {
         const data = GM_getValue(steamAccountCacheKey);
         if (!data
@@ -358,7 +376,9 @@
     }
 
     function isChoicePage() {
-        return location.pathname.startsWith('/membership/home');
+        return location.pathname === '/membership'
+            || location.pathname === '/membership/'
+            || location.pathname.startsWith('/membership/home');
     }
 
     function isPriceTotalsPage() {
@@ -392,10 +412,11 @@
         }
 
         if (isChoicePage()) {
-            const monthHeading = findTextAnchor(choiceMonthPattern);
-            if (monthHeading) return {anchor: monthHeading, position: 'beforebegin'};
             const yourGamesHeading = findTextAnchor(/^YOUR GAMES$/i);
             if (yourGamesHeading) return {anchor: yourGamesHeading, position: 'afterend'};
+            if (!document.querySelector('.choice-content.js-open-choice-modal')) return null;
+            const monthHeading = findTextAnchor(choiceMonthPattern);
+            if (monthHeading) return {anchor: monthHeading, position: 'beforebegin'};
         }
         return null;
     }
@@ -540,6 +561,105 @@
         }
     }
 
+    function getSteamStoreLink(container) {
+        return Array.from(container.querySelectorAll('.hb-helper-steam-store-link'))[0] || null;
+    }
+
+    function removeDuplicateSteamStoreLinks(container, keepLink) {
+        Array.from(container.querySelectorAll('.hb-helper-steam-store-link'))
+            .forEach(link => {
+                if (link !== keepLink) link.remove();
+            });
+    }
+
+    function insertSteamStoreLink(link, target) {
+        const {container, before, after} = target;
+        if (before?.parentNode === container) {
+            if (before.previousElementSibling !== link) {
+                container.insertBefore(link, before);
+            }
+        } else if (after?.parentNode === container) {
+            if (after.nextElementSibling !== link) {
+                after.insertAdjacentElement('afterend', link);
+            }
+        } else if (link.parentNode !== container) {
+            container.appendChild(link);
+        }
+    }
+
+    async function ensureSteamStoreLink(target) {
+        const {container, title} = target;
+        const normalizedTitle = normalizeSteamTitle(title);
+        let existingLink = getSteamStoreLink(container);
+        if (existingLink?.dataset.hbHelperTitle !== normalizedTitle) {
+            existingLink.remove();
+            existingLink = null;
+        }
+
+        if (!title || !shouldMatchSteamTitle(title)) {
+            removeDuplicateSteamStoreLinks(container, null);
+            return;
+        }
+
+        const app = await findSteamApp(title);
+        if (!container.isConnected) return;
+
+        if (!app) {
+            removeDuplicateSteamStoreLinks(container, null);
+            return;
+        }
+
+        let link = getSteamStoreLink(container);
+        if (!link) {
+            link = document.createElement('a');
+            link.className = 'hb-helper-steam-store-link';
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = 'View on Steam';
+        }
+        link.href = getSteamStoreUrl(app.appid);
+        link.dataset.hbHelperTitle = normalizedTitle;
+        link.dataset.hbHelperAppid = String(app.appid);
+        removeDuplicateSteamStoreLinks(container, link);
+        insertSteamStoreLink(link, target);
+    }
+
+    function getSteamStoreLinkTargets() {
+        const targets = [];
+        document.querySelectorAll('.tier-item-details-view').forEach(container => {
+            const titleEl = container.querySelector('.item-title');
+            const title = titleEl?.textContent.trim();
+            if (!title) return;
+            targets.push({
+                container,
+                title,
+                before: container.querySelector('section.description'),
+                after: titleEl,
+            });
+        });
+
+        document.querySelectorAll('#site-modal .human-name-title').forEach(titleEl => {
+            const container = titleEl.closest('.mobile-recommendation-slides')
+                || titleEl.parentElement;
+            const title = titleEl.textContent.trim();
+            if (!container || !title) return;
+            targets.push({
+                container,
+                title,
+                before: container.querySelector('.recommendation-copy')
+                    || container.querySelector('.price'),
+                after: container.querySelector('.steam-rating') || titleEl,
+            });
+        });
+        return targets;
+    }
+
+    function ensureSteamStoreLinks() {
+        getSteamStoreLinkTargets().forEach(target => {
+            ensureSteamStoreLink(target);
+        });
+    }
+
     function markVisibleGames() {
         document.querySelectorAll('.tier-item-view, .choice-content.js-open-choice-modal')
             .forEach(element => {
@@ -549,7 +669,9 @@
     }
 
     function refreshHelperPage(forcePriceReload = false) {
-        if (!ensureHelperControls()) return;
+        const controls = ensureHelperControls();
+        ensureSteamStoreLinks();
+        if (!controls) return;
         if (steamLoginRequired) ensureSteamLoginReminder();
         else document.getElementById('hb-helper-login-reminder')?.remove();
         markVisibleGames();
@@ -575,15 +697,17 @@
 
         try {
             [ownedApps, wishlistApps] = await Promise.all([fetchOwnedSet(), fetchWishlistSet()]);
+            steamLoginRequired = false;
         } catch (error) {
             console.warn('[HB-Helper] Fetch owned games failed:', error);
             steamLoginRequired = true;
             refreshHelperPage();
-            return;
         }
 
-        steamLoginRequired = false;
-        renderPriceTotals();
+        if (!steamLoginRequired) {
+            renderPriceTotals();
+        }
+
         refreshHelperPage();
     })();
 
@@ -839,7 +963,6 @@
 
         try {
             const humbleCurrencyCode = findHumbleCurrencyCode();
-            const steamCountryCode = await fetchSteamCountryCode();
             const resolvedGames = await Promise.all(titles.map(async title => {
                 const app = await findSteamApp(title);
                 return {title, appId: app?.appid || null};
@@ -848,6 +971,7 @@
                 !game.appId
                 || resolvedGames.findIndex(other => other.appId === game.appId) === index
             );
+            const steamCountryCode = await fetchSteamCountryCode();
             const appIds = games.map(game => game.appId).filter(Boolean);
             const pricesByAppId = new Map();
             for (const appId of appIds) {
