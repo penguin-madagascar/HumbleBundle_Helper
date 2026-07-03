@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.15
+// @version      0.0.16
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -73,15 +73,25 @@
       opacity: .9 !important;
     }
     .hb-helper-steam-store-link {
-      display: inline-block !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
       box-sizing: border-box !important;
       background: #1b75bb !important;
       color: #fff !important;
-      padding: 6px 10px !important;
+      min-height: 36px !important;
+      padding: 8px 14px !important;
       margin: 8px 0 !important;
       border-radius: 4px !important;
       text-decoration: none !important;
       font-weight: bold !important;
+      line-height: 1.2 !important;
+      cursor: pointer !important;
+    }
+    .hb-helper-steam-store-row {
+      box-sizing: border-box !important;
+      display: block !important;
+      margin-top: 8px !important;
     }
     .hb-helper-steam-store-link:hover {
       opacity: .9 !important;
@@ -565,15 +575,53 @@
         return Array.from(container.querySelectorAll('.hb-helper-steam-store-link'))[0] || null;
     }
 
+    function removeSteamStoreLink(link) {
+        const row = link.parentElement?.classList.contains('hb-helper-steam-store-row')
+            ? link.parentElement
+            : null;
+        link.remove();
+        if (row && row.children.length === 0) row.remove();
+    }
+
     function removeDuplicateSteamStoreLinks(container, keepLink) {
         Array.from(container.querySelectorAll('.hb-helper-steam-store-link'))
             .forEach(link => {
-                if (link !== keepLink) link.remove();
+                if (link !== keepLink) removeSteamStoreLink(link);
             });
     }
 
+    function getSteamStoreLinkRow(link) {
+        if (link.parentElement?.classList.contains('hb-helper-steam-store-row')) {
+            return link.parentElement;
+        }
+
+        const row = document.createElement('div');
+        row.className = 'hb-helper-steam-store-row';
+        row.appendChild(link);
+        return row;
+    }
+
     function insertSteamStoreLink(link, target) {
-        const {container, before, after} = target;
+        const {container, placementContainer, before, after} = target;
+        if (placementContainer) {
+            const row = getSteamStoreLinkRow(link);
+            if (after?.parentNode === placementContainer) {
+                if (after.nextElementSibling !== row) {
+                    after.insertAdjacentElement('afterend', row);
+                }
+            } else if (before?.parentNode === placementContainer) {
+                if (before.previousElementSibling !== row) {
+                    placementContainer.insertBefore(row, before);
+                }
+            } else if (row.parentNode !== placementContainer) {
+                placementContainer.appendChild(row);
+            }
+            return;
+        }
+
+        const previousRow = link.parentElement?.classList.contains('hb-helper-steam-store-row')
+            ? link.parentElement
+            : null;
         if (before?.parentNode === container) {
             if (before.previousElementSibling !== link) {
                 container.insertBefore(link, before);
@@ -585,6 +633,7 @@
         } else if (link.parentNode !== container) {
             container.appendChild(link);
         }
+        if (previousRow && previousRow.children.length === 0) previousRow.remove();
     }
 
     async function ensureSteamStoreLink(target) {
@@ -592,7 +641,7 @@
         const normalizedTitle = normalizeSteamTitle(title);
         let existingLink = getSteamStoreLink(container);
         if (existingLink?.dataset.hbHelperTitle !== normalizedTitle) {
-            existingLink.remove();
+            removeSteamStoreLink(existingLink);
             existingLink = null;
         }
 
@@ -612,16 +661,32 @@
         let link = getSteamStoreLink(container);
         if (!link) {
             link = document.createElement('a');
-            link.className = 'hb-helper-steam-store-link';
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            link.textContent = 'View on Steam';
         }
+        link.className = 'hb-helper-steam-store-link';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.setAttribute('role', 'button');
+        link.textContent = 'View on Steam';
         link.href = getSteamStoreUrl(app.appid);
         link.dataset.hbHelperTitle = normalizedTitle;
         link.dataset.hbHelperAppid = String(app.appid);
         removeDuplicateSteamStoreLinks(container, link);
         insertSteamStoreLink(link, target);
+    }
+
+    function findChoicePlatformPanel(scope) {
+        const candidates = Array.from(scope.querySelectorAll('div, section, article, aside'))
+            .filter(element => {
+                const text = normalizedText(element);
+                return /\bPLATFORM\b/i.test(text)
+                    && /OPERATING\s+SYSTEMS/i.test(text)
+                    && /\bSTEAM\b/i.test(text);
+            })
+            .sort((a, b) =>
+                normalizedText(a).length - normalizedText(b).length
+                || a.childElementCount - b.childElementCount
+            );
+        return candidates[0] || null;
     }
 
     function getSteamStoreLinkTargets() {
@@ -630,25 +695,36 @@
             const titleEl = container.querySelector('.item-title');
             const title = titleEl?.textContent.trim();
             if (!title) return;
+            const platformRows = Array.from(
+                container.querySelectorAll('.delivery-and-oses.icons-and-blurbs')
+            );
+            const lastPlatformRow = platformRows.at(-1);
             targets.push({
                 container,
                 title,
-                before: container.querySelector('section.description'),
-                after: titleEl,
+                placementContainer: lastPlatformRow?.parentElement || null,
+                after: lastPlatformRow || titleEl,
+                before: lastPlatformRow ? null : container.querySelector('section.description'),
             });
         });
 
         document.querySelectorAll('#site-modal .human-name-title').forEach(titleEl => {
             const container = titleEl.closest('.mobile-recommendation-slides')
+                || titleEl.closest('.humblemodal, [class*="modal"]')
                 || titleEl.parentElement;
             const title = titleEl.textContent.trim();
             if (!container || !title) return;
+            const platformPanel = findChoicePlatformPanel(container);
             targets.push({
                 container,
                 title,
-                before: container.querySelector('.recommendation-copy')
-                    || container.querySelector('.price'),
-                after: container.querySelector('.steam-rating') || titleEl,
+                placementContainer: platformPanel,
+                before: platformPanel
+                    ? null
+                    : container.querySelector('.recommendation-copy') || container.querySelector('.price'),
+                after: platformPanel
+                    ? null
+                    : container.querySelector('.steam-rating') || titleEl,
             });
         });
         return targets;
