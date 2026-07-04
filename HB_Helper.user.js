@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.20
+// @version      0.0.21
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -134,20 +134,20 @@
       cursor: default !important;
       opacity: 0.5 !important;
     }
-    .hb-helper-games-sort-heading {
+    .hb-helper-landing-sort-heading {
       display: inline-flex !important;
       align-items: center !important;
       margin-right: 12px !important;
       vertical-align: middle !important;
     }
-    #hb-helper-games-sort-controls {
+    .hb-helper-landing-sort-controls {
       display: inline-flex !important;
       align-items: center !important;
       flex-wrap: wrap !important;
       gap: 6px !important;
       vertical-align: middle !important;
     }
-    #hb-helper-games-sort-controls button {
+    .hb-helper-landing-sort-controls button {
       box-sizing: border-box !important;
       background: rgba(255, 255, 255, 0.12) !important;
       border: 1px solid rgba(255, 255, 255, 0.35) !important;
@@ -161,23 +161,23 @@
       min-height: 32px !important;
       padding: 6px 10px !important;
     }
-    #hb-helper-games-sort-controls button:hover {
+    .hb-helper-landing-sort-controls button:hover {
       background: rgba(255, 255, 255, 0.2) !important;
     }
-    #hb-helper-games-sort-controls button:focus-visible {
+    .hb-helper-landing-sort-controls button:focus-visible {
       outline: 2px solid currentColor !important;
       outline-offset: 2px !important;
     }
-    #hb-helper-games-sort-controls button.hb-helper-games-sort-active {
+    .hb-helper-landing-sort-controls button.hb-helper-landing-sort-active {
       background: rgba(255, 255, 255, 0.28) !important;
       border-color: currentColor !important;
     }
     @media (max-width: 640px) {
-      .hb-helper-games-sort-heading {
+      .hb-helper-landing-sort-heading {
         display: block !important;
         margin-right: 0 !important;
       }
-      #hb-helper-games-sort-controls {
+      .hb-helper-landing-sort-controls {
         display: flex !important;
         margin-bottom: 10px !important;
       }
@@ -253,16 +253,16 @@
     let bundleItemsByTitle;
     let steamAccountDataPromise;
     let pageRefreshTimer;
-    let gamesLandingRefreshTimer;
+    let landingSortRefreshTimer;
     let priceTotalsRunId = 0;
     let lastPriceTitlesKey = '';
     let lastPriceResult;
     let priceScope = 'all';
-    let gamesLandingSortMode = 'default';
+    const landingSortModeBySection = new Map();
     let steamLoginRequired = false;
     let ownedApps;
     let wishlistApps;
-    const gamesLandingSortModes = [
+    const landingSortModes = [
         {
             key: 'default',
             label: 'Default',
@@ -277,6 +277,32 @@
             key: 'newest',
             label: 'Newly Added',
             title: 'Sort bundles by newest start date',
+        },
+    ];
+    const landingSortSectionConfigs = [
+        {
+            sectionKey: 'games',
+            heading: 'Games',
+            dataKey: 'games',
+            mosaicSelector: '.js-games-mosaic',
+            pathPrefix: '/games/',
+            stamp: 'games',
+        },
+        {
+            sectionKey: 'books',
+            heading: 'Books',
+            dataKey: 'books',
+            mosaicSelector: '.js-books-mosaic',
+            pathPrefix: '/books/',
+            stamp: 'books',
+        },
+        {
+            sectionKey: 'software',
+            heading: 'Software',
+            dataKey: 'software',
+            mosaicSelector: '.js-software-mosaic',
+            pathPrefix: '/software/',
+            stamp: 'software',
         },
     ];
     const europeanSteamCountries = new Set([
@@ -452,12 +478,23 @@
         return document.title.trim();
     }
 
-    function isGamesLandingPage() {
-        return location.pathname === '/games' || location.pathname === '/games/';
+    function getCurrentPath() {
+        return location.pathname.replace(/\/$/, '') || '/';
+    }
+
+    function isLandingSortPage() {
+        return ['/bundles', '/games', '/books', '/software'].includes(getCurrentPath());
+    }
+
+    function getActiveLandingSortConfigs() {
+        const path = getCurrentPath();
+        if (path === '/bundles') return landingSortSectionConfigs;
+        const dataKey = path.slice(1);
+        return landingSortSectionConfigs.filter(config => config.dataKey === dataKey);
     }
 
     function isGamesBundlePage() {
-        return location.pathname.startsWith('/games/') && !isGamesLandingPage();
+        return location.pathname.startsWith('/games/') && getCurrentPath() !== '/games';
     }
 
     function isChoicePage() {
@@ -490,27 +527,28 @@
         return Number.isFinite(time) ? time : null;
     }
 
-    function getGamesLandingProductData() {
+    function getLandingPageData() {
         const dataElement = document.getElementById('landingPage-json-data');
         if (!dataElement) return null;
 
-        let pageData;
         try {
-            pageData = JSON.parse(dataElement.textContent);
+            return JSON.parse(dataElement.textContent);
         } catch (error) {
-            console.warn('[HB-Helper] Failed to parse Games landing data:', error);
+            console.warn('[HB-Helper] Failed to parse landing data:', error);
             return null;
         }
+    }
 
-        const sections = pageData?.data?.games?.mosaic;
+    function getLandingSortProductData(config) {
+        const sections = getLandingPageData()?.data?.[config.dataKey]?.mosaic;
         if (!Array.isArray(sections)) return null;
 
         const products = [];
         for (const section of sections) {
             for (const product of section.products || []) {
                 if (product?.type !== 'bundle'
-                    || product.tile_stamp !== 'games'
-                    || !String(product.product_url || '').startsWith('/games/')) {
+                    || product.tile_stamp !== config.stamp
+                    || !String(product.product_url || '').startsWith(config.pathPrefix)) {
                     continue;
                 }
                 products.push({
@@ -525,37 +563,44 @@
         return products.length > 1 ? products : null;
     }
 
-    function findGamesLandingSection() {
+    function findLandingSortSection(config) {
         return Array.from(document.querySelectorAll('.landing-mosaic-section'))
-            .find(section => findGamesLandingHeading(section)
-                && section.querySelector('.landing-page-mosaic .js-games-mosaic')) || null;
+            .find(section => findLandingSortHeading(section, config)
+                && section.querySelector(`.landing-page-mosaic ${config.mosaicSelector}`)) || null;
     }
 
-    function findGamesLandingHeading(section) {
+    function findLandingSortHeading(section, config) {
         return Array.from(section.querySelectorAll(':scope > h3'))
-            .find(heading => normalizedText(heading) === 'Games') || null;
+            .find(heading => normalizedText(heading) === config.heading) || null;
     }
 
-    function getGamesLandingTileEntries(section, productByUrl) {
+    function getLandingSortTileEntries(section, productByUrl) {
         return Array.from(section.querySelectorAll('.tile-holder.js-tile-holder'))
             .map((holder, domIndex) => {
+                if (!holder.dataset.hbHelperLandingOriginalIndex) {
+                    holder.dataset.hbHelperLandingOriginalIndex = String(domIndex);
+                }
                 const link = holder.matches('a[href]') ? holder : holder.querySelector('a[href]');
                 const product = productByUrl.get(normalizeHumblePath(link?.getAttribute('href')));
-                return product ? {holder, domIndex, product} : null;
-            })
-            .filter(Boolean);
+                const originalDomIndex = Number(holder.dataset.hbHelperLandingOriginalIndex);
+                return {
+                    holder,
+                    domIndex,
+                    originalDomIndex: Number.isFinite(originalDomIndex) ? originalDomIndex : domIndex,
+                    product,
+                };
+            });
     }
 
-    function getGamesLandingSortState() {
-        const section = findGamesLandingSection();
-        const products = getGamesLandingProductData();
+    function getLandingSortState(config) {
+        const section = findLandingSortSection(config);
+        const products = getLandingSortProductData(config);
         if (!section || !products) return null;
 
         const productByUrl = new Map(products.map(product => [product.productUrl, product]));
-        const entries = getGamesLandingTileEntries(section, productByUrl);
-        if (entries.length !== products.length) return null;
+        const entries = getLandingSortTileEntries(section, productByUrl);
 
-        return {section, entries};
+        return {config, section, products, entries};
     }
 
     function compareOptionalTime(a, b, direction) {
@@ -567,54 +612,87 @@
         return (a - b) * direction;
     }
 
-    function compareGamesLandingEntries(a, b) {
+    function getLandingSortMode(sectionKey) {
+        return landingSortModeBySection.get(sectionKey) || 'default';
+    }
+
+    function compareLandingSortEntries(a, b, mode) {
         let result = 0;
-        if (gamesLandingSortMode === 'ending') {
+        if (mode === 'ending') {
             result = compareOptionalTime(a.product.endTime, b.product.endTime, 1);
-        } else if (gamesLandingSortMode === 'newest') {
+        } else if (mode === 'newest') {
             result = compareOptionalTime(a.product.startTime, b.product.startTime, -1);
         }
 
         return result
             || a.product.originalIndex - b.product.originalIndex
-            || a.domIndex - b.domIndex;
+            || a.originalDomIndex - b.originalDomIndex;
     }
 
-    function renderGamesLandingSortControls() {
-        const controls = document.getElementById('hb-helper-games-sort-controls');
+    function getDefaultLandingSortIndex(entry) {
+        return entry.product ? entry.product.originalIndex : entry.originalDomIndex;
+    }
+
+    function getLandingSortDesiredEntries(state) {
+        const mode = getLandingSortMode(state.config.sectionKey);
+        if (mode === 'default') {
+            return [...state.entries].sort((a, b) =>
+                getDefaultLandingSortIndex(a) - getDefaultLandingSortIndex(b)
+                || a.originalDomIndex - b.originalDomIndex
+            );
+        }
+
+        const matchedEntries = state.entries
+            .filter(entry => entry.product)
+            .sort((a, b) => compareLandingSortEntries(a, b, mode));
+        const unmatchedEntries = state.entries
+            .filter(entry => !entry.product)
+            .sort((a, b) => a.originalDomIndex - b.originalDomIndex);
+        return matchedEntries.concat(unmatchedEntries);
+    }
+
+    function renderLandingSortControls(config) {
+        const controls = document.querySelector(
+            `.hb-helper-landing-sort-controls[data-hb-helper-sort-section="${config.sectionKey}"]`
+        );
         if (!controls) return;
 
-        gamesLandingSortModes.forEach(mode => {
+        const activeMode = getLandingSortMode(config.sectionKey);
+        landingSortModes.forEach(mode => {
             const button = controls.querySelector(`[data-hb-helper-sort="${mode.key}"]`);
             if (!button) return;
-            const isActive = mode.key === gamesLandingSortMode;
-            button.classList.toggle('hb-helper-games-sort-active', isActive);
+            const isActive = mode.key === activeMode;
+            button.classList.toggle('hb-helper-landing-sort-active', isActive);
             button.setAttribute('aria-pressed', String(isActive));
         });
     }
 
-    function ensureGamesLandingSortControls(section) {
-        const heading = findGamesLandingHeading(section);
+    function ensureLandingSortControls(state) {
+        const {config, section} = state;
+        const heading = findLandingSortHeading(section, config);
         if (!heading) return null;
-        heading.classList.add('hb-helper-games-sort-heading');
+        heading.classList.add('hb-helper-landing-sort-heading');
 
-        let controls = document.getElementById('hb-helper-games-sort-controls');
+        let controls = section.querySelector(
+            `.hb-helper-landing-sort-controls[data-hb-helper-sort-section="${config.sectionKey}"]`
+        );
         if (!controls) {
             controls = document.createElement('div');
-            controls.id = 'hb-helper-games-sort-controls';
+            controls.className = 'hb-helper-landing-sort-controls';
+            controls.dataset.hbHelperSortSection = config.sectionKey;
             controls.setAttribute('role', 'group');
-            controls.setAttribute('aria-label', 'Sort Games bundles');
+            controls.setAttribute('aria-label', `Sort ${config.heading} bundles`);
 
-            for (const mode of gamesLandingSortModes) {
+            for (const mode of landingSortModes) {
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.textContent = mode.label;
                 button.title = mode.title;
                 button.dataset.hbHelperSort = mode.key;
                 button.addEventListener('click', () => {
-                    gamesLandingSortMode = mode.key;
-                    renderGamesLandingSortControls();
-                    applyGamesLandingSort();
+                    landingSortModeBySection.set(config.sectionKey, mode.key);
+                    renderLandingSortControls(config);
+                    applyLandingSort(getLandingSortState(config));
                 });
                 controls.appendChild(button);
             }
@@ -623,12 +701,12 @@
         if (heading.nextElementSibling !== controls) {
             heading.insertAdjacentElement('afterend', controls);
         }
-        renderGamesLandingSortControls();
+        renderLandingSortControls(config);
         return controls;
     }
 
-    function getGamesLandingLayoutSlots(section) {
-        const layouts = Array.from(section.querySelectorAll('.mosaic-layout'))
+    function getLandingSortLayoutSlots(state) {
+        const layouts = Array.from(state.section.querySelectorAll('.mosaic-layout'))
             .map(layout => ({
                 container: layout,
                 count: layout.querySelectorAll(':scope > .tile-holder.js-tile-holder').length,
@@ -637,7 +715,7 @@
 
         if (layouts.length) return layouts;
 
-        const fallbackContainer = section.querySelector('.js-games-mosaic');
+        const fallbackContainer = state.section.querySelector(state.config.mosaicSelector);
         const fallbackCount = fallbackContainer
             ? fallbackContainer.querySelectorAll(':scope > .tile-holder.js-tile-holder').length
             : 0;
@@ -646,15 +724,14 @@
             : [];
     }
 
-    function applyGamesLandingSort(state = getGamesLandingSortState()) {
+    function applyLandingSort(state) {
         if (!state) return;
 
-        const sortedEntries = [...state.entries].sort(compareGamesLandingEntries);
-        const desiredHolders = sortedEntries.map(entry => entry.holder);
+        const desiredHolders = getLandingSortDesiredEntries(state).map(entry => entry.holder);
         const currentHolders = state.entries.map(entry => entry.holder);
         if (desiredHolders.every((holder, index) => holder === currentHolders[index])) return;
 
-        const slots = getGamesLandingLayoutSlots(state.section);
+        const slots = getLandingSortLayoutSlots(state);
         let holderIndex = 0;
         for (const slot of slots) {
             for (let i = 0; i < slot.count && holderIndex < desiredHolders.length; i++) {
@@ -664,29 +741,43 @@
         }
     }
 
-    function removeGamesLandingSortControls() {
-        document.getElementById('hb-helper-games-sort-controls')?.remove();
-        document.querySelector('.hb-helper-games-sort-heading')
-            ?.classList.remove('hb-helper-games-sort-heading');
+    function removeLandingSortControls(config) {
+        document.querySelectorAll(
+            `.hb-helper-landing-sort-controls[data-hb-helper-sort-section="${config.sectionKey}"]`
+        ).forEach(controls => controls.remove());
+        findLandingSortSection(config)?.querySelector('.hb-helper-landing-sort-heading')
+            ?.classList.remove('hb-helper-landing-sort-heading');
     }
 
-    function refreshGamesLandingPage() {
-        const state = getGamesLandingSortState();
-        if (!state) {
-            removeGamesLandingSortControls();
-            return;
+    function refreshLandingSortPage() {
+        const activeConfigs = getActiveLandingSortConfigs();
+        if (activeConfigs.length === 0) return;
+
+        const activeSectionKeys = new Set(activeConfigs.map(config => config.sectionKey));
+        document.querySelectorAll('.hb-helper-landing-sort-controls').forEach(controls => {
+            if (!activeSectionKeys.has(controls.dataset.hbHelperSortSection)) {
+                controls.remove();
+            }
+        });
+
+        for (const config of activeConfigs) {
+            const state = getLandingSortState(config);
+            if (!state) {
+                removeLandingSortControls(config);
+                continue;
+            }
+            ensureLandingSortControls(state);
+            applyLandingSort(state);
         }
-        ensureGamesLandingSortControls(state.section);
-        applyGamesLandingSort(state);
     }
 
-    function scheduleGamesLandingPageRefresh() {
-        clearTimeout(gamesLandingRefreshTimer);
-        gamesLandingRefreshTimer = setTimeout(refreshGamesLandingPage, 150);
+    function scheduleLandingSortPageRefresh() {
+        clearTimeout(landingSortRefreshTimer);
+        landingSortRefreshTimer = setTimeout(refreshLandingSortPage, 150);
     }
 
-    function observeGamesLandingPageChanges() {
-        const observer = new MutationObserver(() => scheduleGamesLandingPageRefresh());
+    function observeLandingSortPageChanges() {
+        const observer = new MutationObserver(() => scheduleLandingSortPageRefresh());
         observer.observe(document.body, {childList: true, subtree: true});
     }
 
@@ -1082,9 +1173,9 @@
     }
 
     (async function run() {
-        if (isGamesLandingPage()) {
-            observeGamesLandingPageChanges();
-            refreshGamesLandingPage();
+        if (isLandingSortPage()) {
+            observeLandingSortPageChanges();
+            refreshLandingSortPage();
             return;
         }
 
