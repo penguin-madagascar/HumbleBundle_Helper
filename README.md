@@ -18,6 +18,8 @@ download pages.
   currencies differ.
 - Adds sorting controls to Humble bundle landing pages for default order,
   bundles ending soon, and newly added bundles.
+- Adds Humble Choice controls for selecting games, revealing selected Steam
+  keys, and activating queued keys on Steam.
 - Supports game bundle pages and the Humble Choice membership page.
 - Shows Steam key activation restrictions on Humble download pages.
 - Supports English and Chinese script UI.
@@ -51,6 +53,12 @@ The price summary follows the active Bundle Filters. Use `Show unowned` or
 `Show all` in the top-right corner of the summary to change which games are
 included. If an item cannot be priced, expand the matching details to see
 whether Steam identification or regional price history is missing.
+
+On Humble Choice, use `Select` or `选择` to enter selection mode. In that mode,
+clicking a game tile toggles whether it is selected instead of opening the
+game details. Use `Select all` or `全选` to select all visible Choice games, and
+`Activate` or `激活` to reveal selected Steam keys and open Steam's key
+activation page. Log in to Steam in the same browser before activation.
 
 ## Data Sources
 
