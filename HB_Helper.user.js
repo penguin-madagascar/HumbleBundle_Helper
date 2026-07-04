@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.22
+// @version      0.0.23
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -10,6 +10,7 @@
 // @author       PenguinOfMadagascar
 // @license      MIT
 // @match        https://www.humblebundle.com/*
+// @run-at       document-start
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
@@ -135,20 +136,27 @@
       opacity: 0.5 !important;
     }
     .hb-helper-landing-sort-header {
+      box-sizing: border-box !important;
       display: flex !important;
       align-items: center !important;
-      flex-wrap: wrap !important;
+      flex-wrap: nowrap !important;
       gap: 12px !important;
       margin-bottom: 28px !important;
+      width: 100% !important;
     }
     .hb-helper-landing-sort-header > h3 {
+      flex: 1 1 auto !important;
       margin: 0 !important;
+      min-width: 0 !important;
     }
     .hb-helper-landing-sort-controls {
       display: inline-flex !important;
       align-items: center !important;
       flex-wrap: wrap !important;
+      flex: 0 0 auto !important;
       gap: 6px !important;
+      justify-content: flex-end !important;
+      margin-left: auto !important;
       vertical-align: middle !important;
     }
     .hb-helper-landing-sort-controls button {
@@ -177,8 +185,15 @@
       border-color: currentColor !important;
     }
     @media (max-width: 640px) {
+      .hb-helper-landing-sort-header {
+        align-items: flex-start !important;
+        flex-wrap: wrap !important;
+      }
       .hb-helper-landing-sort-controls {
         display: flex !important;
+        flex: 1 0 100% !important;
+        justify-content: flex-start !important;
+        margin-left: 0 !important;
         margin-bottom: 10px !important;
       }
     }
@@ -258,6 +273,8 @@
     let lastPriceTitlesKey = '';
     let lastPriceResult;
     let priceScope = 'all';
+    let landingPageDataCache;
+    let landingPageDataSourcePromise;
     const landingSortModeBySection = new Map();
     let steamLoginRequired = false;
     let ownedApps;
@@ -527,17 +544,71 @@
         return Number.isFinite(time) ? time : null;
     }
 
-    function getLandingPageData() {
-        const dataElement = document.getElementById('landingPage-json-data');
-        if (!dataElement) return null;
+    function hasLandingPageProductData(pageData) {
+        return landingSortSectionConfigs.some(config =>
+            Array.isArray(pageData?.data?.[config.dataKey]?.mosaic)
+        );
+    }
 
+    function parseLandingPageData(text, sourceLabel) {
         try {
-            return JSON.parse(dataElement.textContent);
+            const pageData = JSON.parse(text || '{}');
+            if (!hasLandingPageProductData(pageData)) return null;
+            landingPageDataCache = pageData;
+            return pageData;
         } catch (error) {
-            console.warn('[HB-Helper] Failed to parse landing data:', error);
+            console.warn(`[HB-Helper] Failed to parse landing data from ${sourceLabel}:`, error);
             return null;
         }
     }
+
+    function readLandingPageDataElement() {
+        const dataElement = document.getElementById('landingPage-json-data');
+        return dataElement ? parseLandingPageData(dataElement.textContent, 'document') : null;
+    }
+
+    function readLandingPageDataFromHtml(html) {
+        const match = String(html || '').match(
+            /<script id="landingPage-json-data" type="application\/json">\s*([\s\S]*?)\s*<\/script>/
+        );
+        return match ? parseLandingPageData(match[1], 'source') : null;
+    }
+
+    function loadLandingPageDataFromSource() {
+        if (landingPageDataSourcePromise) return landingPageDataSourcePromise;
+        landingPageDataSourcePromise = fetch(location.href, {credentials: 'include'})
+            .then(response => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.text();
+            })
+            .then(html => {
+                if (readLandingPageDataFromHtml(html)) scheduleLandingSortPageRefresh();
+            })
+            .catch(error => {
+                console.warn('[HB-Helper] Failed to load landing data source:', error);
+            });
+        return landingPageDataSourcePromise;
+    }
+
+    function getLandingPageData() {
+        const pageData = readLandingPageDataElement() || landingPageDataCache || null;
+        if (!pageData && isLandingSortPage()) loadLandingPageDataFromSource();
+        return pageData;
+    }
+
+    function observeLandingPageDataElement() {
+        if (!isLandingSortPage() || readLandingPageDataElement()) return;
+        const observer = new MutationObserver(() => {
+            if (readLandingPageDataElement()) observer.disconnect();
+        });
+        observer.observe(document.documentElement || document, {
+            childList: true,
+            characterData: true,
+            subtree: true,
+        });
+    }
+
+    observeLandingPageDataElement();
 
     function getLandingSortProductData(config) {
         const sections = getLandingPageData()?.data?.[config.dataKey]?.mosaic;
