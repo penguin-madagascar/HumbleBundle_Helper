@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.21
+// @version      0.0.22
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -134,11 +134,15 @@
       cursor: default !important;
       opacity: 0.5 !important;
     }
-    .hb-helper-landing-sort-heading {
-      display: inline-flex !important;
+    .hb-helper-landing-sort-header {
+      display: flex !important;
       align-items: center !important;
-      margin-right: 12px !important;
-      vertical-align: middle !important;
+      flex-wrap: wrap !important;
+      gap: 12px !important;
+      margin-bottom: 28px !important;
+    }
+    .hb-helper-landing-sort-header > h3 {
+      margin: 0 !important;
     }
     .hb-helper-landing-sort-controls {
       display: inline-flex !important;
@@ -173,10 +177,6 @@
       border-color: currentColor !important;
     }
     @media (max-width: 640px) {
-      .hb-helper-landing-sort-heading {
-        display: block !important;
-        margin-right: 0 !important;
-      }
       .hb-helper-landing-sort-controls {
         display: flex !important;
         margin-bottom: 10px !important;
@@ -229,7 +229,7 @@
       margin: 2px 0 0 20px !important;
       padding: 0 !important;
     }`;
-    document.head.appendChild(style);
+    (document.head || document.documentElement).appendChild(style);
 
     function normalizeSteamTitle(value) {
         return String(value)
@@ -570,7 +570,9 @@
     }
 
     function findLandingSortHeading(section, config) {
-        return Array.from(section.querySelectorAll(':scope > h3'))
+        return Array.from(section.querySelectorAll(
+            ':scope > h3, :scope > .hb-helper-landing-sort-header > h3'
+        ))
             .find(heading => normalizedText(heading) === config.heading) || null;
     }
 
@@ -671,11 +673,21 @@
         const {config, section} = state;
         const heading = findLandingSortHeading(section, config);
         if (!heading) return null;
-        heading.classList.add('hb-helper-landing-sort-heading');
 
-        let controls = section.querySelector(
-            `.hb-helper-landing-sort-controls[data-hb-helper-sort-section="${config.sectionKey}"]`
+        let header = section.querySelector(
+            `.hb-helper-landing-sort-header[data-hb-helper-sort-section="${config.sectionKey}"]`
         );
+        if (!header) {
+            header = document.createElement('div');
+            header.className = 'hb-helper-landing-sort-header';
+            header.dataset.hbHelperSortSection = config.sectionKey;
+            heading.insertAdjacentElement('beforebegin', header);
+            header.appendChild(heading);
+        } else if (heading.parentElement !== header) {
+            header.insertBefore(heading, header.firstChild);
+        }
+
+        let controls = header.querySelector('.hb-helper-landing-sort-controls');
         if (!controls) {
             controls = document.createElement('div');
             controls.className = 'hb-helper-landing-sort-controls';
@@ -698,8 +710,8 @@
             }
         }
 
-        if (heading.nextElementSibling !== controls) {
-            heading.insertAdjacentElement('afterend', controls);
+        if (controls.parentElement !== header) {
+            header.appendChild(controls);
         }
         renderLandingSortControls(config);
         return controls;
@@ -743,10 +755,15 @@
 
     function removeLandingSortControls(config) {
         document.querySelectorAll(
+            `.hb-helper-landing-sort-header[data-hb-helper-sort-section="${config.sectionKey}"]`
+        ).forEach(header => {
+            const heading = header.querySelector('h3');
+            if (heading) header.insertAdjacentElement('beforebegin', heading);
+            header.remove();
+        });
+        document.querySelectorAll(
             `.hb-helper-landing-sort-controls[data-hb-helper-sort-section="${config.sectionKey}"]`
         ).forEach(controls => controls.remove());
-        findLandingSortSection(config)?.querySelector('.hb-helper-landing-sort-heading')
-            ?.classList.remove('hb-helper-landing-sort-heading');
     }
 
     function refreshLandingSortPage() {
@@ -1172,7 +1189,7 @@
         document.addEventListener('change', () => schedulePageRefresh(), true);
     }
 
-    (async function run() {
+    async function run() {
         if (isLandingSortPage()) {
             observeLandingSortPageChanges();
             refreshLandingSortPage();
@@ -1197,7 +1214,17 @@
         }
 
         refreshHelperPage();
-    })();
+    }
+
+    function startHelper() {
+        if (!document.body) {
+            document.addEventListener('DOMContentLoaded', startHelper, {once: true});
+            return;
+        }
+        run();
+    }
+
+    startHelper();
 
     function gmRequest(url, responseType = 'json', options = {}) {
         return new Promise((resolve, reject) => {
@@ -1406,24 +1433,41 @@
         const priceRegion = currencyCode ? `${region}, ${currencyCode}` : region;
         const scope = priceScope === 'all' ? 'all items' : 'unowned items';
 
-        summary.innerHTML = `
-            <div class="hb-helper-price-header">
-                <div class="hb-helper-price-title">
-                    Steam price totals (${priceRegion})
-                </div>
-                <button id="hb-helper-price-scope" type="button"
-                    title="${scopeDescription}" ${canFilterOwned ? '' : 'disabled'}>
-                    ${scopeLabel}
-                </button>
-            </div>
-            <div>Current: <span class="hb-helper-price-value">${formatTotal(totals.current)}</span></div>
-            <div>Original: <span class="hb-helper-price-value">${formatTotal(totals.original)}</span></div>
-            <div>Historical low: <span class="hb-helper-price-value">${formatTotal(totals.lowest)}</span></div>
-            <div>${matchedGames.length}/${selectedGames.length} Steam items identified (${scope})</div>
-            <div>${pricedGames.length}/${matchedGames.length} identified items have price history</div>`;
+        summary.textContent = '';
+        const header = document.createElement('div');
+        header.className = 'hb-helper-price-header';
+        const title = document.createElement('div');
+        title.className = 'hb-helper-price-title';
+        title.textContent = `Steam price totals (${priceRegion})`;
+        const scopeButton = document.createElement('button');
+        scopeButton.id = 'hb-helper-price-scope';
+        scopeButton.type = 'button';
+        scopeButton.title = scopeDescription;
+        scopeButton.disabled = !canFilterOwned;
+        scopeButton.textContent = scopeLabel;
+        header.append(title, scopeButton);
+        summary.appendChild(header);
+
+        const addPriceLine = (label, value) => {
+            const row = document.createElement('div');
+            const price = document.createElement('span');
+            price.className = 'hb-helper-price-value';
+            price.textContent = value;
+            row.append(`${label}: `, price);
+            summary.appendChild(row);
+        };
+        addPriceLine('Current', formatTotal(totals.current));
+        addPriceLine('Original', formatTotal(totals.original));
+        addPriceLine('Historical low', formatTotal(totals.lowest));
+
+        const matchedLine = document.createElement('div');
+        matchedLine.textContent = `${matchedGames.length}/${selectedGames.length} Steam items identified (${scope})`;
+        const pricedLine = document.createElement('div');
+        pricedLine.textContent = `${pricedGames.length}/${matchedGames.length} identified items have price history`;
+        summary.append(matchedLine, pricedLine);
         appendMatchDetails(summary, unmatchedGames, unpricedGames);
 
-        summary.querySelector('#hb-helper-price-scope')?.addEventListener('click', () => {
+        scopeButton.addEventListener('click', () => {
             priceScope = priceScope === 'all' ? 'unowned' : 'all';
             renderPriceTotals();
         });
