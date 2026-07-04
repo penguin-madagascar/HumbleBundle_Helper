@@ -20,6 +20,7 @@ download pages.
   bundles ending soon, and newly added bundles.
 - Supports game bundle pages and the Humble Choice membership page.
 - Shows Steam key activation restrictions on Humble download pages.
+- Supports English and Chinese script UI.
 
 ## Installation
 
@@ -32,6 +33,10 @@ download pages.
 Steam Store links use public Steam search and work without logging in to Steam.
 Log in to Steam in the same browser before opening Humble Bundle to enable
 owned-game checks, wishlist checks, and regional prices.
+
+The script follows your browser language by default. Open the Tampermonkey
+script menu on a Humble Bundle page, choose `Settings` or `设置`, and change
+the language in the settings dialog.
 
 On a game bundle page, the controls appear above
 `Pay at least [price] for these [number] items`. On Humble Choice, they appear

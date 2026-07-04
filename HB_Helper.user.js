@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.23
+// @version      0.0.24
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -13,6 +13,7 @@
 // @run-at       document-start
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @connect      store.steampowered.com
 // @connect      steamcommunity.com
@@ -243,8 +244,266 @@
     #hb-helper-price-summary .hb-helper-match-group ul {
       margin: 2px 0 0 20px !important;
       padding: 0 !important;
+    }
+    #hb-helper-settings-dialog {
+      box-sizing: border-box !important;
+      border: 0 !important;
+      border-radius: 8px !important;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28) !important;
+      color: #222 !important;
+      font: 14px/1.4 Arial, sans-serif !important;
+      max-width: min(420px, calc(100vw - 32px)) !important;
+      padding: 20px !important;
+      width: 420px !important;
+    }
+    #hb-helper-settings-dialog::backdrop {
+      background: rgba(0, 0, 0, 0.38) !important;
+    }
+    #hb-helper-settings-dialog h2 {
+      font-size: 18px !important;
+      line-height: 1.3 !important;
+      margin: 0 0 16px !important;
+    }
+    #hb-helper-settings-dialog .hb-helper-settings-row {
+      display: grid !important;
+      gap: 6px !important;
+      margin-bottom: 18px !important;
+    }
+    #hb-helper-settings-dialog label {
+      font-weight: 700 !important;
+    }
+    #hb-helper-settings-dialog select {
+      box-sizing: border-box !important;
+      font: inherit !important;
+      min-height: 36px !important;
+      padding: 6px 8px !important;
+      width: 100% !important;
+    }
+    #hb-helper-settings-dialog .hb-helper-settings-actions {
+      display: flex !important;
+      gap: 8px !important;
+      justify-content: flex-end !important;
+    }
+    #hb-helper-settings-dialog button {
+      box-sizing: border-box !important;
+      cursor: pointer !important;
+      font: inherit !important;
+      min-height: 34px !important;
+      padding: 6px 12px !important;
     }`;
     (document.head || document.documentElement).appendChild(style);
+
+    const languageValueKey = 'hb-helper-language-v1';
+    const languageSettings = ['auto', 'en', 'zh-CN'];
+    const messages = {
+        en: {
+            settingsMenu: 'Settings',
+            settingsTitle: 'Humble Bundle Helper Settings',
+            languageLabel: 'Language',
+            languageAuto: 'Follow browser',
+            languageEnglish: 'English',
+            languageChinese: '中文',
+            cancel: 'Cancel',
+            save: 'Save',
+            landingDefaultLabel: 'Default',
+            landingDefaultTitle: 'Use Humble Bundle default order',
+            landingEndingLabel: 'Ending Soon',
+            landingEndingTitle: 'Sort bundles by nearest end date',
+            landingNewestLabel: 'Newly Added',
+            landingNewestTitle: 'Sort bundles by newest start date',
+            landingSortAria: 'Sort {heading} bundles',
+            loginSteamLoadAccountData: 'Login to Steam to load account data',
+            steamInvalidAccountData: 'Steam returned invalid account data',
+            steamGiftsSearch: 'Search SteamGifts discussions (for potential region lock)',
+            loadingPriceTotals: 'Loading Steam price totals...',
+            loginSteamCheckOwned: 'Login to Steam to check owned games',
+            refreshAfterLogin: 'Please refresh this page after login',
+            viewOnSteam: 'View on Steam',
+            requestFailedHttp: 'Request failed with HTTP {status}',
+            networkRequestFailed: 'Network request failed',
+            xiaoheiheNoPrice: 'Xiaoheihe has no {region} price for Steam app {appId}',
+            xiaoheiheInvalidPrice: 'Invalid Xiaoheihe price for Steam app {appId}',
+            invalidExchangeRate: 'Invalid Frankfurter exchange rate',
+            steamItemNotFound: 'Steam item not found',
+            regionalPriceUnavailable: 'Regional price unavailable',
+            showUnpricedItems: ({count}) =>
+                `Show ${count} unpriced item${count === 1 ? '' : 's'}`,
+            unavailable: 'Unavailable',
+            hbPrice: 'HB: {price}',
+            showUnowned: 'Show unowned',
+            showAll: 'Show all',
+            togglePriceScope: 'Toggle between all games and games not owned on Steam',
+            loginFilterOwned: 'Login to Steam to filter out owned games',
+            allItems: 'all items',
+            unownedItems: 'unowned items',
+            priceTotalsTitle: 'Steam price totals ({priceRegion})',
+            currentPrice: 'Current',
+            originalPrice: 'Original',
+            historicalLow: 'Historical low',
+            matchedItems: '{matched}/{selected} Steam items identified ({scope})',
+            pricedItems: '{priced}/{matched} identified items have price history',
+            noRegionRestrictions: 'No Region Restrictions',
+            exclusiveCountries: 'Exclusive countries: {countries}',
+            disallowedCountries: 'Disallowed countries: {countries}',
+        },
+        'zh-CN': {
+            settingsMenu: '设置',
+            settingsTitle: 'Humble Bundle Helper 设置',
+            languageLabel: '语言',
+            languageAuto: '跟随浏览器',
+            languageEnglish: 'English',
+            languageChinese: '中文',
+            cancel: '取消',
+            save: '保存',
+            landingDefaultLabel: '默认',
+            landingDefaultTitle: '使用 Humble Bundle 默认排序',
+            landingEndingLabel: '即将结束',
+            landingEndingTitle: '按最近结束时间排序慈善包',
+            landingNewestLabel: '最新添加',
+            landingNewestTitle: '按最新开始时间排序慈善包',
+            landingSortAria: '排序 {heading} 慈善包',
+            loginSteamLoadAccountData: '登录 Steam 后才能加载账号数据',
+            steamInvalidAccountData: 'Steam 返回了无效的账号数据',
+            steamGiftsSearch: '搜索 SteamGifts 讨论（查看可能的区域限制）',
+            loadingPriceTotals: '正在加载 Steam 价格汇总...',
+            loginSteamCheckOwned: '登录 Steam 以检查已拥有游戏',
+            refreshAfterLogin: '登录后请刷新此页面',
+            viewOnSteam: '在 Steam 中查看',
+            requestFailedHttp: '请求失败，HTTP 状态码 {status}',
+            networkRequestFailed: '网络请求失败',
+            xiaoheiheNoPrice: '小黑盒没有 Steam 应用 {appId} 的 {region} 区价格',
+            xiaoheiheInvalidPrice: 'Steam 应用 {appId} 的小黑盒价格无效',
+            invalidExchangeRate: 'Frankfurter 汇率无效',
+            steamItemNotFound: '未找到 Steam 项目',
+            regionalPriceUnavailable: '区域价格不可用',
+            showUnpricedItems: ({count}) => `显示 ${count} 个无法定价的项目`,
+            unavailable: '不可用',
+            hbPrice: 'HB：{price}',
+            showUnowned: '显示未拥有',
+            showAll: '显示全部',
+            togglePriceScope: '在所有游戏和 Steam 未拥有游戏之间切换',
+            loginFilterOwned: '登录 Steam 后可过滤已拥有游戏',
+            allItems: '全部项目',
+            unownedItems: '未拥有项目',
+            priceTotalsTitle: 'Steam 价格汇总（{priceRegion}）',
+            currentPrice: '当前价格',
+            originalPrice: '原价',
+            historicalLow: '史低价格',
+            matchedItems: '已识别 {matched}/{selected} 个 Steam 项目（{scope}）',
+            pricedItems: '{matched} 个已识别项目中有 {priced} 个包含价格历史',
+            noRegionRestrictions: '无区域限制',
+            exclusiveCountries: '仅限国家/地区：{countries}',
+            disallowedCountries: '禁止激活国家/地区：{countries}',
+        },
+    };
+
+    function getBrowserLanguage() {
+        const languages = Array.isArray(navigator.languages) && navigator.languages.length
+            ? navigator.languages
+            : [navigator.language];
+        return languages.some(language => String(language || '').toLowerCase().startsWith('zh'))
+            ? 'zh-CN'
+            : 'en';
+    }
+
+    function getLanguageSetting() {
+        const savedLanguage = GM_getValue(languageValueKey, 'auto');
+        return languageSettings.includes(savedLanguage) ? savedLanguage : 'auto';
+    }
+
+    function getCurrentLanguage() {
+        const languageSetting = getLanguageSetting();
+        return languageSetting === 'auto' ? getBrowserLanguage() : languageSetting;
+    }
+
+    const currentLanguage = getCurrentLanguage();
+
+    function t(key, values = {}) {
+        const message = messages[currentLanguage]?.[key] ?? messages.en[key] ?? key;
+        const template = typeof message === 'function' ? message(values) : message;
+        return String(template).replace(/\{(\w+)\}/g, (match, name) =>
+            Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
+        );
+    }
+
+    function saveSettingsDialog(event) {
+        event.preventDefault();
+        const languageSelect = document.getElementById('hb-helper-settings-language');
+        const languageSetting = languageSettings.includes(languageSelect?.value)
+            ? languageSelect.value
+            : 'auto';
+        GM_setValue(languageValueKey, languageSetting);
+        location.reload();
+    }
+
+    function createSettingsDialog() {
+        const dialog = document.createElement('dialog');
+        dialog.id = 'hb-helper-settings-dialog';
+
+        const form = document.createElement('form');
+        form.addEventListener('submit', saveSettingsDialog);
+
+        const title = document.createElement('h2');
+        title.textContent = t('settingsTitle');
+
+        const row = document.createElement('div');
+        row.className = 'hb-helper-settings-row';
+
+        const label = document.createElement('label');
+        label.htmlFor = 'hb-helper-settings-language';
+        label.textContent = t('languageLabel');
+
+        const languageSelect = document.createElement('select');
+        languageSelect.id = 'hb-helper-settings-language';
+        [
+            ['auto', t('languageAuto')],
+            ['en', t('languageEnglish')],
+            ['zh-CN', t('languageChinese')],
+        ].forEach(([value, labelText]) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = labelText;
+            languageSelect.appendChild(option);
+        });
+
+        row.append(label, languageSelect);
+
+        const actions = document.createElement('div');
+        actions.className = 'hb-helper-settings-actions';
+
+        const cancelButton = document.createElement('button');
+        cancelButton.type = 'button';
+        cancelButton.textContent = t('cancel');
+        cancelButton.addEventListener('click', () => dialog.close());
+
+        const saveButton = document.createElement('button');
+        saveButton.type = 'submit';
+        saveButton.textContent = t('save');
+
+        actions.append(cancelButton, saveButton);
+        form.append(title, row, actions);
+        dialog.appendChild(form);
+        (document.body || document.documentElement).appendChild(dialog);
+        return dialog;
+    }
+
+    function openSettingsDialog() {
+        const dialog = document.getElementById('hb-helper-settings-dialog')
+            || createSettingsDialog();
+        const languageSelect = dialog.querySelector('#hb-helper-settings-language');
+        if (languageSelect) languageSelect.value = getLanguageSetting();
+        if (!dialog.open && typeof dialog.showModal === 'function') {
+            dialog.showModal();
+        } else {
+            dialog.setAttribute('open', '');
+        }
+    }
+
+    function registerSettingsMenuCommand() {
+        GM_registerMenuCommand(t('settingsMenu'), openSettingsDialog);
+    }
+
+    registerSettingsMenuCommand();
 
     function normalizeSteamTitle(value) {
         return String(value)
@@ -282,18 +541,18 @@
     const landingSortModes = [
         {
             key: 'default',
-            label: 'Default',
-            title: 'Use Humble Bundle default order',
+            labelKey: 'landingDefaultLabel',
+            titleKey: 'landingDefaultTitle',
         },
         {
             key: 'ending',
-            label: 'Ending Soon',
-            title: 'Sort bundles by nearest end date',
+            labelKey: 'landingEndingLabel',
+            titleKey: 'landingEndingTitle',
         },
         {
             key: 'newest',
-            label: 'Newly Added',
-            title: 'Sort bundles by newest start date',
+            labelKey: 'landingNewestLabel',
+            titleKey: 'landingNewestTitle',
         },
     ];
     const landingSortSectionConfigs = [
@@ -445,7 +704,7 @@
                     const userInfoText = steamPage.querySelector('#application_config')
                         ?.getAttribute('data-userinfo');
                     const userInfo = JSON.parse(userInfoText || '{}');
-                    if (!userInfo.logged_in) throw new Error('Login to Steam to load account data');
+                    if (!userInfo.logged_in) throw new Error(t('loginSteamLoadAccountData'));
 
                     const userData = await gmRequest(
                         `https://store.steampowered.com/dynamicstore/userdata/?_=${Date.now()}`,
@@ -457,7 +716,7 @@
                     );
                     if (!Array.isArray(userData?.rgOwnedApps)
                         || !Array.isArray(userData?.rgWishlist)) {
-                        throw new Error('Steam returned invalid account data');
+                        throw new Error(t('steamInvalidAccountData'));
                     }
 
                     const data = {
@@ -764,13 +1023,13 @@
             controls.className = 'hb-helper-landing-sort-controls';
             controls.dataset.hbHelperSortSection = config.sectionKey;
             controls.setAttribute('role', 'group');
-            controls.setAttribute('aria-label', `Sort ${config.heading} bundles`);
+            controls.setAttribute('aria-label', t('landingSortAria', {heading: config.heading}));
 
             for (const mode of landingSortModes) {
                 const button = document.createElement('button');
                 button.type = 'button';
-                button.textContent = mode.label;
-                button.title = mode.title;
+                button.textContent = t(mode.labelKey);
+                button.title = t(mode.titleKey);
                 button.dataset.hbHelperSort = mode.key;
                 button.addEventListener('click', () => {
                     landingSortModeBySection.set(config.sectionKey, mode.key);
@@ -988,16 +1247,17 @@
             link.id = 'hb-helper-steamgifts-link';
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
-            link.textContent = 'Search SteamGifts discussions (for potential region lock)';
             steamGifts.appendChild(link);
         }
-        steamGifts.querySelector('#hb-helper-steamgifts-link').href = buildSteamGiftsSearchUrl();
+        const steamGiftsLink = steamGifts.querySelector('#hb-helper-steamgifts-link');
+        steamGiftsLink.textContent = t('steamGiftsSearch');
+        steamGiftsLink.href = buildSteamGiftsSearchUrl();
 
         let summary = document.getElementById('hb-helper-price-summary');
         if (!summary) {
             summary = document.createElement('div');
             summary.id = 'hb-helper-price-summary';
-            summary.textContent = 'Loading Steam price totals...';
+            summary.textContent = t('loadingPriceTotals');
         }
 
         if (steamGifts.parentNode !== controls) controls.appendChild(steamGifts);
@@ -1024,18 +1284,18 @@
             loginDiv.id = 'hb-helper-login-reminder';
             const loginLink = document.createElement('a');
             loginLink.href = 'https://store.steampowered.com/login/';
-            loginLink.textContent = 'Login to Steam to check owned games';
             loginLink.target = '_blank';
             loginLink.rel = 'noopener noreferrer';
             loginLink.addEventListener('click', () => {
                 if (loginDiv.querySelector('.hb-helper-login-message')) return;
                 const message = document.createElement('div');
                 message.className = 'hb-helper-login-message';
-                message.textContent = 'Please refresh this page after login';
+                message.textContent = t('refreshAfterLogin');
                 loginDiv.appendChild(message);
             });
             loginDiv.appendChild(loginLink);
         }
+        loginDiv.querySelector('a').textContent = t('loginSteamCheckOwned');
         if (loginDiv.parentNode !== controls || controls.firstElementChild !== loginDiv) {
             controls.insertBefore(loginDiv, controls.firstChild);
         }
@@ -1136,7 +1396,7 @@
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         link.setAttribute('role', 'button');
-        link.textContent = 'View on Steam';
+        link.textContent = t('viewOnSteam');
         link.href = getSteamStoreUrl(app.appid);
         link.dataset.hbHelperTitle = normalizedTitle;
         link.dataset.hbHelperAppid = String(app.appid);
@@ -1306,12 +1566,12 @@
                 ...options,
                 onload: ({status, response, responseText}) => {
                     if (status !== 200) {
-                        reject(new Error(`Request failed with HTTP ${status}`));
+                        reject(new Error(t('requestFailedHttp', {status})));
                         return;
                     }
                     resolve(responseType === 'json' ? response : responseText || response);
                 },
-                onerror: () => reject(new Error('Network request failed')),
+                onerror: () => reject(new Error(t('networkRequestFailed'))),
             });
         });
     }
@@ -1345,7 +1605,7 @@
             );
             const prices = data.result?.prices;
             if (data.status !== 'ok' || !prices?.length) {
-                throw new Error(`Xiaoheihe has no ${steamCountryCode} price for Steam app ${appId}`);
+                throw new Error(t('xiaoheiheNoPrice', {region: steamCountryCode, appId}));
             }
 
             const latest = prices.at(-1);
@@ -1360,7 +1620,7 @@
             const price = {current, original, lowest, currency: latest.currency};
             if (Object.values(price).some(value => value === undefined || value === null)
                 || [current, original, lowest].some(value => !Number.isFinite(value))) {
-                throw new Error(`Invalid Xiaoheihe price for Steam app ${appId}`);
+                throw new Error(t('xiaoheiheInvalidPrice', {appId}));
             }
             return price;
         })();
@@ -1382,7 +1642,7 @@
             `https://api.frankfurter.dev/v2/rate/${baseCurrency}/${quoteCurrency}`
         ).then(data => {
             const rate = Number(data.rate);
-            if (!Number.isFinite(rate)) throw new Error('Invalid Frankfurter exchange rate');
+            if (!Number.isFinite(rate)) throw new Error(t('invalidExchangeRate'));
             return rate;
         });
         exchangeRateCache.set(cacheKey, request);
@@ -1432,7 +1692,7 @@
     }
 
     function formatPrice(value, currencyCode) {
-        return new Intl.NumberFormat('zh-CN', {
+        return new Intl.NumberFormat(currentLanguage === 'zh-CN' ? 'zh-CN' : 'en-US', {
             style: 'currency',
             currency: currencyCode,
         }).format(value);
@@ -1440,8 +1700,8 @@
 
     function appendMatchDetails(summary, unmatchedGames, unpricedGames) {
         const groups = [
-            ['Steam item not found', unmatchedGames],
-            ['Regional price unavailable', unpricedGames],
+            [t('steamItemNotFound'), unmatchedGames],
+            [t('regionalPriceUnavailable'), unpricedGames],
         ].filter(([, games]) => games.length > 0);
         if (groups.length === 0) return;
 
@@ -1449,7 +1709,7 @@
         details.className = 'hb-helper-match-details';
         const detailsSummary = document.createElement('summary');
         const missingCount = groups.reduce((total, [, games]) => total + games.length, 0);
-        detailsSummary.textContent = `Show ${missingCount} unpriced item${missingCount === 1 ? '' : 's'}`;
+        detailsSummary.textContent = t('showUnpricedItems', {count: missingCount});
         details.appendChild(detailsSummary);
 
         for (const [label, games] of groups) {
@@ -1492,24 +1752,26 @@
             lowest: total.lowest + game.price.lowest,
         }), {current: 0, original: 0, lowest: 0});
         const formatTotal = value => {
-            if (!currencyCode || pricedGames.length === 0) return 'Unavailable';
+            if (!currencyCode || pricedGames.length === 0) return t('unavailable');
             const steamPrice = formatPrice(value, currencyCode);
             if (!humbleCurrencyCode || !exchangeRate) return steamPrice;
-            return `${steamPrice} (HB: ${formatPrice(value * exchangeRate, humbleCurrencyCode)})`;
+            return `${steamPrice} (${t('hbPrice', {
+                price: formatPrice(value * exchangeRate, humbleCurrencyCode),
+            })})`;
         };
-        const scopeLabel = priceScope === 'all' ? 'Show unowned' : 'Show all';
+        const scopeLabel = priceScope === 'all' ? t('showUnowned') : t('showAll');
         const scopeDescription = canFilterOwned
-            ? 'Toggle between all games and games not owned on Steam'
-            : 'Login to Steam to filter out owned games';
+            ? t('togglePriceScope')
+            : t('loginFilterOwned');
         const priceRegion = currencyCode ? `${region}, ${currencyCode}` : region;
-        const scope = priceScope === 'all' ? 'all items' : 'unowned items';
+        const scope = priceScope === 'all' ? t('allItems') : t('unownedItems');
 
         summary.textContent = '';
         const header = document.createElement('div');
         header.className = 'hb-helper-price-header';
         const title = document.createElement('div');
         title.className = 'hb-helper-price-title';
-        title.textContent = `Steam price totals (${priceRegion})`;
+        title.textContent = t('priceTotalsTitle', {priceRegion});
         const scopeButton = document.createElement('button');
         scopeButton.id = 'hb-helper-price-scope';
         scopeButton.type = 'button';
@@ -1527,14 +1789,21 @@
             row.append(`${label}: `, price);
             summary.appendChild(row);
         };
-        addPriceLine('Current', formatTotal(totals.current));
-        addPriceLine('Original', formatTotal(totals.original));
-        addPriceLine('Historical low', formatTotal(totals.lowest));
+        addPriceLine(t('currentPrice'), formatTotal(totals.current));
+        addPriceLine(t('originalPrice'), formatTotal(totals.original));
+        addPriceLine(t('historicalLow'), formatTotal(totals.lowest));
 
         const matchedLine = document.createElement('div');
-        matchedLine.textContent = `${matchedGames.length}/${selectedGames.length} Steam items identified (${scope})`;
+        matchedLine.textContent = t('matchedItems', {
+            matched: matchedGames.length,
+            selected: selectedGames.length,
+            scope,
+        });
         const pricedLine = document.createElement('div');
-        pricedLine.textContent = `${pricedGames.length}/${matchedGames.length} identified items have price history`;
+        pricedLine.textContent = t('pricedItems', {
+            priced: pricedGames.length,
+            matched: matchedGames.length,
+        });
         summary.append(matchedLine, pricedLine);
         appendMatchDetails(summary, unmatchedGames, unpricedGames);
 
@@ -1561,7 +1830,7 @@
     async function loadPriceTotals(titles) {
         const runId = ++priceTotalsRunId;
         const summary = document.getElementById('hb-helper-price-summary');
-        if (summary) summary.textContent = 'Loading Steam price totals...';
+        if (summary) summary.textContent = t('loadingPriceTotals');
         lastPriceResult = null;
 
         try {
@@ -1685,13 +1954,17 @@
         // Region Restriction Check: Determine activation possibility for the current user
         const restrictionInfo = document.createElement('span');
         if (productInfo.exclusive_countries.length === 0 && productInfo.disallowed_countries.length === 0) {
-            restrictionInfo.textContent = `No Region Restrictions`;
+            restrictionInfo.textContent = t('noRegionRestrictions');
             restrictionInfo.setAttribute('style', `color:green; font-weight: bold; word-wrap:break-word; overflow:hidden;`);
         } else if (productInfo.exclusive_countries.length > 0) {
-            restrictionInfo.textContent = `Exclusive countries: ${productInfo.exclusive_countries}`;
+            restrictionInfo.textContent = t('exclusiveCountries', {
+                countries: productInfo.exclusive_countries,
+            });
             restrictionInfo.setAttribute('style', `color:red; font-weight: bold; word-wrap:break-word; overflow:hidden;`);
         } else if (productInfo.disallowed_countries.length > 0) {
-            restrictionInfo.textContent = `Disallowed countries: ${productInfo.disallowed_countries}`;
+            restrictionInfo.textContent = t('disallowedCountries', {
+                countries: productInfo.disallowed_countries,
+            });
             restrictionInfo.setAttribute('style', `color:red; font-weight: bold; word-wrap:break-word; overflow:hidden;`);
         }
 
