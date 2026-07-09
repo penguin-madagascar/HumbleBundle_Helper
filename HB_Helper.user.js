@@ -154,8 +154,7 @@
     }
     #hb-helper-choice-activation-controls button {
       box-sizing: border-box !important;
-      background: rgba(255, 255, 255, 0.15) !important;
-      border: 1px solid rgba(255, 255, 255, 0.4) !important;
+      border: 1px solid transparent !important;
       border-radius: 4px !important;
       color: #fff !important;
       cursor: pointer !important;
@@ -164,8 +163,33 @@
       min-height: 32px !important;
       padding: 5px 10px !important;
     }
-    #hb-helper-choice-activation-controls button:hover:not(:disabled) {
-      background: rgba(255, 255, 255, 0.25) !important;
+    #hb-helper-choice-activation-controls button[data-hb-helper-choice-action="activate"] {
+      background: rgba(35, 134, 54, 0.92) !important;
+      border-color: rgba(93, 190, 117, 0.9) !important;
+    }
+    #hb-helper-choice-activation-controls button[data-hb-helper-choice-action="activate"]:hover:not(:disabled) {
+      background: rgba(46, 160, 67, 0.96) !important;
+    }
+    #hb-helper-choice-activation-controls button[data-hb-helper-choice-action="select-unowned"] {
+      background: rgba(9, 105, 218, 0.92) !important;
+      border-color: rgba(84, 174, 255, 0.9) !important;
+    }
+    #hb-helper-choice-activation-controls button[data-hb-helper-choice-action="select-unowned"]:hover:not(:disabled) {
+      background: rgba(31, 111, 235, 0.96) !important;
+    }
+    #hb-helper-choice-activation-controls button[data-hb-helper-choice-action="select"] {
+      background: rgba(111, 66, 193, 0.92) !important;
+      border-color: rgba(163, 113, 247, 0.9) !important;
+    }
+    #hb-helper-choice-activation-controls button[data-hb-helper-choice-action="select"]:hover:not(:disabled) {
+      background: rgba(130, 80, 223, 0.96) !important;
+    }
+    #hb-helper-choice-activation-controls button[data-hb-helper-choice-action="clear"] {
+      background: rgba(207, 34, 46, 0.92) !important;
+      border-color: rgba(255, 129, 130, 0.9) !important;
+    }
+    #hb-helper-choice-activation-controls button[data-hb-helper-choice-action="clear"]:hover:not(:disabled) {
+      background: rgba(218, 54, 51, 0.96) !important;
     }
     #hb-helper-choice-activation-controls button:disabled {
       cursor: default !important;
@@ -409,9 +433,10 @@
             matchedItems: '{matched}/{selected} Steam items identified ({scope})',
             pricedItems: '{priced}/{matched} identified items have price history',
             choiceActivate: 'Activate',
-            choiceSelectAll: 'Select all',
+            choiceSelectUnowned: 'Select unowned',
             choiceSelect: 'Select',
             choiceSelectDone: 'Done',
+            choiceClearSelection: 'Clear',
             choiceSelectedCount: '{count} selected',
             choiceNoSelection: 'Select at least one Choice game first',
             choiceRevealStarting: 'Preparing {count} selected game key(s)...',
@@ -474,9 +499,10 @@
             matchedItems: '已识别 {matched}/{selected} 个 Steam 项目（{scope}）',
             pricedItems: '{matched} 个已识别项目中有 {priced} 个包含价格历史',
             choiceActivate: '激活',
-            choiceSelectAll: '全选',
+            choiceSelectUnowned: '选择未拥有',
             choiceSelect: '选择',
             choiceSelectDone: '完成选择',
+            choiceClearSelection: '清空选择',
             choiceSelectedCount: '已选择 {count} 个',
             choiceNoSelection: '请先至少选择一个 Humble Choice 游戏',
             choiceRevealStarting: '正在准备 {count} 个已选游戏的 key...',
@@ -1422,15 +1448,17 @@
         const controls = document.getElementById('hb-helper-choice-activation-controls');
         if (!controls) return;
         const activateButton = controls.querySelector('[data-hb-helper-choice-action="activate"]');
-        const selectAllButton = controls.querySelector('[data-hb-helper-choice-action="select-all"]');
+        const selectUnownedButton = controls.querySelector('[data-hb-helper-choice-action="select-unowned"]');
         const selectButton = controls.querySelector('[data-hb-helper-choice-action="select"]');
+        const clearButton = controls.querySelector('[data-hb-helper-choice-action="clear"]');
         if (activateButton) activateButton.disabled = choiceActivationInProgress;
-        if (selectAllButton) selectAllButton.disabled = choiceActivationInProgress;
+        if (selectUnownedButton) selectUnownedButton.disabled = choiceActivationInProgress;
         if (selectButton) {
             selectButton.disabled = choiceActivationInProgress;
             selectButton.textContent = choiceSelectionMode ? t('choiceSelectDone') : t('choiceSelect');
             selectButton.setAttribute('aria-pressed', String(choiceSelectionMode));
         }
+        if (clearButton) clearButton.disabled = choiceActivationInProgress;
         if (!choiceActivationInProgress) {
             setChoiceStatus(t('choiceSelectedCount', {count: selectedChoiceGameIds.size}));
         }
@@ -1450,8 +1478,17 @@
         renderChoiceSelectionState();
     }
 
-    function selectAllVisibleChoiceTiles() {
-        getVisibleChoiceTiles().forEach(tile => selectedChoiceGameIds.add(getChoiceTileId(tile)));
+    function selectUnownedChoiceTiles() {
+        selectedChoiceGameIds.clear();
+        getVisibleChoiceTiles()
+            .filter(tile => !tile.classList.contains('owned'))
+            .forEach(tile => selectedChoiceGameIds.add(getChoiceTileId(tile)));
+        saveChoiceSelection();
+        renderChoiceSelectionState();
+    }
+
+    function clearChoiceSelection() {
+        selectedChoiceGameIds.clear();
         saveChoiceSelection();
         renderChoiceSelectionState();
     }
@@ -1610,24 +1647,30 @@
             activateButton.dataset.hbHelperChoiceAction = 'activate';
             activateButton.addEventListener('click', startChoiceActivation);
 
-            const selectAllButton = document.createElement('button');
-            selectAllButton.type = 'button';
-            selectAllButton.dataset.hbHelperChoiceAction = 'select-all';
-            selectAllButton.addEventListener('click', selectAllVisibleChoiceTiles);
+            const selectUnownedButton = document.createElement('button');
+            selectUnownedButton.type = 'button';
+            selectUnownedButton.dataset.hbHelperChoiceAction = 'select-unowned';
+            selectUnownedButton.addEventListener('click', selectUnownedChoiceTiles);
 
             const selectButton = document.createElement('button');
             selectButton.type = 'button';
             selectButton.dataset.hbHelperChoiceAction = 'select';
             selectButton.addEventListener('click', () => setChoiceSelectionMode(!choiceSelectionMode));
 
+            const clearButton = document.createElement('button');
+            clearButton.type = 'button';
+            clearButton.dataset.hbHelperChoiceAction = 'clear';
+            clearButton.addEventListener('click', clearChoiceSelection);
+
             const status = document.createElement('div');
             status.className = 'hb-helper-choice-status';
 
-            choiceControls.append(activateButton, selectAllButton, selectButton, status);
+            choiceControls.append(activateButton, selectUnownedButton, selectButton, clearButton, status);
         }
 
         choiceControls.querySelector('[data-hb-helper-choice-action="activate"]').textContent = t('choiceActivate');
-        choiceControls.querySelector('[data-hb-helper-choice-action="select-all"]').textContent = t('choiceSelectAll');
+        choiceControls.querySelector('[data-hb-helper-choice-action="select-unowned"]').textContent = t('choiceSelectUnowned');
+        choiceControls.querySelector('[data-hb-helper-choice-action="clear"]').textContent = t('choiceClearSelection');
 
         if (summary.nextElementSibling !== choiceControls) {
             summary.insertAdjacentElement('afterend', choiceControls);

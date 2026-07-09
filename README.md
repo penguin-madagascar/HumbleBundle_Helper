@@ -56,9 +56,11 @@ whether Steam identification or regional price history is missing.
 
 On Humble Choice, use `Select` or `选择` to enter selection mode. In that mode,
 clicking a game tile toggles whether it is selected instead of opening the
-game details. Use `Select all` or `全选` to select all visible Choice games, and
-`Activate` or `激活` to reveal selected Steam keys and open Steam's key
-activation page. Log in to Steam in the same browser before activation.
+game details. Use `Select unowned` or `选择未拥有` to replace the current
+selection with visible Choice games that are not marked as owned, `Clear` or
+`清空选择` to clear the current selection, and `Activate` or `激活` to reveal
+selected Steam keys and open Steam's key activation page. Log in to Steam in
+the same browser before activation.
 
 ## Data Sources
 
