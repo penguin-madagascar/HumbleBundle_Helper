@@ -14,8 +14,8 @@ download pages.
   search as a fallback.
 - Switches price totals between all bundle games and games not owned by the
   current Steam account.
-- Converts Steam totals to the currency displayed by Humble Bundle when the
-  currencies differ.
+- Converts Steam totals to the currency from the current Humble Bundle account
+  Location when the currencies differ.
 - Adds sorting controls to Humble bundle landing pages for default order,
   bundles ending soon, and newly added bundles.
 - Supports game bundle pages and the Humble Choice membership page.
@@ -50,11 +50,15 @@ and `Newly Added` to show the newest bundles first.
 The price summary follows the active Bundle Filters. Use `Show unowned` or
 `Show all` in the top-right corner of the summary to change which games are
 included. If an item cannot be priced, expand the matching details to see
-whether Steam identification or regional price history is missing.
+whether Steam identification or regional price history is missing. HB
+conversion uses the Humble Bundle account Location, defaulting to USD if that
+setting cannot be loaded.
 
 ## Data Sources
 
 - Steam provides account ownership, wishlist, app matching, and store region.
+- Humble Bundle account settings provide the account Location used for HB
+  currency conversion, with USD as the fallback when settings cannot be loaded.
 - Xiaoheihe provides Steam regional price history.
 - [Frankfurter](https://frankfurter.dev/) provides exchange rates when Steam
   and Humble Bundle use different currencies.

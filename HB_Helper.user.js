@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.24
+// @version      0.0.25
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -15,6 +15,7 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
+// @connect      www.humblebundle.com
 // @connect      store.steampowered.com
 // @connect      steamcommunity.com
 // @connect      api.xiaoheihe.cn
@@ -526,6 +527,7 @@
     };
     let bundleItemsByTitle;
     let steamAccountDataPromise;
+    let humbleAccountCurrencyPromise;
     let pageRefreshTimer;
     let landingSortRefreshTimer;
     let priceTotalsRunId = 0;
@@ -584,6 +586,79 @@
     const europeanSteamCountries = new Set([
         'AT', 'BE', 'CY', 'DE', 'EE', 'ES', 'FI', 'FR', 'GR', 'HR',
         'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'SI', 'SK',
+    ]);
+    const euroHumbleCountries = new Set([
+        'AT', 'BE', 'BG', 'CY', 'DE', 'EE', 'ES', 'FI', 'FR', 'GR',
+        'HR', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'SI',
+        'SK',
+    ]);
+    const humbleCurrencyByCountryCode = new Map([
+        ['US', 'USD'],
+        ['CA', 'CAD'],
+        ['AU', 'AUD'],
+        ['NZ', 'NZD'],
+        ['HK', 'HKD'],
+        ['SG', 'SGD'],
+        ['GB', 'GBP'],
+        ['UK', 'GBP'],
+        ['UA', 'UAH'],
+        ['RU', 'RUB'],
+        ['IN', 'INR'],
+        ['BR', 'BRL'],
+        ['PL', 'PLN'],
+        ['KR', 'KRW'],
+        ['CN', 'CNY'],
+        ['JP', 'JPY'],
+        ['CH', 'CHF'],
+        ['EL', 'EUR'],
+        ...Array.from(euroHumbleCountries, countryCode => [countryCode, 'EUR']),
+    ]);
+    const humbleCurrencyByLocationName = new Map([
+        ['AUSTRALIA', 'AUD'],
+        ['AUSTRIA', 'EUR'],
+        ['BELGIUM', 'EUR'],
+        ['BRAZIL', 'BRL'],
+        ['BULGARIA', 'EUR'],
+        ['CANADA', 'CAD'],
+        ['CHINA', 'CNY'],
+        ['CROATIA', 'EUR'],
+        ['CYPRUS', 'EUR'],
+        ['ESTONIA', 'EUR'],
+        ['FINLAND', 'EUR'],
+        ['FRANCE', 'EUR'],
+        ['GERMANY', 'EUR'],
+        ['GREAT BRITAIN', 'GBP'],
+        ['GREECE', 'EUR'],
+        ['HONG KONG', 'HKD'],
+        ['INDIA', 'INR'],
+        ['IRELAND', 'EUR'],
+        ['ITALY', 'EUR'],
+        ['JAPAN', 'JPY'],
+        ['LATVIA', 'EUR'],
+        ['LITHUANIA', 'EUR'],
+        ['LUXEMBOURG', 'EUR'],
+        ['MALTA', 'EUR'],
+        ['NETHERLANDS', 'EUR'],
+        ['NEW ZEALAND', 'NZD'],
+        ['POLAND', 'PLN'],
+        ['PORTUGAL', 'EUR'],
+        ['REPUBLIC OF KOREA', 'KRW'],
+        ['RUSSIA', 'RUB'],
+        ['SINGAPORE', 'SGD'],
+        ['SLOVAKIA', 'EUR'],
+        ['SLOVENIA', 'EUR'],
+        ['SOUTH KOREA', 'KRW'],
+        ['SPAIN', 'EUR'],
+        ['SWITZERLAND', 'CHF'],
+        ['THE NETHERLANDS', 'EUR'],
+        ['UKRAINE', 'UAH'],
+        ['UK', 'GBP'],
+        ['USA', 'USD'],
+        ['U S', 'USD'],
+        ['U S A', 'USD'],
+        ['UNITED KINGDOM', 'GBP'],
+        ['UNITED STATES', 'USD'],
+        ['UNITED STATES OF AMERICA', 'USD'],
     ]);
     const choiceMonthPattern = new RegExp(
         '^(January|February|March|April|May|June|July|August|September|October|November|December)'
@@ -1128,11 +1203,6 @@
         observer.observe(document.body, {childList: true, subtree: true});
     }
 
-    function normalizeCurrencyCode(value) {
-        const match = String(value || '').trim().toUpperCase().match(/^[A-Z]{3}$/);
-        return match ? match[0] : null;
-    }
-
     function findTextAnchor(pattern) {
         return Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, div'))
             .filter(element => pattern.test(normalizedText(element)))
@@ -1165,55 +1235,148 @@
         return heading ? normalizedText(heading).replace(/\s+GAMES$/i, '') : '';
     }
 
-    function findCurrencyInPriceText(text) {
-        const currencyPatterns = [
-            [/\bUSD\b|US\$/i, 'USD'],
-            [/\bCAD\b|CA\$/i, 'CAD'],
-            [/\bAUD\b|A\$/i, 'AUD'],
-            [/\bNZD\b|NZ\$/i, 'NZD'],
-            [/\bHKD\b|HK\$/i, 'HKD'],
-            [/\bSGD\b|SG\$/i, 'SGD'],
-            [/\bEUR\b|€/i, 'EUR'],
-            [/\bGBP\b|£/i, 'GBP'],
-            [/\bUAH\b|₴/i, 'UAH'],
-            [/\bRUB\b|₽/i, 'RUB'],
-            [/\bINR\b|₹/i, 'INR'],
-            [/\bBRL\b|R\$/i, 'BRL'],
-            [/\bPLN\b|zł/i, 'PLN'],
-            [/\bKRW\b|₩/i, 'KRW'],
-            [/\bCNY\b|CN¥/i, 'CNY'],
-            [/\bJPY\b|¥/i, 'JPY'],
-            [/\bCHF\b/i, 'CHF'],
-            [/\$/i, 'USD'],
-        ];
-        return currencyPatterns.find(([pattern]) => pattern.test(text))?.[1] || null;
+    function normalizeHumbleLocationText(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
     }
 
-    function findHumbleCurrencyCode() {
-        const currencyElements = document.querySelectorAll(
-            'meta[property="product:price:currency"], '
-            + '[itemprop="priceCurrency"], [data-currency-code], [data-currency]'
-        );
-        for (const element of currencyElements) {
-            const code = normalizeCurrencyCode(
-                element.content
-                || element.getAttribute('content')
-                || element.getAttribute('data-currency-code')
-                || element.getAttribute('data-currency')
-                || element.textContent
-            );
-            if (code) return code;
+    function normalizeHumbleLocationName(value) {
+        return normalizeHumbleLocationText(value)
+            .replace(/\s*\([^)]*\)\s*/g, ' ')
+            .replace(/[.'’]/g, '')
+            .replace(/[^A-Za-z0-9]+/g, ' ')
+            .trim()
+            .toUpperCase();
+    }
+
+    function getHumbleCurrencyCodeForLocation(value) {
+        const locationText = normalizeHumbleLocationText(value);
+        if (!locationText) return null;
+
+        const countryCode = locationText.toUpperCase().match(/^[A-Z]{2}$/)?.[0]
+            || locationText.toUpperCase().match(/^([A-Z]{2})\b/)?.[1];
+        if (countryCode && humbleCurrencyByCountryCode.has(countryCode)) {
+            return humbleCurrencyByCountryCode.get(countryCode);
         }
 
-        for (const script of document.querySelectorAll('script:not([src])')) {
-            const match = script.textContent.match(
-                /"(?:currency|currency_code|currencyCode)"\s*:\s*"([A-Z]{3})"/i
+        return humbleCurrencyByLocationName.get(normalizeHumbleLocationName(locationText)) || null;
+    }
+
+    function getHumbleSettingsFieldDescriptor(element) {
+        const parts = [
+            element.getAttribute('name'),
+            element.getAttribute('id'),
+            element.getAttribute('class'),
+            element.getAttribute('aria-label'),
+            element.getAttribute('placeholder'),
+            element.getAttribute('data-field'),
+            element.getAttribute('data-name'),
+        ];
+        if (element.labels) {
+            parts.push(...Array.from(element.labels).map(label => label.textContent));
+        }
+        const wrappingLabel = element.closest('label');
+        if (wrappingLabel) parts.push(wrappingLabel.textContent);
+        return parts.filter(Boolean).join(' ');
+    }
+
+    function isHumbleLocationField(element) {
+        return /location|country|region/i.test(getHumbleSettingsFieldDescriptor(element));
+    }
+
+    function cleanHumbleLocationCandidate(value) {
+        return normalizeHumbleLocationText(value)
+            .replace(/^Account Information\s*/i, '')
+            .replace(/^Location\s*:?\s*/i, '')
+            .replace(/\b(?:Change|Edit|Update)\b.*$/i, '')
+            .trim();
+    }
+
+    function findHumbleAccountCurrencyCode(settingsPage) {
+        const candidates = [];
+        const addCandidate = value => {
+            const text = normalizeHumbleLocationText(value);
+            if (text) candidates.push(text);
+        };
+
+        settingsPage.querySelectorAll('[data-country-code], [data-country], [data-location]')
+            .forEach(element => {
+                addCandidate(element.getAttribute('data-country-code'));
+                addCandidate(element.getAttribute('data-country'));
+                addCandidate(element.getAttribute('data-location'));
+                addCandidate(element.textContent);
+            });
+
+        settingsPage.querySelectorAll('select').forEach(select => {
+            if (!isHumbleLocationField(select)) return;
+            const selectedOptions = Array.from(select.options || [])
+                .filter(option => option.hasAttribute('selected') || option.defaultSelected);
+            selectedOptions.forEach(option => {
+                addCandidate(option.value);
+                addCandidate(option.textContent);
+            });
+            if (selectedOptions.length === 0) addCandidate(select.getAttribute('value'));
+        });
+
+        settingsPage.querySelectorAll('input, textarea').forEach(input => {
+            if (!isHumbleLocationField(input)) return;
+            if (/^(?:button|password|submit)$/i.test(input.type || '')) return;
+            addCandidate(input.value);
+            addCandidate(input.getAttribute('value'));
+        });
+
+        const locationLabels = Array.from(settingsPage.querySelectorAll(
+            'label, dt, th, strong, b, span, div'
+        ))
+            .filter(element => /^Location\b/i.test(normalizedText(element))
+                && normalizedText(element).length <= 80)
+            .sort((a, b) =>
+                a.childElementCount - b.childElementCount
+                || normalizedText(a).length - normalizedText(b).length
             );
-            if (match) return match[1].toUpperCase();
+        for (const label of locationLabels) {
+            [
+                label,
+                label.nextElementSibling,
+                label.parentElement,
+                label.closest('tr'),
+                label.closest('li'),
+                label.closest('fieldset'),
+            ].filter(Boolean).forEach(element => addCandidate(
+                cleanHumbleLocationCandidate(element.textContent)
+            ));
         }
 
-        const payAnchor = findTextAnchor(/^Pay at least .+ for (?:these )?\d+ items?[.!]?$/i);
-        return findCurrencyInPriceText(payAnchor?.textContent || document.body.innerText);
+        for (const candidate of candidates) {
+            const currencyCode = getHumbleCurrencyCodeForLocation(candidate);
+            if (currencyCode) return currencyCode;
+        }
+        return null;
+    }
+
+    function fetchHumbleAccountCurrencyCode() {
+        if (!humbleAccountCurrencyPromise) {
+            humbleAccountCurrencyPromise = (async () => {
+                const html = await gmRequest(
+                    `https://www.humblebundle.com/user/settings?_=${Date.now()}`,
+                    'text',
+                    {headers: {'Cache-Control': 'no-cache'}}
+                );
+                const settingsPage = new DOMParser().parseFromString(html, 'text/html');
+                const currencyCode = findHumbleAccountCurrencyCode(settingsPage);
+                if (!currencyCode) throw new Error('Humble account location not found');
+                return currencyCode;
+            })();
+        }
+        return humbleAccountCurrencyPromise;
+    }
+
+    async function resolveHumbleCurrencyCode() {
+        try {
+            return await fetchHumbleAccountCurrencyCode();
+        } catch (error) {
+            console.warn('[HB-Helper] Fetch Humble account currency failed, using USD:', error);
+            return 'USD';
+        }
     }
 
     function buildSteamGiftsSearchUrl() {
@@ -1834,7 +1997,7 @@
         lastPriceResult = null;
 
         try {
-            const humbleCurrencyCode = findHumbleCurrencyCode();
+            const humbleCurrencyCodePromise = resolveHumbleCurrencyCode();
             const resolvedGames = await Promise.all(titles.map(async title => {
                 const app = await findSteamApp(title);
                 return {title, appId: app?.appid || null};
@@ -1859,6 +2022,9 @@
             if (runId !== priceTotalsRunId) return;
 
             const currencyCode = pricesByAppId.values().next().value?.currency || null;
+            const humbleCurrencyCode = await humbleCurrencyCodePromise;
+            if (runId !== priceTotalsRunId) return;
+
             let exchangeRate;
             if (currencyCode && humbleCurrencyCode && humbleCurrencyCode !== currencyCode) {
                 try {
