@@ -18,6 +18,8 @@ download pages.
   Location when the currencies differ.
 - Adds sorting controls to Humble bundle landing pages for default order,
   bundles ending soon, and newly added bundles.
+- Adds Humble Choice controls for selecting games, revealing selected Steam
+  keys, activating them on Steam, and showing partial failures.
 - Supports game bundle pages and the Humble Choice membership page.
 - Shows Steam key activation restrictions on Humble download pages.
 - Supports English and Chinese script UI.
@@ -54,9 +56,36 @@ whether Steam identification or regional price history is missing. HB
 conversion uses the Humble Bundle account Location, defaulting to USD if that
 setting cannot be loaded.
 
+### Humble Choice activation
+
+On Humble Choice, use `Select` or `选择` to enter selection mode. In that mode,
+clicking a game tile toggles whether it is selected instead of opening the
+game details; selected games have an amber outline and check mark. Use
+`Select unowned` or `选择未拥有` to replace the current
+selection with visible Choice games that are not marked as owned, `Clear` or
+`清空选择` to clear the current selection, and `Activate` or `激活` to reveal
+selected Steam keys and open one foreground Steam key activation tab. Log in
+to the Steam Store in the same browser before activation. If Steam asks you to
+sign in, complete the login and refresh the activation tab. A failed Humble key
+retrieval or Steam activation does not stop later selected games from being
+processed.
+
+Activation results remain below the Choice controls and group Humble key
+retrieval failures separately from Steam activation failures. A failed Steam
+key is shown in full; clicking it copies the key without opening or navigating
+to Steam. Successfully activated games are removed from the selection, while
+failed games remain selected for follow-up. Return to Humble Choice and start
+activation again to retry them. Results remain visible until the next batch.
+If the activation page is closed or interrupted while processing a key, the
+script will not retry that key automatically; check it in Steam before trying
+again. After each completed batch, the script refreshes Steam ownership and
+wishlist data so highlights, selection, and price totals reflect the latest
+account state.
+
 ## Data Sources
 
-- Steam provides account ownership, wishlist, app matching, and store region.
+- Steam provides account ownership, wishlist, app matching, store region, and
+  game-key activation.
 - Humble Bundle account settings provide the account Location used for HB
   currency conversion, with USD as the fallback when settings cannot be loaded.
 - Xiaoheihe provides Steam regional price history.
