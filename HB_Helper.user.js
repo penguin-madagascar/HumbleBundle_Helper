@@ -1764,11 +1764,17 @@
         return lockResult.value;
     }
 
+    function setElementTextContent(element, value) {
+        if (!element) return;
+        const nextValue = value || '';
+        if (element.textContent !== nextValue) element.textContent = nextValue;
+    }
+
     function setChoiceStatus(message) {
         const status = document.querySelector(
             '#hb-helper-choice-activation-controls .hb-helper-choice-status'
         );
-        if (status) status.textContent = message || '';
+        setElementTextContent(status, message);
     }
 
     function renderChoiceSelectionTiles(tiles, selection = selectedChoiceGameIds) {
@@ -1793,7 +1799,10 @@
         if (selectUnownedButton) selectUnownedButton.disabled = controlsLocked;
         if (selectButton) {
             selectButton.disabled = controlsLocked;
-            selectButton.textContent = choiceSelectionMode ? t('choiceSelectDone') : t('choiceSelect');
+            setElementTextContent(
+                selectButton,
+                choiceSelectionMode ? t('choiceSelectDone') : t('choiceSelect')
+            );
             selectButton.setAttribute('aria-pressed', String(choiceSelectionMode));
         }
         if (clearButton) clearButton.disabled = controlsLocked;
@@ -2409,10 +2418,36 @@
         results.appendChild(group);
     }
 
+    function getChoiceActivationResultsSignature(batch) {
+        if (!batch) return JSON.stringify({language: currentLanguage, batch: null});
+        return JSON.stringify({
+            language: currentLanguage,
+            counts: getChoiceActivationCounts(batch),
+            refreshError: batch.ownershipRefresh.state === choiceActivationOwnershipStates.failed
+                ? batch.ownershipRefresh.error || t('choiceOwnershipRefreshWarning')
+                : null,
+            failures: batch.items
+                .filter(item => [
+                    choiceActivationItemStates.humbleFailed,
+                    choiceActivationItemStates.steamFailed,
+                ].includes(item.status))
+                .map(item => ({
+                    status: item.status,
+                    title: item.title,
+                    key: item.status === choiceActivationItemStates.steamFailed ? item.key : null,
+                    error: item.error || null,
+                    code: item.code ?? null,
+                })),
+        });
+    }
+
     function renderChoiceActivationResults(batch = getChoiceActivationBatch()) {
         const results = document.getElementById('hb-helper-choice-activation-results');
         if (!results) return;
+        const signature = getChoiceActivationResultsSignature(batch);
+        if (results.dataset.hbHelperChoiceResultsSignature === signature) return;
         results.replaceChildren();
+        results.dataset.hbHelperChoiceResultsSignature = signature;
         if (!batch) return;
 
         const counts = getChoiceActivationCounts(batch);
@@ -2551,9 +2586,18 @@
             );
         }
 
-        choiceControls.querySelector('[data-hb-helper-choice-action="activate"]').textContent = t('choiceActivate');
-        choiceControls.querySelector('[data-hb-helper-choice-action="select-unowned"]').textContent = t('choiceSelectUnowned');
-        choiceControls.querySelector('[data-hb-helper-choice-action="clear"]').textContent = t('choiceClearSelection');
+        setElementTextContent(
+            choiceControls.querySelector('[data-hb-helper-choice-action="activate"]'),
+            t('choiceActivate')
+        );
+        setElementTextContent(
+            choiceControls.querySelector('[data-hb-helper-choice-action="select-unowned"]'),
+            t('choiceSelectUnowned')
+        );
+        setElementTextContent(
+            choiceControls.querySelector('[data-hb-helper-choice-action="clear"]'),
+            t('choiceClearSelection')
+        );
 
         if (summary.nextElementSibling !== choiceControls) {
             summary.insertAdjacentElement('afterend', choiceControls);
@@ -2861,12 +2905,30 @@
         pageRefreshTimer = setTimeout(() => refreshHelperPage(forcePriceReload), 300);
     }
 
+    function isInsideHelperUi(node) {
+        const element = node?.nodeType === 3 ? node.parentElement : node;
+        return Boolean(element?.closest?.([
+            '#hb-helper-controls',
+            '#hb-helper-choice-activation-controls',
+            '#hb-helper-choice-activation-results',
+            '#hb-helper-steam-activation-status',
+        ].join(', ')));
+    }
+
     function observePageChanges() {
-        const observer = new MutationObserver(() => schedulePageRefresh());
+        const observer = new MutationObserver(mutations => {
+            if (mutations.some(mutation => !isInsideHelperUi(mutation.target))) {
+                schedulePageRefresh();
+            }
+        });
         observer.observe(document.body, {childList: true, subtree: true});
         document.addEventListener('click', handleChoiceSelectionClick, true);
-        document.addEventListener('click', () => schedulePageRefresh(), true);
-        document.addEventListener('change', () => schedulePageRefresh(), true);
+        document.addEventListener('click', event => {
+            if (!isInsideHelperUi(event.target)) schedulePageRefresh();
+        }, true);
+        document.addEventListener('change', event => {
+            if (!isInsideHelperUi(event.target)) schedulePageRefresh();
+        }, true);
     }
 
     async function runChoiceOwnershipRefreshWork(
@@ -3150,7 +3212,10 @@
             panel.append(title, body);
             (document.body || document.documentElement).appendChild(panel);
         }
-        panel.querySelector('.hb-helper-steam-activation-body').textContent = message || '';
+        setElementTextContent(
+            panel.querySelector('.hb-helper-steam-activation-body'),
+            message
+        );
     }
 
     function readJsonDataset(element, name) {
