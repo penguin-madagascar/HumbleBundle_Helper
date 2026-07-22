@@ -786,6 +786,7 @@
     const steamActivationLockName = 'hb-helper-choice-steam-activation';
     const choiceOwnershipRefreshLockName = 'hb-helper-choice-ownership-refresh';
     const steamAccountDataLockName = 'hb-helper-steam-account-data';
+    const choiceSelectionLockName = 'hb-helper-choice-selection';
     const choiceLockRetryMs = 250;
     const gmRequestTimeoutMs = 20000;
     const steamRegisterKeyUrl = 'https://store.steampowered.com/account/registerkey';
@@ -821,6 +822,7 @@
     let choiceActivationInProgress = false;
     let steamActivationInProgress = false;
     let choiceActivationBatchListener;
+    let choiceSelectionListener;
     const cachedChoiceSelection = GM_getValue(choiceSelectionCacheKey, []);
     const selectedChoiceGameIds = new Set(
         Array.isArray(cachedChoiceSelection) ? cachedChoiceSelection : []
@@ -1712,8 +1714,52 @@
         return `title:${normalizeSteamTitle(getChoiceTileTitle(tile))}`;
     }
 
-    function saveChoiceSelection() {
-        GM_setValue(choiceSelectionCacheKey, [...selectedChoiceGameIds]);
+    function getChoiceSelection(value = GM_getValue(choiceSelectionCacheKey, [])) {
+        const values = Array.isArray(value) || value instanceof Set ? [...value] : [];
+        return new Set(values.filter(isNonEmptyString));
+    }
+
+    function getSelectedChoiceGameIds() {
+        return new Set(selectedChoiceGameIds);
+    }
+
+    function replaceChoiceSelection(value) {
+        const nextSelection = getChoiceSelection(value);
+        if (nextSelection.size === selectedChoiceGameIds.size
+            && [...nextSelection].every(id => selectedChoiceGameIds.has(id))) {
+            return false;
+        }
+        selectedChoiceGameIds.clear();
+        nextSelection.forEach(id => selectedChoiceGameIds.add(id));
+        renderChoiceSelectionState();
+        return true;
+    }
+
+    function observeChoiceSelection() {
+        if (choiceSelectionListener !== undefined) return;
+        choiceSelectionListener = GM_addValueChangeListener(
+            choiceSelectionCacheKey,
+            (name, oldValue, newValue) => replaceChoiceSelection(newValue)
+        );
+    }
+
+    async function updateChoiceSelection(update, {lockManager} = {}) {
+        const lockResult = await requestChoiceExclusiveLock(
+            choiceSelectionLockName,
+            async () => {
+                const storedSelection = getChoiceSelection();
+                const nextSelection = new Set(storedSelection);
+                await update(nextSelection);
+                const changed = nextSelection.size !== storedSelection.size
+                    || [...nextSelection].some(id => !storedSelection.has(id));
+                if (changed) GM_setValue(choiceSelectionCacheKey, [...nextSelection]);
+                replaceChoiceSelection(nextSelection);
+                return {updated: changed, selection: new Set(nextSelection)};
+            },
+            {lockManager}
+        );
+        if (!lockResult.acquired) return lockResult;
+        return lockResult.value;
     }
 
     function setChoiceStatus(message) {
@@ -1761,30 +1807,29 @@
         renderChoiceSelectionState();
     }
 
-    function toggleChoiceTileSelection(tile) {
+    async function toggleChoiceTileSelection(tile) {
         if (isChoiceActivationBatchActive()) return;
         const id = getChoiceTileId(tile);
-        if (selectedChoiceGameIds.has(id)) selectedChoiceGameIds.delete(id);
-        else selectedChoiceGameIds.add(id);
-        saveChoiceSelection();
-        renderChoiceSelectionState();
+        return updateChoiceSelection(selection => {
+            if (selection.has(id)) selection.delete(id);
+            else selection.add(id);
+        });
     }
 
-    function selectUnownedChoiceTiles() {
+    async function selectUnownedChoiceTiles() {
         if (isChoiceActivationBatchActive()) return;
-        selectedChoiceGameIds.clear();
-        getVisibleChoiceTiles()
+        const unownedIds = getVisibleChoiceTiles()
             .filter(tile => !tile.classList.contains('owned'))
-            .forEach(tile => selectedChoiceGameIds.add(getChoiceTileId(tile)));
-        saveChoiceSelection();
-        renderChoiceSelectionState();
+            .map(getChoiceTileId);
+        return updateChoiceSelection(selection => {
+            selection.clear();
+            unownedIds.forEach(id => selection.add(id));
+        });
     }
 
-    function clearChoiceSelection() {
+    async function clearChoiceSelection() {
         if (isChoiceActivationBatchActive()) return;
-        selectedChoiceGameIds.clear();
-        saveChoiceSelection();
-        renderChoiceSelectionState();
+        return updateChoiceSelection(selection => selection.clear());
     }
 
     function getSelectedChoiceTiles() {
@@ -1799,7 +1844,9 @@
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        toggleChoiceTileSelection(tile);
+        toggleChoiceTileSelection(tile).catch(error => {
+            console.warn('[HB-Helper] Update Choice selection failed:', error);
+        });
     }
 
     function getActiveChoiceModal() {
@@ -2269,6 +2316,13 @@
         return changed;
     }
 
+    function reconcileChoiceSelectionStorageFromBatch(batch, options = {}) {
+        return updateChoiceSelection(
+            selection => reconcileChoiceSelectionFromBatch(batch, selection),
+            options
+        );
+    }
+
     function getChoiceActivationCounts(batch) {
         const count = status => batch.items.filter(item => item.status === status).length;
         return {
@@ -2443,7 +2497,11 @@
             const selectUnownedButton = document.createElement('button');
             selectUnownedButton.type = 'button';
             selectUnownedButton.dataset.hbHelperChoiceAction = 'select-unowned';
-            selectUnownedButton.addEventListener('click', selectUnownedChoiceTiles);
+            selectUnownedButton.addEventListener('click', () => {
+                selectUnownedChoiceTiles().catch(error => {
+                    console.warn('[HB-Helper] Select unowned Choice games failed:', error);
+                });
+            });
 
             const selectButton = document.createElement('button');
             selectButton.type = 'button';
@@ -2453,7 +2511,11 @@
             const clearButton = document.createElement('button');
             clearButton.type = 'button';
             clearButton.dataset.hbHelperChoiceAction = 'clear';
-            clearButton.addEventListener('click', clearChoiceSelection);
+            clearButton.addEventListener('click', () => {
+                clearChoiceSelection().catch(error => {
+                    console.warn('[HB-Helper] Clear Choice selection failed:', error);
+                });
+            });
 
             const status = document.createElement('div');
             status.className = 'hb-helper-choice-status';
@@ -2984,7 +3046,7 @@
             return;
         }
 
-        if (reconcileChoiceSelectionFromBatch(batch)) saveChoiceSelection();
+        await reconcileChoiceSelectionStorageFromBatch(batch);
         renderChoiceSelectionState();
         renderChoiceActivationResults(batch);
 
@@ -3375,7 +3437,10 @@
 
         if (!isPriceTotalsPage()) return;
         observeSteamAccountCache();
-        if (isChoicePage()) observeChoiceActivationBatch();
+        if (isChoicePage()) {
+            observeChoiceActivationBatch();
+            observeChoiceSelection();
+        }
         observePageChanges();
         refreshHelperPage(true);
 
