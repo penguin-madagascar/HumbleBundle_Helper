@@ -200,8 +200,34 @@
       min-height: 20px !important;
     }
     .choice-content.js-open-choice-modal.hb-helper-choice-selected {
-      box-shadow: inset 0 0 0 3px #fff, 0 0 0 2px #1b75bb !important;
       position: relative !important;
+      box-shadow: 0 0 0 4px #ffbf00 !important;
+    }
+    .choice-content.js-open-choice-modal.hb-helper-choice-selected::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: rgba(255, 191, 0, 0.25);
+      pointer-events: none;
+      z-index: 1;
+    }
+    .choice-content.js-open-choice-modal.hb-helper-choice-selected::after {
+      content: '✓';
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      display: grid;
+      width: 28px;
+      height: 28px;
+      place-items: center;
+      border-radius: 50%;
+      background: #ffbf00;
+      color: #1a1a1a;
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1;
+      pointer-events: none;
+      z-index: 2;
     }
     html.hb-helper-choice-select-mode .choice-content.js-open-choice-modal {
       cursor: pointer !important;
