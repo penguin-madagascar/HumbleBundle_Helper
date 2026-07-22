@@ -515,6 +515,7 @@
             choiceRevealStarting: 'Preparing {count} selected game key(s)...',
             choiceRevealProgress: 'Revealing key for {title} ({current}/{total})...',
             choiceRevealFailed: 'Could not reveal a Steam key for {title}',
+            choiceModalCloseFailed: 'Could not safely close the Humble details dialog for {title}. The key was not queued.',
             choiceQueueReady: 'Opening Steam activation page for {count} key(s)...',
             choiceHumbleFailureReason: 'Humble did not provide a Steam key for this game.',
             choiceActivationSummary: '{total} processed: {activated} activated, {humbleFailed} Humble key retrieval failure(s), {steamFailed} Steam activation failure(s), {pending} pending.',
@@ -602,6 +603,7 @@
             choiceRevealStarting: '正在准备 {count} 个已选游戏的 key...',
             choiceRevealProgress: '正在显示 {title} 的 key（{current}/{total}）...',
             choiceRevealFailed: '无法显示 {title} 的 Steam key',
+            choiceModalCloseFailed: '无法安全关闭 {title} 的 Humble 详情弹窗，因此未将此 key 加入队列。',
             choiceQueueReady: '正在打开 Steam 激活页面，将激活 {count} 个 key...',
             choiceHumbleFailureReason: 'Humble 未能为此游戏提供 Steam key。',
             choiceActivationSummary: '共处理 {total} 个：已激活 {activated} 个，Humble key 获取失败 {humbleFailed} 个，Steam 激活失败 {steamFailed} 个，等待处理 {pending} 个。',
@@ -1862,10 +1864,16 @@
 
     function extractSteamKeyFromScope(scope) {
         for (const input of scope.querySelectorAll('input, textarea')) {
+            if (!isVisibleElement(input)) continue;
             const key = findSteamKeyInText(input.value);
             if (key) return key;
         }
-        return findSteamKeyInText(normalizedText(scope));
+        for (const keyField of scope.querySelectorAll('.keyfield-value')) {
+            if (!isVisibleElement(keyField)) continue;
+            const key = findSteamKeyInText(normalizedText(keyField));
+            if (key) return key;
+        }
+        return null;
     }
 
     function isVisibleElement(element) {
@@ -1879,9 +1887,8 @@
         ) || null;
     }
 
-    async function closeChoiceModal() {
-        const modal = getActiveChoiceModal();
-        if (!modal) return;
+    async function closeChoiceModal(modal = getActiveChoiceModal()) {
+        if (!modal || getActiveChoiceModal() !== modal) return true;
         const closeButton = Array.from(
             modal.querySelectorAll('button, a, [role="button"]')
         ).find(element => {
@@ -1895,12 +1902,21 @@
         });
         if (closeButton) closeButton.click();
         else document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
-        await waitForCondition(() => !getActiveChoiceModal(), 1200);
+        return Boolean(await waitForCondition(() => getActiveChoiceModal() !== modal, 1200));
+    }
+
+    function isChoiceModalForTile(modal, tile) {
+        const modalTitle = normalizeSteamTitle(normalizedText(findChoiceModalTitle(modal)));
+        const tileTitle = normalizeSteamTitle(getChoiceTileTitle(tile));
+        return Boolean(modalTitle && tileTitle && modalTitle === tileTitle);
     }
 
     async function revealChoiceSteamKey(tile) {
         tile.click();
-        const modal = await waitForCondition(getActiveChoiceModal, 8000);
+        const modal = await waitForCondition(() => {
+            const activeModal = getActiveChoiceModal();
+            return activeModal && isChoiceModalForTile(activeModal, tile) ? activeModal : null;
+        }, 8000);
         if (!modal) return null;
 
         try {
@@ -1916,7 +1932,9 @@
             ready.click();
             return await waitForCondition(() => extractSteamKeyFromScope(modal), 5000);
         } finally {
-            await closeChoiceModal();
+            if (!await closeChoiceModal(modal)) {
+                throw new Error(t('choiceModalCloseFailed', {title: getChoiceTileTitle(tile)}));
+            }
         }
     }
 
