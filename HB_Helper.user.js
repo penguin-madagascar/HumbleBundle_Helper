@@ -524,6 +524,7 @@
             choiceCopyFailedKey: 'Copy the failed Steam key for {title}',
             choiceCopiedFailedKey: 'Copied the Steam key for {title}.',
             choiceOwnershipRefreshWarning: 'Warning: Steam ownership could not be refreshed after activation.',
+            choiceOwnershipRefreshUnsupportedWarning: 'Warning: Steam ownership could not be refreshed because this browser does not support the Web Locks API. Activation controls have been unlocked.',
             steamActivationTitle: 'Humble Choice key activation',
             steamActivationLoginRequired: 'Log in to Steam, then refresh this page to continue activating queued keys',
             steamActivationProgress: 'Activating {title} ({current}/{total})...',
@@ -609,6 +610,7 @@
             choiceCopyFailedKey: '复制 {title} 激活失败的 Steam key',
             choiceCopiedFailedKey: '已复制 {title} 的 Steam key。',
             choiceOwnershipRefreshWarning: '警告：激活完成后无法刷新 Steam 拥有状态。',
+            choiceOwnershipRefreshUnsupportedWarning: '警告：此浏览器不支持 Web Locks API，无法刷新 Steam 拥有状态。激活控件已解锁。',
             steamActivationTitle: 'Humble Choice key 激活',
             steamActivationLoginRequired: '请登录 Steam，然后刷新此页面继续激活等待队列',
             steamActivationProgress: '正在激活 {title}（{current}/{total}）...',
@@ -781,6 +783,7 @@
     const choiceCollectionLockName = 'hb-helper-choice-collection';
     const steamActivationLockName = 'hb-helper-choice-steam-activation';
     const choiceOwnershipRefreshLockName = 'hb-helper-choice-ownership-refresh';
+    const steamAccountDataLockName = 'hb-helper-steam-account-data';
     const choiceLockRetryMs = 250;
     const gmRequestTimeoutMs = 20000;
     const steamRegisterKeyUrl = 'https://store.steampowered.com/account/registerkey';
@@ -794,6 +797,10 @@
     let bundleItemsByTitle;
     let steamAccountDataPromise;
     let steamAccountDataGeneration = 0;
+    let steamAccountDataPendingGeneration;
+    let steamAccountCacheObserved = false;
+    let steamAccountApplyPromise = Promise.resolve();
+    let lastAppliedSteamAccountUpdatedAt = 0;
     let pageRefreshTimer;
     let choiceCollectionRecoveryTimer;
     let choiceOwnershipRefreshTimer;
@@ -959,15 +966,18 @@
         return `https://store.steampowered.com/app/${appId}/`;
     }
 
+    function isSteamAccountData(data) {
+        return Boolean(data
+            && /^[A-Z]{2}$/.test(data.countryCode)
+            && Array.isArray(data.ownedApps)
+            && Array.isArray(data.wishlistApps)
+            && Number.isFinite(data.updatedAt)
+            && data.updatedAt > 0);
+    }
+
     function getCachedSteamAccountData() {
         const data = GM_getValue(steamAccountCacheKey);
-        if (!data
-            || !/^[A-Z]{2}$/.test(data.countryCode)
-            || !Array.isArray(data.ownedApps)
-            || !Array.isArray(data.wishlistApps)) {
-            return null;
-        }
-        return data;
+        return isSteamAccountData(data) ? data : null;
     }
 
     function parseSteamUserInfo(html) {
@@ -977,77 +987,183 @@
         return JSON.parse(userInfoText || '{}');
     }
 
+    async function requestSteamAccountSnapshot({
+        generation,
+        allowCachedFallback,
+        request,
+        parseUserInfo,
+    }) {
+        try {
+            const html = await request(
+                `https://store.steampowered.com/?l=english&_=${Date.now()}`,
+                'text',
+                steamRequestOptions
+            );
+            if (generation !== steamAccountDataGeneration) return {superseded: true};
+            const userInfo = parseUserInfo(html);
+            if (!userInfo.logged_in) throw new Error(t('loginSteamLoadAccountData'));
+
+            const userData = await request(
+                `https://store.steampowered.com/dynamicstore/userdata/?_=${Date.now()}`,
+                'json',
+                {
+                    ...steamRequestOptions,
+                    headers: {'Cache-Control': 'no-cache'},
+                }
+            );
+            if (generation !== steamAccountDataGeneration) return {superseded: true};
+            if (!Array.isArray(userData?.rgOwnedApps)
+                || !Array.isArray(userData?.rgWishlist)) {
+                throw new Error(t('steamInvalidAccountData'));
+            }
+
+            const cachedData = getCachedSteamAccountData();
+            const data = {
+                countryCode: userInfo.country_code.toUpperCase(),
+                ownedApps: userData.rgOwnedApps,
+                wishlistApps: userData.rgWishlist,
+                updatedAt: Math.max(Date.now(), (cachedData?.updatedAt || 0) + 1),
+            };
+            if (generation !== steamAccountDataGeneration) return {superseded: true};
+            GM_setValue(steamAccountCacheKey, data);
+            return {data};
+        } catch (error) {
+            if (generation !== steamAccountDataGeneration) return {superseded: true};
+            if (!allowCachedFallback) throw error;
+            const cachedData = getCachedSteamAccountData();
+            if (!cachedData) throw error;
+            console.warn('[HB-Helper] Using cached Steam account data:', error);
+            return {data: cachedData};
+        }
+    }
+
     function fetchSteamAccountData({
         force = false,
         allowCachedFallback = true,
         request = gmRequest,
         parseUserInfo = parseSteamUserInfo,
+        lockManager,
+        requireLock = false,
     } = {}) {
         if (!force && steamAccountDataPromise) return steamAccountDataPromise;
 
+        const requestStartedAt = Date.now();
         const generation = ++steamAccountDataGeneration;
-        const requestPromise = (async () => {
-            try {
-                const html = await request(
-                    `https://store.steampowered.com/?l=english&_=${Date.now()}`,
-                    'text',
-                    steamRequestOptions
-                );
-                if (generation !== steamAccountDataGeneration) {
-                    return steamAccountDataPromise;
-                }
-                const userInfo = parseUserInfo(html);
-                if (!userInfo.logged_in) throw new Error(t('loginSteamLoadAccountData'));
-
-                const userData = await request(
-                    `https://store.steampowered.com/dynamicstore/userdata/?_=${Date.now()}`,
-                    'json',
-                    {
-                        ...steamRequestOptions,
-                        headers: {'Cache-Control': 'no-cache'},
+        steamAccountDataPendingGeneration = generation;
+        const loadPromise = (async () => {
+            const manager = getChoiceLockManager(lockManager);
+            let outcome;
+            if (manager && typeof manager.request === 'function') {
+                outcome = await manager.request(
+                    steamAccountDataLockName,
+                    {mode: 'exclusive'},
+                    async () => {
+                        if (generation !== steamAccountDataGeneration) {
+                            return {superseded: true};
+                        }
+                        const cachedData = getCachedSteamAccountData();
+                        if (!force
+                            && cachedData
+                            && cachedData.updatedAt >= requestStartedAt) {
+                            return {data: cachedData};
+                        }
+                        return requestSteamAccountSnapshot({
+                            generation,
+                            allowCachedFallback,
+                            request,
+                            parseUserInfo,
+                        });
                     }
                 );
-                if (generation !== steamAccountDataGeneration) {
-                    return steamAccountDataPromise;
-                }
-                if (!Array.isArray(userData?.rgOwnedApps)
-                    || !Array.isArray(userData?.rgWishlist)) {
-                    throw new Error(t('steamInvalidAccountData'));
-                }
-
-                const data = {
-                    countryCode: userInfo.country_code.toUpperCase(),
-                    ownedApps: userData.rgOwnedApps,
-                    wishlistApps: userData.rgWishlist,
-                    updatedAt: Date.now(),
-                };
-                if (generation !== steamAccountDataGeneration) {
-                    return steamAccountDataPromise;
-                }
-                GM_setValue(steamAccountCacheKey, data);
-                return data;
-            } catch (error) {
-                if (generation !== steamAccountDataGeneration) {
-                    return steamAccountDataPromise;
-                }
-                if (!allowCachedFallback) throw error;
-                const cachedData = getCachedSteamAccountData();
-                if (!cachedData) throw error;
-                console.warn('[HB-Helper] Using cached Steam account data:', error);
-                return cachedData;
+            } else {
+                if (requireLock) throw new Error(t('choiceWebLocksUnavailable'));
+                outcome = await requestSteamAccountSnapshot({
+                    generation,
+                    allowCachedFallback,
+                    request,
+                    parseUserInfo,
+                });
             }
+            if (outcome.superseded) return steamAccountDataPromise;
+            return outcome.data;
         })();
+        const requestPromise = loadPromise.finally(() => {
+            if (steamAccountDataPendingGeneration === generation) {
+                steamAccountDataPendingGeneration = undefined;
+            }
+        });
         steamAccountDataPromise = requestPromise;
         return requestPromise;
     }
 
+    function applySteamAccountData(
+        account,
+        {
+            reconcileClasses = reconcileVisibleGameClasses,
+            refreshUi = () => {
+                renderChoiceSelectionState();
+                refreshHelperPage(true);
+            },
+        } = {}
+    ) {
+        const apply = async () => {
+            if (!isSteamAccountData(account)
+                || account.updatedAt <= lastAppliedSteamAccountUpdatedAt) {
+                return {applied: false};
+            }
+            const previousUpdatedAt = lastAppliedSteamAccountUpdatedAt;
+            lastAppliedSteamAccountUpdatedAt = account.updatedAt;
+            const nextOwnedApps = new Set(account.ownedApps);
+            const nextWishlistApps = new Set(account.wishlistApps);
+            ownedApps = nextOwnedApps;
+            wishlistApps = nextWishlistApps;
+            steamLoginRequired = false;
+            if (steamAccountDataPendingGeneration === undefined) {
+                steamAccountDataPromise = Promise.resolve(account);
+            }
+            try {
+                await reconcileClasses(nextOwnedApps, nextWishlistApps);
+                refreshUi();
+                return {
+                    applied: true,
+                    ownedApps: nextOwnedApps,
+                    wishlistApps: nextWishlistApps,
+                };
+            } catch (error) {
+                if (lastAppliedSteamAccountUpdatedAt === account.updatedAt) {
+                    lastAppliedSteamAccountUpdatedAt = previousUpdatedAt;
+                }
+                throw error;
+            }
+        };
+        steamAccountApplyPromise = steamAccountApplyPromise.then(apply, apply);
+        return steamAccountApplyPromise;
+    }
+
+    function applyCachedSteamAccountData(options = {}) {
+        const cachedData = getCachedSteamAccountData();
+        return cachedData
+            ? applySteamAccountData(cachedData, options)
+            : Promise.resolve({applied: false});
+    }
+
+    function observeSteamAccountCache({applyAccountData = applySteamAccountData} = {}) {
+        if (steamAccountCacheObserved) return;
+        steamAccountCacheObserved = true;
+        GM_addValueChangeListener(
+            steamAccountCacheKey,
+            (name, oldValue, newValue) => {
+                Promise.resolve(applyAccountData(newValue)).catch(error => {
+                    console.warn('[HB-Helper] Apply shared Steam account data failed:', error);
+                });
+            }
+        );
+    }
+
     async function loadSteamAccountSets(options = {}) {
         const account = await fetchSteamAccountData(options);
-        const nextOwnedApps = new Set(account.ownedApps);
-        const nextWishlistApps = new Set(account.wishlistApps);
-        ownedApps = nextOwnedApps;
-        wishlistApps = nextWishlistApps;
-        return {ownedApps: nextOwnedApps, wishlistApps: nextWishlistApps};
+        await applySteamAccountData(account);
+        return {ownedApps, wishlistApps};
     }
 
     function getLoadedSteamAccountSets() {
@@ -1984,20 +2100,20 @@
             && JSON.stringify(stored) === JSON.stringify(batch));
     }
 
+    function requireLockScopedBatchPersistence(saveBatch) {
+        if (typeof saveBatch !== 'function') {
+            throw new Error('A lock-scoped persistence callback is required.');
+        }
+        return saveBatch;
+    }
+
     async function collectChoiceActivationBatch(
         batch,
         selectedItems,
-        revealKey = ({tile}) => revealChoiceSteamKey(tile),
+        revealKey,
         saveBatch
     ) {
-        const runnerOwner = batch.runner.owner;
-        const persist = saveBatch || (nextBatch => saveChoiceActivationBatchIfCurrent(
-            nextBatch,
-            {
-                state: choiceActivationBatchStates.collecting,
-                runnerOwner,
-            }
-        ));
+        const persist = requireLockScopedBatchPersistence(saveBatch);
         for (const selectedItem of selectedItems) {
             batch.runner.leaseExpiresAt = Date.now() + choiceActivationRunnerLeaseMs;
             if (persist(batch) === false) return false;
@@ -2028,11 +2144,11 @@
         saveBatch,
         openTab = GM_openInTab
     ) {
+        const persist = requireLockScopedBatchPersistence(saveBatch);
         const pendingCount = batch.items.filter(
             item => item.status === choiceActivationItemStates.pending
         ).length;
         if (batch.state !== choiceActivationBatchStates.collecting) return pendingCount;
-        const runnerOwner = batch.runner.owner;
         if (pendingCount === 0) {
             batch.state = choiceActivationBatchStates.complete;
             batch.runner = {phase: null, owner: null, leaseExpiresAt: null};
@@ -2050,12 +2166,7 @@
                 leaseExpiresAt: null,
             };
         }
-        const saved = saveBatch
-            ? saveBatch(batch)
-            : saveChoiceActivationBatchIfCurrent(batch, {
-                state: choiceActivationBatchStates.collecting,
-                runnerOwner,
-            });
+        const saved = persist(batch);
         if (saved === false) return null;
         if (pendingCount > 0) {
             openTab(steamRegisterKeyUrl, {
@@ -2090,6 +2201,10 @@
 
                 const batch = createChoiceActivationBatch(owner);
                 GM_setValue(steamActivationBatchKey, batch);
+                const saveBatch = nextBatch => saveChoiceActivationBatchIfCurrent(
+                    nextBatch,
+                    {runnerOwner: owner}
+                );
                 onBatchStarted(batch);
                 const collected = await collectChoiceActivationBatch(
                     batch,
@@ -2097,12 +2212,13 @@
                     async item => {
                         onProgress(item);
                         return revealKey(item);
-                    }
+                    },
+                    saveBatch
                 );
                 if (!collected) return {started: false, stopped: true, batch};
                 const pendingCount = finishChoiceActivationCollection(
                     batch,
-                    undefined,
+                    saveBatch,
                     openTab
                 );
                 if (pendingCount === null) {
@@ -2678,6 +2794,8 @@
             loadAccount = () => fetchSteamAccountData({
                 force: true,
                 allowCachedFallback: false,
+                lockManager,
+                requireLock: true,
             }),
             reconcileClasses = async () => {},
             owner = choiceRuntimeOwnerId,
@@ -2686,6 +2804,31 @@
             heartbeatMs = Math.max(1000, Math.floor(leaseMs / 3)),
         } = {}
     ) {
+        const manager = getChoiceLockManager(lockManager);
+        if (!manager || typeof manager.request !== 'function') {
+            const current = getChoiceActivationBatch();
+            const message = t('choiceOwnershipRefreshUnsupportedWarning');
+            if (current
+                && current.id === batchId
+                && current.state === choiceActivationBatchStates.complete
+                && [
+                    choiceActivationOwnershipStates.pending,
+                    choiceActivationOwnershipStates.refreshing,
+                ].includes(current.ownershipRefresh.state)) {
+                const failedBatch = JSON.parse(JSON.stringify(current));
+                failedBatch.ownershipRefresh = {
+                    state: choiceActivationOwnershipStates.failed,
+                    owner: null,
+                    leaseExpiresAt: null,
+                    error: message,
+                };
+                saveChoiceActivationBatchIfCurrent(failedBatch, {
+                    refreshOwner: current.ownershipRefresh.owner,
+                });
+            }
+            return {refreshed: false, unsupported: true, message};
+        }
+
         const lockResult = await requestChoiceExclusiveLock(
             choiceOwnershipRefreshLockName,
             async () => {
@@ -2741,7 +2884,11 @@
 
                     const refreshedOwnedApps = new Set(account.ownedApps);
                     const refreshedWishlistApps = new Set(account.wishlistApps);
-                    await reconcileClasses(refreshedOwnedApps, refreshedWishlistApps);
+                    await reconcileClasses(
+                        refreshedOwnedApps,
+                        refreshedWishlistApps,
+                        account
+                    );
                     if (!ownsRefresh()) return {refreshed: false, stopped: true};
 
                     const completedBatch = JSON.parse(JSON.stringify(getChoiceActivationBatch()));
@@ -2786,7 +2933,7 @@
                     clearInterval(heartbeat);
                 }
             },
-            {lockManager, ifAvailable: true}
+            {lockManager: manager, ifAvailable: true}
         );
         if (!lockResult.acquired) {
             return {
@@ -2803,14 +2950,8 @@
         const result = await runChoiceOwnershipRefreshWork(
             batch.id,
             {
-                reconcileClasses: async (refreshedOwnedApps, refreshedWishlistApps) => {
-                    ownedApps = refreshedOwnedApps;
-                    wishlistApps = refreshedWishlistApps;
-                    steamLoginRequired = false;
-                    await reconcileVisibleGameClasses(ownedApps, wishlistApps);
-                    renderChoiceSelectionState();
-                    refreshHelperPage(true);
-                },
+                reconcileClasses: async (refreshedOwnedApps, refreshedWishlistApps, account) =>
+                    applySteamAccountData(account),
             }
         );
         if (result.unsupported) setChoiceStatus(result.message);
@@ -2819,6 +2960,7 @@
         }
         const currentBatch = getChoiceActivationBatch();
         if (currentBatch?.id === batch.id) renderChoiceActivationResults(currentBatch);
+        await applyCachedSteamAccountData();
         return result;
     }
 
@@ -2827,6 +2969,7 @@
         {
             refreshBatch = refreshCompletedChoiceActivationBatch,
             ownershipRetryMs = choiceLockRetryMs,
+            applyCachedAccount = applyCachedSteamAccountData,
         } = {}
     ) {
         const currentBatch = getChoiceActivationBatch();
@@ -2862,6 +3005,13 @@
         if (batch.state !== choiceActivationBatchStates.complete) return;
         clearTimeout(choiceOwnershipRefreshTimer);
         const refresh = batch.ownershipRefresh;
+        if ([
+            choiceActivationOwnershipStates.complete,
+            choiceActivationOwnershipStates.failed,
+        ].includes(refresh.state)) {
+            await applyCachedAccount();
+            return;
+        }
         if (refresh.state === choiceActivationOwnershipStates.pending
             || refresh.state === choiceActivationOwnershipStates.refreshing) {
             const result = await refreshBatch(batch);
@@ -3032,23 +3182,15 @@
             leaseMs = choiceActivationRunnerLeaseMs,
         } = {}
     ) {
+        const persist = requireLockScopedBatchPersistence(saveBatch);
         const pendingItems = batch.items.filter(item => [
             choiceActivationItemStates.pending,
             choiceActivationItemStates.activating,
         ].includes(item.status));
         if (!token && pendingItems.length > 0) return {batch, paused: true};
-        if (batch.state !== choiceActivationBatchStates.activating
-            || (!saveBatch && !isNonEmptyString(owner))) {
+        if (batch.state !== choiceActivationBatchStates.activating) {
             return {batch, paused: false, stopped: true};
         }
-
-        const persist = saveBatch || (nextBatch => saveChoiceActivationBatchIfCurrent(
-            nextBatch,
-            {
-                state: choiceActivationBatchStates.activating,
-                runnerOwner: owner,
-            }
-        ));
 
         for (let index = 0; index < pendingItems.length; index++) {
             const item = pendingItems[index];
@@ -3218,6 +3360,7 @@
         }
 
         if (!isPriceTotalsPage()) return;
+        observeSteamAccountCache();
         if (isChoicePage()) observeChoiceActivationBatch();
         observePageChanges();
         refreshHelperPage(true);
