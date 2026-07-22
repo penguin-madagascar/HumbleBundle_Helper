@@ -1933,13 +1933,43 @@
         return Boolean(modalTitle && tileTitle && modalTitle === tileTitle);
     }
 
+    function getChoiceModalContentSnapshot(modal) {
+        if (!modal) return '';
+        const fields = Array.from(
+            modal.querySelectorAll('input, textarea, .keyfield-value')
+        ).map(element => typeof element.value === 'string'
+            ? element.value
+            : normalizedText(element)
+        );
+        return JSON.stringify({text: normalizedText(modal), fields});
+    }
+
+    function createChoiceModalCloseError(tile) {
+        return new Error(t('choiceModalCloseFailed', {title: getChoiceTileTitle(tile)}));
+    }
+
     async function revealChoiceSteamKey(tile) {
+        const activeModalBeforeClick = getActiveChoiceModal();
+        if (activeModalBeforeClick && !await closeChoiceModal(activeModalBeforeClick)) {
+            throw createChoiceModalCloseError(tile);
+        }
+        const modalBeforeClick = document.getElementById('site-modal');
+        const modalSnapshotBeforeClick = getChoiceModalContentSnapshot(modalBeforeClick);
         tile.click();
         const modal = await waitForCondition(() => {
             const activeModal = getActiveChoiceModal();
-            return activeModal && isChoiceModalForTile(activeModal, tile) ? activeModal : null;
+            if (!activeModal || !isChoiceModalForTile(activeModal, tile)) return null;
+            const contentChanged = !modalSnapshotBeforeClick
+                || getChoiceModalContentSnapshot(activeModal) !== modalSnapshotBeforeClick;
+            return activeModal !== modalBeforeClick || contentChanged ? activeModal : null;
         }, 8000);
-        if (!modal) return null;
+        if (!modal) {
+            const unmatchedModal = getActiveChoiceModal();
+            if (unmatchedModal && !await closeChoiceModal(unmatchedModal)) {
+                throw createChoiceModalCloseError(tile);
+            }
+            return null;
+        }
 
         try {
             const ready = await waitForCondition(
@@ -1955,7 +1985,7 @@
             return await waitForCondition(() => extractSteamKeyFromScope(modal), 5000);
         } finally {
             if (!await closeChoiceModal(modal)) {
-                throw new Error(t('choiceModalCloseFailed', {title: getChoiceTileTitle(tile)}));
+                throw createChoiceModalCloseError(tile);
             }
         }
     }
