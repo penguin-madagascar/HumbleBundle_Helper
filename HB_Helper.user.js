@@ -1757,20 +1757,22 @@
     }
 
     async function updateChoiceSelection(update, {lockManager} = {}) {
+        const mutateStoredSelection = async () => {
+            const storedSelection = getChoiceSelection();
+            const nextSelection = new Set(storedSelection);
+            await update(nextSelection);
+            const changed = nextSelection.size !== storedSelection.size
+                || [...nextSelection].some(id => !storedSelection.has(id));
+            if (changed) GM_setValue(choiceSelectionCacheKey, [...nextSelection]);
+            replaceChoiceSelection(nextSelection);
+            return {updated: changed, selection: new Set(nextSelection)};
+        };
         const lockResult = await requestChoiceExclusiveLock(
             choiceSelectionLockName,
-            async () => {
-                const storedSelection = getChoiceSelection();
-                const nextSelection = new Set(storedSelection);
-                await update(nextSelection);
-                const changed = nextSelection.size !== storedSelection.size
-                    || [...nextSelection].some(id => !storedSelection.has(id));
-                if (changed) GM_setValue(choiceSelectionCacheKey, [...nextSelection]);
-                replaceChoiceSelection(nextSelection);
-                return {updated: changed, selection: new Set(nextSelection)};
-            },
+            mutateStoredSelection,
             {lockManager}
         );
+        if (lockResult.unsupported) return mutateStoredSelection();
         if (!lockResult.acquired) return lockResult;
         return lockResult.value;
     }
