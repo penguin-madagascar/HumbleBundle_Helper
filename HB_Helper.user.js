@@ -2821,7 +2821,7 @@
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         link.setAttribute('role', 'button');
-        link.textContent = t('viewOnSteam');
+        setElementTextContent(link, t('viewOnSteam'));
         link.href = getSteamStoreUrl(app.appid);
         link.dataset.hbHelperTitle = normalizedTitle;
         link.dataset.hbHelperAppid = String(app.appid);
@@ -2956,6 +2956,8 @@
             '#hb-helper-choice-activation-controls',
             '#hb-helper-choice-activation-results',
             '#hb-helper-steam-activation-status',
+            '.hb-helper-steam-store-link',
+            '.hb-helper-steam-store-row',
         ].join(', ')));
     }
 
