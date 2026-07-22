@@ -1557,20 +1557,11 @@
         return !element.disabled && element.getClientRects().length > 0;
     }
 
-    function findChoiceRevealButton(scope) {
-        const revealPattern = /(reveal|show|display|get|claim|choose|select).*(key|code|steam|game)|steam.*(key|code)|领取|显示|查看|揭示|获得|获取|兑换|选择/i;
-        return Array.from(scope.querySelectorAll('button, a, input[type="button"], input[type="submit"]'))
-            .find(element => {
-                if (!isVisibleElement(element)) return false;
-                const text = [
-                    element.textContent,
-                    element.value,
-                    element.getAttribute('aria-label'),
-                    element.getAttribute('title'),
-                ].join(' ');
-                if (/view on steam|在 steam 中查看/i.test(text)) return false;
-                return revealPattern.test(text);
-            }) || null;
+    function findChoiceSteamControl(scope) {
+        return Array.from(scope.querySelectorAll('.keyfield-value')).find(element =>
+            isVisibleElement(element)
+            && normalizedText(element).toLowerCase() === 'get game on steam'
+        ) || null;
     }
 
     async function closeChoiceModal() {
@@ -1593,22 +1584,22 @@
     }
 
     async function revealChoiceSteamKey(tile) {
-        const title = getChoiceTileTitle(tile);
         tile.click();
         const modal = await waitForCondition(getActiveChoiceModal, 8000);
         if (!modal) return null;
 
         try {
-            for (let attempt = 0; attempt < 4; attempt++) {
-                const key = extractSteamKeyFromScope(modal);
-                if (key) return key;
+            const ready = await waitForCondition(
+                () => extractSteamKeyFromScope(modal) || findChoiceSteamControl(modal),
+                8000
+            );
+            if (!ready) return null;
 
-                const revealButton = findChoiceRevealButton(modal);
-                if (!revealButton) return null;
-                revealButton.click();
-                await waitForCondition(() => extractSteamKeyFromScope(modal), 5000);
-            }
-            return null;
+            const key = extractSteamKeyFromScope(modal);
+            if (key) return key;
+
+            ready.click();
+            return await waitForCondition(() => extractSteamKeyFromScope(modal), 5000);
         } finally {
             await closeChoiceModal();
         }
@@ -1625,7 +1616,7 @@
         choiceActivationInProgress = true;
         setChoiceSelectionMode(false);
         setChoiceStatus(t('choiceRevealStarting', {count: tiles.length}));
-        const queue = [];
+        const results = [];
         let openingSteam = false;
         try {
             for (let index = 0; index < tiles.length; index++) {
@@ -1638,16 +1629,26 @@
                 }));
                 const key = await revealChoiceSteamKey(tile);
                 if (!key) {
+                    results.push({
+                        id: getChoiceTileId(tile),
+                        title,
+                        key: null,
+                        status: 'reveal-failed',
+                    });
                     setChoiceStatus(t('choiceRevealFailed', {title}));
-                    return;
+                    continue;
                 }
-                queue.push({title, key, status: 'pending'});
+                results.push({
+                    id: getChoiceTileId(tile),
+                    title,
+                    key,
+                    status: 'pending',
+                });
             }
 
+            const queue = results.filter(item => item.key);
+            if (queue.length === 0) return;
             GM_setValue(steamActivationQueueKey, queue);
-            selectedChoiceGameIds.clear();
-            saveChoiceSelection();
-            renderChoiceSelectionState();
             setChoiceStatus(t('choiceQueueReady', {count: queue.length}));
             openingSteam = true;
             location.assign('https://store.steampowered.com/account/registerkey');
