@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.26
+// @version      0.0.27
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -3259,33 +3259,32 @@
         }
     }
 
-    function getSteamWebApiToken() {
+    function getSteamSessionId() {
         const config = document.getElementById('application_config');
         const userInfo = readJsonDataset(config, 'data-userinfo');
-        const storeUserConfig = readJsonDataset(config, 'data-store_user_config');
         if (userInfo.logged_in === false) return null;
-        return storeUserConfig.webapi_token
-            || (typeof unsafeWindow !== 'undefined' ? unsafeWindow.g_wapit : '')
-            || '';
+        const sessionId = typeof unsafeWindow !== 'undefined'
+            ? unsafeWindow.g_sessionID
+            : '';
+        return isNonEmptyString(sessionId) ? sessionId : '';
     }
 
-    function waitForSteamWebApiToken() {
-        return waitForCondition(getSteamWebApiToken, 15000);
+    function waitForSteamSessionId() {
+        return waitForCondition(getSteamSessionId, 15000);
     }
 
-    function postSteamActivationKey(token, key) {
-        const url = 'https://api.steampowered.com/IStoreService/RegisterCDKey/v1/'
-            + `?access_token=${encodeURIComponent(token)}`;
+    function postSteamActivationKey(sessionId, key) {
+        // Steam's register-key page submits this authenticated Store form.
+        // Source: https://store.steampowered.com/account/registerkey
+        const url = 'https://store.steampowered.com/account/ajaxregisterkey/';
         const data = new URLSearchParams({
-            input_json: JSON.stringify({
-                activation_code: key,
-                purchase_platform: 1,
-                is_request_from_client: false,
-            }),
+            product_key: key,
+            sessionid: sessionId,
         }).toString();
 
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
+                ...steamRequestOptions,
                 method: 'POST',
                 url,
                 data,
@@ -3352,7 +3351,7 @@
 
     async function processSteamActivationBatch(
         batch,
-        token,
+        sessionId,
         activateKey = postSteamActivationKey,
         saveBatch,
         showProgress = () => {},
@@ -3379,7 +3378,7 @@
         const pendingItems = batch.items.filter(
             item => item.status === choiceActivationItemStates.pending
         );
-        if (!token && pendingItems.length > 0) return {batch, paused: true};
+        if (!sessionId && pendingItems.length > 0) return {batch, paused: true};
         if (batch.state !== choiceActivationBatchStates.activating) {
             return {batch, paused: false, stopped: true};
         }
@@ -3395,7 +3394,7 @@
                 return {batch, paused: false, stopped: true};
             }
             try {
-                const response = await activateKey(token, item.key);
+                const response = await activateKey(sessionId, item.key);
                 if (isSteamActivationSuccess(response)) {
                     item.status = choiceActivationItemStates.activated;
                     item.key = null;
@@ -3438,7 +3437,7 @@
 
     async function runSteamActivationWork({
         lockManager,
-        token,
+        sessionId,
         activateKey = postSteamActivationKey,
         showProgress = () => {},
         owner = choiceRuntimeOwnerId,
@@ -3480,7 +3479,7 @@
                 };
                 const result = await processSteamActivationBatch(
                     batch,
-                    token,
+                    sessionId,
                     activateKey,
                     saveBatch,
                     showProgress,
@@ -3508,9 +3507,9 @@
             steamActivationInProgress = false;
             return;
         }
-        const token = await waitForSteamWebApiToken();
+        const sessionId = await waitForSteamSessionId();
         const result = await runSteamActivationWork({
-            token,
+            sessionId,
             showProgress: (item, index, total) => renderSteamActivationStatus(t('steamActivationProgress', {
                 title: item.title,
                 current: index + 1,
