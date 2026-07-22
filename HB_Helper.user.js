@@ -1911,7 +1911,9 @@
     }
 
     async function closeChoiceModal(modal = getActiveChoiceModal()) {
-        if (!modal || getActiveChoiceModal() !== modal) return true;
+        const activeModal = getActiveChoiceModal();
+        if (!activeModal) return true;
+        if (!modal || activeModal !== modal) return false;
         const closeButton = Array.from(
             modal.querySelectorAll('button, a, [role="button"]')
         ).find(element => {
@@ -1925,24 +1927,13 @@
         });
         if (closeButton) closeButton.click();
         else document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
-        return Boolean(await waitForCondition(() => getActiveChoiceModal() !== modal, 1200));
+        return Boolean(await waitForCondition(() => !getActiveChoiceModal(), 1200));
     }
 
     function isChoiceModalForTile(modal, tile) {
         const modalTitle = normalizeSteamTitle(normalizedText(findChoiceModalTitle(modal)));
         const tileTitle = normalizeSteamTitle(getChoiceTileTitle(tile));
         return Boolean(modalTitle && tileTitle && modalTitle === tileTitle);
-    }
-
-    function getChoiceModalContentSnapshot(modal) {
-        if (!modal) return '';
-        const fields = Array.from(
-            modal.querySelectorAll('input, textarea, .keyfield-value')
-        ).map(element => typeof element.value === 'string'
-            ? element.value
-            : normalizedText(element)
-        );
-        return JSON.stringify({text: normalizedText(modal), fields});
     }
 
     function createChoiceModalCloseError(tile) {
@@ -1954,15 +1945,11 @@
         if (activeModalBeforeClick && !await closeChoiceModal(activeModalBeforeClick)) {
             throw createChoiceModalCloseError(tile);
         }
-        const modalBeforeClick = document.getElementById('site-modal');
-        const modalSnapshotBeforeClick = getChoiceModalContentSnapshot(modalBeforeClick);
+        if (getActiveChoiceModal()) throw createChoiceModalCloseError(tile);
         tile.click();
         const modal = await waitForCondition(() => {
             const activeModal = getActiveChoiceModal();
-            if (!activeModal || !isChoiceModalForTile(activeModal, tile)) return null;
-            const contentChanged = !modalSnapshotBeforeClick
-                || getChoiceModalContentSnapshot(activeModal) !== modalSnapshotBeforeClick;
-            return activeModal !== modalBeforeClick || contentChanged ? activeModal : null;
+            return activeModal && isChoiceModalForTile(activeModal, tile) ? activeModal : null;
         }, 8000);
         if (!modal) {
             const unmatchedModal = getActiveChoiceModal();
