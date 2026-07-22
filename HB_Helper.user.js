@@ -1754,6 +1754,7 @@
             choiceSelectionCacheKey,
             (name, oldValue, newValue) => replaceChoiceSelection(newValue)
         );
+        replaceChoiceSelection(GM_getValue(choiceSelectionCacheKey, []));
     }
 
     async function updateChoiceSelection(update, {lockManager} = {}) {
