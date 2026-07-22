@@ -539,6 +539,7 @@
             steamActivationRateLimited: 'Steam rejected the request because the activation or request limit was reached.',
             steamActivationUnknownCode: 'Steam activation failed (result code {code}).',
             steamActivationRequestFailed: 'The Steam activation request failed: {message}',
+            steamActivationInterruptedUncertain: 'Steam activation was interrupted after the request began. The result is uncertain, so this key was not submitted again.',
             noRegionRestrictions: 'No Region Restrictions',
             exclusiveCountries: 'Exclusive countries: {countries}',
             disallowedCountries: 'Disallowed countries: {countries}',
@@ -625,6 +626,7 @@
             steamActivationRateLimited: '已达到 Steam 激活或请求频率限制，本次请求被拒绝。',
             steamActivationUnknownCode: 'Steam 激活失败（结果代码 {code}）。',
             steamActivationRequestFailed: 'Steam 激活请求失败：{message}',
+            steamActivationInterruptedUncertain: 'Steam 激活请求开始后被中断，结果不确定，因此不会再次提交此 key。',
             noRegionRestrictions: '无区域限制',
             exclusiveCountries: '仅限国家/地区：{countries}',
             disallowedCountries: '禁止激活国家/地区：{countries}',
@@ -3183,10 +3185,22 @@
         } = {}
     ) {
         const persist = requireLockScopedBatchPersistence(saveBatch);
-        const pendingItems = batch.items.filter(item => [
-            choiceActivationItemStates.pending,
-            choiceActivationItemStates.activating,
-        ].includes(item.status));
+        const interruptedItems = batch.items.filter(
+            item => item.status === choiceActivationItemStates.activating
+        );
+        if (interruptedItems.length > 0) {
+            for (const item of interruptedItems) {
+                item.status = choiceActivationItemStates.steamFailed;
+                item.error = t('steamActivationInterruptedUncertain');
+                item.code = null;
+            }
+            if (persist(batch) === false) {
+                return {batch, paused: false, stopped: true};
+            }
+        }
+        const pendingItems = batch.items.filter(
+            item => item.status === choiceActivationItemStates.pending
+        );
         if (!token && pendingItems.length > 0) return {batch, paused: true};
         if (batch.state !== choiceActivationBatchStates.activating) {
             return {batch, paused: false, stopped: true};
