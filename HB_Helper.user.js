@@ -3519,11 +3519,6 @@
             return;
         }
         const token = await waitForSteamWebApiToken();
-        if (!token) {
-            renderSteamActivationStatus(t('steamActivationLoginRequired'));
-            steamActivationInProgress = false;
-            return;
-        }
         const result = await runSteamActivationWork({
             token,
             showProgress: (item, index, total) => renderSteamActivationStatus(t('steamActivationProgress', {
@@ -3534,6 +3529,11 @@
         });
         if (result.unsupported) {
             renderSteamActivationStatus(result.message);
+            steamActivationInProgress = false;
+            return;
+        }
+        if (result.paused) {
+            renderSteamActivationStatus(t('steamActivationLoginRequired'));
             steamActivationInProgress = false;
             return;
         }
