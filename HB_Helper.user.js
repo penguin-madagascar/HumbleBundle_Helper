@@ -1093,11 +1093,22 @@
             if (outcome.superseded) return steamAccountDataPromise;
             return outcome.data;
         })();
-        const requestPromise = loadPromise.finally(() => {
-            if (steamAccountDataPendingGeneration === generation) {
-                steamAccountDataPendingGeneration = undefined;
-            }
-        });
+        const requestPromise = loadPromise
+            .catch(error => {
+                if (generation === steamAccountDataGeneration
+                    && steamAccountDataPromise === requestPromise) {
+                    const cachedData = getCachedSteamAccountData();
+                    steamAccountDataPromise = cachedData
+                        ? Promise.resolve(cachedData)
+                        : undefined;
+                }
+                throw error;
+            })
+            .finally(() => {
+                if (steamAccountDataPendingGeneration === generation) {
+                    steamAccountDataPendingGeneration = undefined;
+                }
+            });
         steamAccountDataPromise = requestPromise;
         return requestPromise;
     }
