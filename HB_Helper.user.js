@@ -475,6 +475,9 @@
             landingSortAria: 'Sort {heading} bundles',
             loginSteamLoadAccountData: 'Login to Steam to load account data',
             steamInvalidAccountData: 'Steam returned invalid account data',
+            steamSyncLoggedOut: 'Log in to Steam, then return to Humble Bundle to synchronize automatically.',
+            steamSyncError: 'Could not synchronize your Steam session.',
+            steamSyncRetry: 'Retry',
             steamGiftsSearch: 'Search SteamGifts discussions (for potential region lock)',
             loadingPriceTotals: 'Loading Steam price totals...',
             loginSteamCheckOwned: 'Login to Steam to check owned games',
@@ -564,6 +567,9 @@
             landingSortAria: '排序 {heading} 慈善包',
             loginSteamLoadAccountData: '登录 Steam 后才能加载账号数据',
             steamInvalidAccountData: 'Steam 返回了无效的账号数据',
+            steamSyncLoggedOut: '登录 Steam 后返回 Humble Bundle，助手会自动同步。',
+            steamSyncError: '无法同步 Steam 会话。',
+            steamSyncRetry: '重试',
             steamGiftsSearch: '搜索 SteamGifts 讨论（查看可能的区域限制）',
             loadingPriceTotals: '正在加载 Steam 价格汇总...',
             loginSteamCheckOwned: '登录 Steam 以检查已拥有游戏',
@@ -759,7 +765,6 @@
     const steamAppMatchCache = new Map();
     const priceHistoryCache = new Map();
     const exchangeRateCache = new Map();
-    const steamAccountCacheKey = 'steam-account-data-v1';
     const choiceSelectionCacheKey = 'hb-helper-choice-selected-games-v1';
     const steamActivationBatchKey = 'hb-helper-steam-activation-batch-v2';
     const legacySteamActivationQueueKey = 'hb-helper-steam-activation-queue-v1';
@@ -788,7 +793,6 @@
     const choiceCollectionLockName = 'hb-helper-choice-collection';
     const steamActivationLockName = 'hb-helper-choice-steam-activation';
     const choiceOwnershipRefreshLockName = 'hb-helper-choice-ownership-refresh';
-    const steamAccountDataLockName = 'hb-helper-steam-account-data';
     const choiceSelectionLockName = 'hb-helper-choice-selection';
     const choiceLockRetryMs = 250;
     const gmRequestTimeoutMs = 20000;
@@ -801,13 +805,11 @@
         cookiePartition: {topLevelSite: 'https://store.steampowered.com'},
     };
     let bundleItemsByTitle;
-    let steamAccountDataPromise;
     let humbleAccountCurrencyPromise;
-    let steamAccountDataGeneration = 0;
-    let steamAccountDataPendingGeneration;
-    let steamAccountCacheObserved = false;
-    let steamAccountApplyPromise = Promise.resolve();
-    let lastAppliedSteamAccountUpdatedAt = 0;
+    let steamSessionSynchronizer;
+    let steamSessionSyncTrigger;
+    let steamSessionState = {status: 'syncing', account: null, error: null};
+    let steamSessionTriggersObserved = false;
     let pageRefreshTimer;
     let choiceCollectionRecoveryTimer;
     let choiceOwnershipRefreshTimer;
@@ -819,7 +821,6 @@
     let landingPageDataCache;
     let landingPageDataSourcePromise;
     const landingSortModeBySection = new Map();
-    let steamLoginRequired = false;
     let ownedApps;
     let wishlistApps;
     let choiceSelectionMode = false;
@@ -1060,210 +1061,173 @@
             && /^[A-Z]{2}$/.test(data.countryCode)
             && Array.isArray(data.ownedApps)
             && Array.isArray(data.wishlistApps)
-            && Number.isFinite(data.updatedAt)
-            && data.updatedAt > 0);
+            && isNonEmptyString(data.sessionId));
     }
 
-    function getCachedSteamAccountData() {
-        const data = GM_getValue(steamAccountCacheKey);
-        return isSteamAccountData(data) ? data : null;
-    }
-
-    function parseSteamUserInfo(html) {
+    function parseSteamSession(html) {
         const steamPage = new DOMParser().parseFromString(html, 'text/html');
         const userInfoText = steamPage.querySelector('#application_config')
             ?.getAttribute('data-userinfo');
-        return JSON.parse(userInfoText || '{}');
-    }
-
-    async function requestSteamAccountSnapshot({
-        generation,
-        allowCachedFallback,
-        request,
-        parseUserInfo,
-    }) {
-        try {
-            const html = await request(
-                `https://store.steampowered.com/?l=english&_=${Date.now()}`,
-                'text',
-                steamRequestOptions
-            );
-            if (generation !== steamAccountDataGeneration) return {superseded: true};
-            const userInfo = parseUserInfo(html);
-            if (!userInfo.logged_in) throw new Error(t('loginSteamLoadAccountData'));
-
-            const userData = await request(
-                `https://store.steampowered.com/dynamicstore/userdata/?_=${Date.now()}`,
-                'json',
-                {
-                    ...steamRequestOptions,
-                    headers: {'Cache-Control': 'no-cache'},
-                }
-            );
-            if (generation !== steamAccountDataGeneration) return {superseded: true};
-            if (!Array.isArray(userData?.rgOwnedApps)
-                || !Array.isArray(userData?.rgWishlist)) {
-                throw new Error(t('steamInvalidAccountData'));
-            }
-
-            const cachedData = getCachedSteamAccountData();
-            const data = {
-                countryCode: userInfo.country_code.toUpperCase(),
-                ownedApps: userData.rgOwnedApps,
-                wishlistApps: userData.rgWishlist,
-                updatedAt: Math.max(Date.now(), (cachedData?.updatedAt || 0) + 1),
-            };
-            if (generation !== steamAccountDataGeneration) return {superseded: true};
-            GM_setValue(steamAccountCacheKey, data);
-            return {data};
-        } catch (error) {
-            if (generation !== steamAccountDataGeneration) return {superseded: true};
-            if (!allowCachedFallback) throw error;
-            const cachedData = getCachedSteamAccountData();
-            if (!cachedData) throw error;
-            console.warn('[HB-Helper] Using cached Steam account data:', error);
-            return {data: cachedData};
-        }
-    }
-
-    function fetchSteamAccountData({
-        force = false,
-        allowCachedFallback = true,
-        request = gmRequest,
-        parseUserInfo = parseSteamUserInfo,
-        lockManager,
-        requireLock = false,
-    } = {}) {
-        if (!force && steamAccountDataPromise) return steamAccountDataPromise;
-
-        const requestStartedAt = Date.now();
-        const generation = ++steamAccountDataGeneration;
-        steamAccountDataPendingGeneration = generation;
-        const loadPromise = (async () => {
-            const manager = getChoiceLockManager(lockManager);
-            let outcome;
-            if (manager && typeof manager.request === 'function') {
-                outcome = await manager.request(
-                    steamAccountDataLockName,
-                    {mode: 'exclusive'},
-                    async () => {
-                        if (generation !== steamAccountDataGeneration) {
-                            return {superseded: true};
-                        }
-                        const cachedData = getCachedSteamAccountData();
-                        if (!force
-                            && cachedData
-                            && cachedData.updatedAt >= requestStartedAt) {
-                            return {data: cachedData};
-                        }
-                        return requestSteamAccountSnapshot({
-                            generation,
-                            allowCachedFallback,
-                            request,
-                            parseUserInfo,
-                        });
-                    }
-                );
-            } else {
-                if (requireLock) throw new Error(t('choiceWebLocksUnavailable'));
-                outcome = await requestSteamAccountSnapshot({
-                    generation,
-                    allowCachedFallback,
-                    request,
-                    parseUserInfo,
-                });
-            }
-            if (outcome.superseded) return steamAccountDataPromise;
-            return outcome.data;
-        })();
-        const requestPromise = loadPromise
-            .catch(error => {
-                if (generation === steamAccountDataGeneration
-                    && steamAccountDataPromise === requestPromise) {
-                    const cachedData = getCachedSteamAccountData();
-                    steamAccountDataPromise = cachedData
-                        ? Promise.resolve(cachedData)
-                        : undefined;
-                }
-                throw error;
-            })
-            .finally(() => {
-                if (steamAccountDataPendingGeneration === generation) {
-                    steamAccountDataPendingGeneration = undefined;
-                }
-            });
-        steamAccountDataPromise = requestPromise;
-        return requestPromise;
-    }
-
-    function applySteamAccountData(
-        account,
-        {
-            reconcileClasses = reconcileVisibleGameClasses,
-            refreshUi = () => {
-                renderChoiceSelectionState();
-                refreshHelperPage(true);
-            },
-        } = {}
-    ) {
-        const apply = async () => {
-            if (!isSteamAccountData(account)
-                || account.updatedAt <= lastAppliedSteamAccountUpdatedAt) {
-                return {applied: false};
-            }
-            const previousUpdatedAt = lastAppliedSteamAccountUpdatedAt;
-            lastAppliedSteamAccountUpdatedAt = account.updatedAt;
-            const nextOwnedApps = new Set(account.ownedApps);
-            const nextWishlistApps = new Set(account.wishlistApps);
-            ownedApps = nextOwnedApps;
-            wishlistApps = nextWishlistApps;
-            steamLoginRequired = false;
-            if (steamAccountDataPendingGeneration === undefined) {
-                steamAccountDataPromise = Promise.resolve(account);
-            }
-            try {
-                await reconcileClasses(nextOwnedApps, nextWishlistApps);
-                refreshUi();
-                return {
-                    applied: true,
-                    ownedApps: nextOwnedApps,
-                    wishlistApps: nextWishlistApps,
-                };
-            } catch (error) {
-                if (lastAppliedSteamAccountUpdatedAt === account.updatedAt) {
-                    lastAppliedSteamAccountUpdatedAt = previousUpdatedAt;
-                }
-                throw error;
-            }
+        const userInfo = JSON.parse(userInfoText || '{}');
+        const sessionId = String(html).match(
+            /\bg_sessionID\s*=\s*["']([^"']+)["']/
+        )?.[1] || '';
+        return {
+            loggedIn: userInfo.logged_in === true,
+            countryCode: typeof userInfo.country_code === 'string'
+                ? userInfo.country_code.toUpperCase()
+                : '',
+            sessionId,
         };
-        steamAccountApplyPromise = steamAccountApplyPromise.then(apply, apply);
-        return steamAccountApplyPromise;
     }
 
-    function applyCachedSteamAccountData(options = {}) {
-        const cachedData = getCachedSteamAccountData();
-        return cachedData
-            ? applySteamAccountData(cachedData, options)
-            : Promise.resolve({applied: false});
-    }
+    function createSteamSessionSynchronizer({
+        request = gmRequest,
+        parseSession = parseSteamSession,
+        onStateChange = () => {},
+        onClearDerivedState = () => {},
+    } = {}) {
+        let state = {status: 'syncing', account: null, error: null};
+        let generation = 0;
+        let pendingSync;
 
-    function observeSteamAccountCache({applyAccountData = applySteamAccountData} = {}) {
-        if (steamAccountCacheObserved) return;
-        steamAccountCacheObserved = true;
-        GM_addValueChangeListener(
-            steamAccountCacheKey,
-            (name, oldValue, newValue) => {
-                Promise.resolve(applyAccountData(newValue)).catch(error => {
-                    console.warn('[HB-Helper] Apply shared Steam account data failed:', error);
-                });
+        const updateState = nextState => {
+            state = nextState;
+            onStateChange(state);
+            if (state.status === 'logged-out' || state.status === 'error') {
+                onClearDerivedState(state);
             }
-        );
+            return state;
+        };
+        const sync = ({force = false} = {}) => {
+            if (!force && pendingSync) return pendingSync;
+            const requestGeneration = ++generation;
+            const retainedAccount = state.status === 'authenticated' ? state.account : null;
+            const retainedError = state.status === 'error' ? state.error : null;
+            updateState({status: 'syncing', account: retainedAccount, error: retainedError});
+            const task = (async () => {
+                try {
+                    const html = await request(
+                        `https://store.steampowered.com/?l=english&_=${Date.now()}`,
+                        'text',
+                        steamRequestOptions
+                    );
+                    if (requestGeneration !== generation) return state;
+                    const session = parseSession(html);
+                    if (!session.loggedIn) {
+                        return updateState({status: 'logged-out', account: null, error: null});
+                    }
+                    if (!/^[A-Z]{2}$/.test(session.countryCode)
+                        || !isNonEmptyString(session.sessionId)) {
+                        throw new Error(t('steamInvalidAccountData'));
+                    }
+                    const userData = await request(
+                        `https://store.steampowered.com/dynamicstore/userdata/?_=${Date.now()}`,
+                        'json',
+                        {...steamRequestOptions, headers: {'Cache-Control': 'no-cache'}}
+                    );
+                    if (requestGeneration !== generation) return state;
+                    if (!Array.isArray(userData?.rgOwnedApps)
+                        || !Array.isArray(userData?.rgWishlist)) {
+                        throw new Error(t('steamInvalidAccountData'));
+                    }
+                    return updateState({
+                        status: 'authenticated',
+                        account: {
+                            countryCode: session.countryCode,
+                            ownedApps: userData.rgOwnedApps,
+                            wishlistApps: userData.rgWishlist,
+                            sessionId: session.sessionId,
+                        },
+                        error: null,
+                    });
+                } catch (error) {
+                    if (requestGeneration !== generation) return state;
+                    return updateState({status: 'error', account: null, error});
+                }
+            })();
+            let requestPromise;
+            requestPromise = task.finally(() => {
+                if (pendingSync === requestPromise) pendingSync = undefined;
+            });
+            pendingSync = requestPromise;
+            return requestPromise;
+        };
+        return {sync, getState: () => state};
+    }
+
+    function createSteamSessionSyncTrigger(synchronizer, schedule = callback => setTimeout(callback, 0)) {
+        let pendingTrigger;
+        return () => {
+            if (pendingTrigger) return pendingTrigger;
+            pendingTrigger = new Promise((resolve, reject) => {
+                schedule(() => {
+                    Promise.resolve(synchronizer.sync())
+                        .then(resolve, reject)
+                        .finally(() => { pendingTrigger = undefined; });
+                });
+            });
+            return pendingTrigger;
+        };
+    }
+
+    function hasSteamAccountData() {
+        return isSteamAccountData(steamSessionState.account)
+            && ['authenticated', 'syncing'].includes(steamSessionState.status);
+    }
+
+    function applySteamSessionState(nextState) {
+        steamSessionState = nextState;
+        if (hasSteamAccountData()) {
+            ownedApps = new Set(nextState.account.ownedApps);
+            wishlistApps = new Set(nextState.account.wishlistApps);
+            reconcileVisibleGameClasses(ownedApps, wishlistApps).catch(error => {
+                console.warn('[HB-Helper] Reconcile Steam ownership classes failed:', error);
+            });
+        }
+        refreshHelperPage(nextState.status === 'authenticated');
+    }
+
+    function clearSteamAccountDerivedState() {
+        ownedApps = undefined;
+        wishlistApps = undefined;
+        priceScope = 'all';
+        lastPriceResult = undefined;
+        priceTotalsRunId++;
+        choiceSelectionMode = false;
+        document.documentElement.classList.remove('hb-helper-choice-select-mode');
+        renderChoiceSelectionTiles(getVisibleChoiceTiles(), new Set());
+        reconcileVisibleGameClasses(new Set(), new Set()).catch(error => {
+            console.warn('[HB-Helper] Clear Steam ownership classes failed:', error);
+        });
+    }
+
+    function getSteamSessionSynchronizer() {
+        if (!steamSessionSynchronizer) {
+            steamSessionSynchronizer = createSteamSessionSynchronizer({
+                onStateChange: applySteamSessionState,
+                onClearDerivedState: clearSteamAccountDerivedState,
+            });
+        }
+        return steamSessionSynchronizer;
+    }
+
+    function syncSteamSession(options = {}) {
+        return getSteamSessionSynchronizer().sync(options);
+    }
+
+    function fetchSteamAccountData(options = {}) {
+        return syncSteamSession(options).then(state => {
+            if (state.status === 'authenticated' && isSteamAccountData(state.account)) {
+                return state.account;
+            }
+            throw state.error || new Error(t('loginSteamLoadAccountData'));
+        });
     }
 
     async function loadSteamAccountSets(options = {}) {
         const account = await fetchSteamAccountData(options);
-        await applySteamAccountData(account);
-        return {ownedApps, wishlistApps};
+        return {ownedApps: new Set(account.ownedApps), wishlistApps: new Set(account.wishlistApps)};
     }
 
     function getLoadedSteamAccountSets() {
@@ -1970,6 +1934,11 @@
     }
 
     function renderChoiceSelectionState() {
+        if (!hasSteamAccountData()) {
+            choiceSelectionMode = false;
+            document.documentElement.classList.remove('hb-helper-choice-select-mode');
+            return;
+        }
         renderChoiceSelectionTiles(getVisibleChoiceTiles());
 
         const controls = document.getElementById('hb-helper-choice-activation-controls');
@@ -2735,7 +2704,7 @@
 
     function ensureChoiceActivationControls(controls, summary) {
         let choiceControls = document.getElementById('hb-helper-choice-activation-controls');
-        if (!isChoicePage()) {
+        if (!isChoicePage() || !hasSteamAccountData()) {
             choiceControls?.remove();
             return;
         }
@@ -2836,18 +2805,23 @@
         steamGiftsLink.href = buildSteamGiftsSearchUrl();
 
         let summary = document.getElementById('hb-helper-price-summary');
-        if (!summary) {
+        if (!hasSteamAccountData()) {
+            summary?.remove();
+            summary = null;
+        }
+        if (hasSteamAccountData() && !summary) {
             summary = document.createElement('div');
             summary.id = 'hb-helper-price-summary';
             summary.textContent = t('loadingPriceTotals');
         }
 
         if (steamGifts.parentNode !== controls) controls.appendChild(steamGifts);
-        if (summary.parentNode !== controls) controls.appendChild(summary);
-        if (steamGifts.nextElementSibling !== summary) {
+        if (summary && summary.parentNode !== controls) controls.appendChild(summary);
+        if (summary && steamGifts.nextElementSibling !== summary) {
             controls.insertBefore(summary, steamGifts.nextSibling);
         }
-        ensureChoiceActivationControls(controls, summary);
+        if (summary) ensureChoiceActivationControls(controls, summary);
+        else document.getElementById('hb-helper-choice-activation-controls')?.remove();
         const {anchor, position} = insertionPoint;
         if (position === 'beforebegin' && anchor.previousElementSibling !== controls) {
             anchor.insertAdjacentElement('beforebegin', controls);
@@ -2869,16 +2843,48 @@
             loginLink.href = 'https://store.steampowered.com/login/';
             loginLink.target = '_blank';
             loginLink.rel = 'noopener noreferrer';
-            loginLink.addEventListener('click', () => {
-                if (loginDiv.querySelector('.hb-helper-login-message')) return;
-                const message = document.createElement('div');
-                message.className = 'hb-helper-login-message';
-                message.textContent = t('refreshAfterLogin');
-                loginDiv.appendChild(message);
-            });
             loginDiv.appendChild(loginLink);
         }
-        loginDiv.querySelector('a').textContent = t('loginSteamCheckOwned');
+        let loginLink = loginDiv.querySelector('a');
+        const existingMessage = loginDiv.querySelector('.hb-helper-login-message');
+        if (steamSessionState.status === 'error'
+            || (steamSessionState.status === 'syncing' && steamSessionState.error)) {
+            loginLink?.remove();
+            if (!existingMessage) {
+                const message = document.createElement('div');
+                message.className = 'hb-helper-login-message';
+                loginDiv.appendChild(message);
+            }
+            loginDiv.querySelector('.hb-helper-login-message').textContent = t('steamSyncError');
+            let retryButton = loginDiv.querySelector('button');
+            if (!retryButton) {
+                retryButton = document.createElement('button');
+                retryButton.type = 'button';
+                retryButton.addEventListener('click', () => {
+                    retryButton.disabled = true;
+                    syncSteamSession({force: true}).finally(() => { retryButton.disabled = false; });
+                });
+                loginDiv.appendChild(retryButton);
+            }
+            retryButton.textContent = t('steamSyncRetry');
+            retryButton.disabled = steamSessionState.status === 'syncing';
+        } else {
+            if (!loginLink) {
+                loginLink = document.createElement('a');
+                loginLink.href = 'https://store.steampowered.com/login/';
+                loginLink.target = '_blank';
+                loginLink.rel = 'noopener noreferrer';
+                loginDiv.insertBefore(loginLink, loginDiv.firstChild);
+            }
+            loginLink.textContent = t('loginSteamCheckOwned');
+            if (!existingMessage) {
+                const message = document.createElement('div');
+                message.className = 'hb-helper-login-message';
+                loginDiv.appendChild(message);
+            }
+            loginDiv.querySelector('.hb-helper-login-message').textContent = t('steamSyncLoggedOut');
+            loginDiv.querySelector('button')?.remove();
+        }
         if (loginDiv.parentNode !== controls || controls.firstElementChild !== loginDiv) {
             controls.insertBefore(loginDiv, controls.firstChild);
         }
@@ -3096,15 +3102,31 @@
         const controls = ensureHelperControls();
         ensureSteamStoreLinks();
         if (!controls) return;
-        if (steamLoginRequired) ensureSteamLoginReminder();
-        else document.getElementById('hb-helper-login-reminder')?.remove();
-        markVisibleGames();
-        schedulePriceTotalsReload(forcePriceReload);
+        if (['logged-out', 'error'].includes(steamSessionState.status)
+            || (steamSessionState.status === 'syncing' && steamSessionState.error)) {
+            ensureSteamLoginReminder();
+        } else {
+            document.getElementById('hb-helper-login-reminder')?.remove();
+        }
+        if (hasSteamAccountData()) {
+            markVisibleGames();
+            schedulePriceTotalsReload(forcePriceReload);
+        }
     }
 
     function schedulePageRefresh(forcePriceReload = false) {
         clearTimeout(pageRefreshTimer);
         pageRefreshTimer = setTimeout(() => refreshHelperPage(forcePriceReload), 300);
+    }
+
+    function observeSteamSessionSynchronizationTriggers() {
+        if (steamSessionTriggersObserved) return;
+        steamSessionTriggersObserved = true;
+        steamSessionSyncTrigger = createSteamSessionSyncTrigger(getSteamSessionSynchronizer());
+        window.addEventListener('focus', () => steamSessionSyncTrigger());
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') steamSessionSyncTrigger();
+        });
     }
 
     function isInsideHelperUi(node) {
@@ -3299,7 +3321,7 @@
             batch.id,
             {
                 reconcileClasses: async (refreshedOwnedApps, refreshedWishlistApps, account) =>
-                    applySteamAccountData(account),
+                    applySteamSessionState({status: 'authenticated', account, error: null}),
             }
         );
         if (result.unsupported) setChoiceStatus(result.message);
@@ -3722,12 +3744,12 @@
         }
 
         if (!isPriceTotalsPage()) return;
-        observeSteamAccountCache();
         if (isChoicePage()) {
             observeChoiceActivationBatch();
             observeChoiceSelection();
         }
         observePageChanges();
+        observeSteamSessionSynchronizationTriggers();
         refreshHelperPage(true);
 
         if (isChoicePage()) {
@@ -3740,18 +3762,9 @@
             }
         }
 
-        try {
-            await loadSteamAccountSets();
-            steamLoginRequired = false;
-        } catch (error) {
-            console.warn('[HB-Helper] Fetch owned games failed:', error);
-            steamLoginRequired = true;
-            refreshHelperPage();
-        }
+        await syncSteamSession();
 
-        if (!steamLoginRequired) {
-            renderPriceTotals();
-        }
+        if (hasSteamAccountData()) renderPriceTotals();
 
         refreshHelperPage();
         if (isChoicePage()) await reconcileChoiceActivationBatch();
@@ -3765,7 +3778,7 @@
         run();
     }
 
-    startHelper();
+    if (!globalThis.__HB_HELPER_TEST__) startHelper();
 
     function gmRequest(url, responseType = 'json', options = {}) {
         return new Promise((resolve, reject) => {
@@ -3949,7 +3962,7 @@
         const {
             region, currencyCode, humbleCurrencyCode, exchangeRate, games
         } = lastPriceResult;
-        const canFilterOwned = ownedApps && !steamLoginRequired;
+        const canFilterOwned = ownedApps && hasSteamAccountData();
         if (!canFilterOwned) priceScope = 'all';
         const selectedGames = priceScope === 'unowned'
             ? games.filter(game => !game.appId || !ownedApps.has(game.appId))
@@ -4026,6 +4039,7 @@
     }
 
     function schedulePriceTotalsReload(force = false) {
+        if (!hasSteamAccountData()) return;
         const titles = [...new Set(getVisibleGameTitles())];
         if (titles.length === 0) {
             priceTotalsRunId++;
@@ -4040,6 +4054,7 @@
     }
 
     async function loadPriceTotals(titles) {
+        if (!hasSteamAccountData()) return;
         const runId = ++priceTotalsRunId;
         const summary = document.getElementById('hb-helper-price-summary');
         if (summary) summary.textContent = t('loadingPriceTotals');
@@ -4127,7 +4142,7 @@
     }
 
     // Region Restriction Check
-    getRegionLockInfo();
+    if (!globalThis.__HB_HELPER_TEST__) getRegionLockInfo();
 
     // Region Restriction Check: Collect region-lock data embedded in the page and render it
     function getRegionLockInfo() {
@@ -4192,6 +4207,14 @@
         insertElem.appendChild(restrictionInfo);
         const target = container || document.querySelector('.disclaimer') || document.body;
         if (target) target.appendChild(insertElem);
+    }
+
+    if (globalThis.__HB_HELPER_TEST__) {
+        globalThis.__HB_HELPER_TEST_API__ = {
+            parseSteamSession,
+            createSteamSessionSynchronizer,
+            createSteamSessionSyncTrigger,
+        };
     }
 
 })();
