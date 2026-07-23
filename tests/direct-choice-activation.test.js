@@ -31,9 +31,10 @@ function loadApi({onRequest = () => {}} = {}) {
         body: element(),
         head: element(),
         documentElement: element(),
+        elements: new Map(),
         createElement: element,
         addEventListener() {},
-        getElementById() { return null; },
+        getElementById(id) { return this.elements.get(id) || null; },
         querySelector() { return null; },
         choiceTiles: [],
         querySelectorAll(selector) {
@@ -172,6 +173,32 @@ test('Choice activation UI is available only for an authenticated Steam snapshot
     assert.equal(tile.classList.contains('hb-helper-choice-selected'), false);
 });
 
+test('an unauthenticated transition removes Choice controls and failed-key results without an insertion point', () => {
+    const {api} = loadApi();
+    const document = api.getTestDocument();
+    const failedKeyResults = {textContent: 'AAAAA-BBBBB-CCCCC'};
+    const controls = {
+        remove() {
+            document.elements.delete('hb-helper-choice-activation-controls');
+            document.elements.delete('hb-helper-choice-activation-results');
+        },
+    };
+    document.elements.set('hb-helper-choice-activation-controls', controls);
+    document.elements.set('hb-helper-choice-activation-results', failedKeyResults);
+    assert.equal(document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, div').length, 0);
+
+    api.applySteamSessionState({status: 'logged-out', account: null, error: null});
+
+    assert.equal(
+        document.getElementById('hb-helper-choice-activation-controls'),
+        null
+    );
+    assert.equal(
+        document.getElementById('hb-helper-choice-activation-results'),
+        null
+    );
+});
+
 test('forces Steam session synchronization before collecting or activating keys', async () => {
     const {api} = loadApi();
     const events = [];
@@ -305,13 +332,13 @@ test('rechecks the live Steam session after transport or invalid-response failur
             {id: 'two', title: 'Two', key: 'DDDDD-EEEEE-FFFFF'},
         ]);
         let syncCalls = 0;
-        let submissions = 0;
+        const submissions = [];
         await api.processSteamActivationBatch(
             batch,
             'live-session',
-            async () => {
-                submissions += 1;
-                return submissions === 1 ? failedResponse() : successResponse;
+            async (sessionId, key) => {
+                submissions.push([sessionId, key]);
+                return submissions.length === 1 ? failedResponse() : successResponse;
             },
             () => true,
             () => {},
@@ -324,7 +351,10 @@ test('rechecks the live Steam session after transport or invalid-response failur
             }
         );
         assert.equal(syncCalls, 1);
-        assert.equal(submissions, 2);
+        assert.deepEqual(submissions, [
+            ['live-session', 'AAAAA-BBBBB-CCCCC'],
+            ['renewed-session', 'DDDDD-EEEEE-FFFFF'],
+        ]);
         assert.equal(batch.items[0].status, 'steam-activation-failed');
         assert.equal(batch.items[1].status, 'activated');
     }
@@ -415,28 +445,74 @@ test('cancels an interrupted batch only after acquiring the activation Web Lock'
     assert.match(stored.items[1].error, /cancelled|not submitted/i);
 });
 
-test('a second Humble tab neither cancels nor submits while another runner holds the lock', async () => {
+test('a queued second Humble tab rechecks the completed batch after the first runner releases the lock', async () => {
     const {api} = loadApi();
     const batch = activationBatch([
         {id: 'one', title: 'One', key: 'AAAAA-BBBBB-CCCCC'},
     ], 'first-tab');
     api.setChoiceActivationBatchForTest(batch);
-    let submissions = 0;
-
-    const result = await api.runSteamActivationWork({
+    const queue = [];
+    let lockHeld = false;
+    const lockManager = {
+        request(name, options, callback) {
+            return new Promise((resolve, reject) => {
+                queue.push({name, callback, resolve, reject});
+                runNext();
+            });
+        },
+    };
+    function runNext() {
+        if (lockHeld || queue.length === 0) return;
+        lockHeld = true;
+        const next = queue.shift();
+        Promise.resolve(next.callback({name: next.name}))
+            .then(next.resolve, next.reject)
+            .finally(() => {
+                lockHeld = false;
+                runNext();
+            });
+    }
+    let releaseFirstRequest;
+    let firstSubmissionStarted;
+    const firstSubmitted = new Promise(resolve => { firstSubmissionStarted = resolve; });
+    const firstRun = api.runSteamActivationWork({
+        owner: 'first-tab',
+        sessionId: 'live-session',
+        lockManager,
+        activateKey: async () => {
+            firstSubmissionStarted();
+            await new Promise(resolve => { releaseFirstRequest = resolve; });
+            return successResponse;
+        },
+    });
+    await firstSubmitted;
+    const storedWhileFirstRuns = api.getChoiceActivationBatchForTest();
+    let secondSubmissions = 0;
+    let secondSettled = false;
+    const secondRun = api.runSteamActivationWork({
         owner: 'second-tab',
         sessionId: 'live-session',
-        lockManager: {
-            request(name, options, callback) {
-                return callback(null);
-            },
-        },
-        activateKey: async () => { submissions += 1; },
-    });
+        lockManager,
+        activateKey: async () => { secondSubmissions += 1; },
+    }).finally(() => { secondSettled = true; });
+    await Promise.resolve();
 
-    assert.equal(result.acquired, false);
-    assert.equal(submissions, 0);
-    assert.deepEqual(api.getChoiceActivationBatchForTest(), batch);
+    assert.equal(secondSettled, false);
+    assert.equal(secondSubmissions, 0);
+    assert.deepEqual(
+        api.getChoiceActivationBatchForTest(),
+        storedWhileFirstRuns
+    );
+
+    releaseFirstRequest();
+    const [firstResult, secondResult] = await Promise.all([firstRun, secondRun]);
+
+    assert.equal(firstResult.processed, true);
+    assert.equal(secondResult.processed, false);
+    assert.equal(secondSubmissions, 0);
+    const completed = api.getChoiceActivationBatchForTest();
+    assert.equal(completed.state, 'complete');
+    assert.equal(completed.items[0].status, 'activated');
 });
 
 test('completed successful and partial batches request a forced Steam account refresh', async () => {

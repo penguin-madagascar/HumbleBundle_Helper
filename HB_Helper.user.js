@@ -1915,6 +1915,8 @@
             choiceSelectionMode = false;
             document.documentElement.classList.remove('hb-helper-choice-select-mode');
             renderChoiceSelectionTiles(getVisibleChoiceTiles(), new Set());
+            document.getElementById('hb-helper-choice-activation-controls')?.remove();
+            document.getElementById('hb-helper-choice-activation-results')?.remove();
             return;
         }
         renderChoiceSelectionTiles(getVisibleChoiceTiles());
