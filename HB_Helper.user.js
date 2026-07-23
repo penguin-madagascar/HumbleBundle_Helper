@@ -10,18 +10,15 @@
 // @author       PenguinOfMadagascar
 // @license      MIT
 // @match        https://www.humblebundle.com/*
-// @match        https://store.steampowered.com/account/registerkey*
 // @run-at       document-start
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
-// @grant        GM_openInTab
 // @grant        GM_addValueChangeListener
 // @grant        GM_setClipboard
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @connect      www.humblebundle.com
-// @grant        unsafeWindow
 // @connect      api.steampowered.com
 // @connect      store.steampowered.com
 // @connect      steamcommunity.com
@@ -280,23 +277,6 @@
     html.hb-helper-choice-select-mode .choice-content.js-open-choice-modal * {
       pointer-events: none !important;
     }
-    #hb-helper-steam-activation-status {
-      background: rgba(0, 0, 0, 0.86) !important;
-      border-radius: 4px !important;
-      box-sizing: border-box !important;
-      color: #fff !important;
-      font: 14px/1.45 Arial, sans-serif !important;
-      max-width: min(420px, calc(100vw - 24px)) !important;
-      padding: 12px !important;
-      position: fixed !important;
-      right: 12px !important;
-      top: 72px !important;
-      z-index: 2147483647 !important;
-    }
-    #hb-helper-steam-activation-status strong {
-      display: block !important;
-      margin-bottom: 4px !important;
-    }
     .hb-helper-landing-sort-header {
       box-sizing: border-box !important;
       display: flex !important;
@@ -520,7 +500,6 @@
             choiceRevealProgress: 'Revealing key for {title} ({current}/{total})...',
             choiceRevealFailed: 'Could not reveal a Steam key for {title}',
             choiceModalCloseFailed: 'Could not safely close the Humble details dialog for {title}. The key was not queued.',
-            choiceQueueReady: 'Opening Steam activation page for {count} key(s)...',
             choiceHumbleFailureReason: 'Humble did not provide a Steam key for this game.',
             choiceActivationSummary: '{total} processed: {activated} activated, {humbleFailed} Humble key retrieval failure(s), {steamFailed} Steam activation failure(s), {pending} pending.',
             choiceHumbleFailureGroup: 'Humble key retrieval failures',
@@ -530,12 +509,7 @@
             choiceCopiedFailedKey: 'Copied the Steam key for {title}.',
             choiceOwnershipRefreshWarning: 'Warning: Steam ownership could not be refreshed after activation.',
             choiceOwnershipRefreshUnsupportedWarning: 'Warning: Steam ownership could not be refreshed because this browser does not support the Web Locks API. Activation controls have been unlocked.',
-            steamActivationTitle: 'Humble Choice key activation',
-            steamActivationLoginRequired: 'Log in to Steam, then refresh this page to continue activating queued keys',
             steamActivationProgress: 'Activating {title} ({current}/{total})...',
-            steamActivationComplete: 'Activated {count} key(s)',
-            steamActivationFailed: 'Activation failed for {title}: {message}',
-            steamActivationFailedDetail: 'Steam returned result detail {detail}',
             steamActivationAlreadyOwned: 'The Steam account already owns this product.',
             steamActivationRegionRestricted: 'This product cannot be activated in the Steam account region.',
             steamActivationInvalidKey: 'Steam rejected this product key as invalid.',
@@ -545,6 +519,7 @@
             steamActivationUnknownCode: 'Steam activation failed (result code {code}).',
             steamActivationRequestFailed: 'The Steam activation request failed: {message}',
             steamActivationInterruptedUncertain: 'Steam activation was interrupted after the request began. The result is uncertain, so this key was not submitted again.',
+            steamActivationCancelledNotSubmitted: 'Activation was cancelled before this key was submitted to Steam.',
             noRegionRestrictions: 'No Region Restrictions',
             exclusiveCountries: 'Exclusive countries: {countries}',
             disallowedCountries: 'Disallowed countries: {countries}',
@@ -611,7 +586,6 @@
             choiceRevealProgress: '正在显示 {title} 的 key（{current}/{total}）...',
             choiceRevealFailed: '无法显示 {title} 的 Steam key',
             choiceModalCloseFailed: '无法安全关闭 {title} 的 Humble 详情弹窗，因此未将此 key 加入队列。',
-            choiceQueueReady: '正在打开 Steam 激活页面，将激活 {count} 个 key...',
             choiceHumbleFailureReason: 'Humble 未能为此游戏提供 Steam key。',
             choiceActivationSummary: '共处理 {total} 个：已激活 {activated} 个，Humble key 获取失败 {humbleFailed} 个，Steam 激活失败 {steamFailed} 个，等待处理 {pending} 个。',
             choiceHumbleFailureGroup: 'Humble key 获取失败',
@@ -621,12 +595,7 @@
             choiceCopiedFailedKey: '已复制 {title} 的 Steam key。',
             choiceOwnershipRefreshWarning: '警告：激活完成后无法刷新 Steam 拥有状态。',
             choiceOwnershipRefreshUnsupportedWarning: '警告：此浏览器不支持 Web Locks API，无法刷新 Steam 拥有状态。激活控件已解锁。',
-            steamActivationTitle: 'Humble Choice key 激活',
-            steamActivationLoginRequired: '请登录 Steam，然后刷新此页面继续激活等待队列',
             steamActivationProgress: '正在激活 {title}（{current}/{total}）...',
-            steamActivationComplete: '已激活 {count} 个 key',
-            steamActivationFailed: '{title} 激活失败：{message}',
-            steamActivationFailedDetail: 'Steam 返回结果详情 {detail}',
             steamActivationAlreadyOwned: '此 Steam 账号已拥有该产品。',
             steamActivationRegionRestricted: '该产品无法在此 Steam 账号所在地区激活。',
             steamActivationInvalidKey: 'Steam 判定此产品 key 无效。',
@@ -636,6 +605,7 @@
             steamActivationUnknownCode: 'Steam 激活失败（结果代码 {code}）。',
             steamActivationRequestFailed: 'Steam 激活请求失败：{message}',
             steamActivationInterruptedUncertain: 'Steam 激活请求开始后被中断，结果不确定，因此不会再次提交此 key。',
+            steamActivationCancelledNotSubmitted: '此 key 在提交到 Steam 前已取消激活。',
             noRegionRestrictions: '无区域限制',
             exclusiveCountries: '仅限国家/地区：{countries}',
             disallowedCountries: '禁止激活国家/地区：{countries}',
@@ -796,7 +766,6 @@
     const choiceSelectionLockName = 'hb-helper-choice-selection';
     const choiceLockRetryMs = 250;
     const gmRequestTimeoutMs = 20000;
-    const steamRegisterKeyUrl = 'https://store.steampowered.com/account/registerkey';
     const choiceRuntimeOwnerId = typeof crypto !== 'undefined'
         && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
@@ -825,7 +794,6 @@
     let wishlistApps;
     let choiceSelectionMode = false;
     let choiceActivationInProgress = false;
-    let steamActivationInProgress = false;
     let choiceActivationBatchListener;
     let choiceSelectionListener;
     const cachedChoiceSelection = GM_getValue(choiceSelectionCacheKey, []);
@@ -1176,14 +1144,23 @@
             && ['authenticated', 'syncing'].includes(steamSessionState.status);
     }
 
+    function isChoiceActivationUiAvailable() {
+        return steamSessionState.status === 'authenticated'
+            && isSteamAccountData(steamSessionState.account);
+    }
+
     function applySteamSessionState(nextState) {
         steamSessionState = nextState;
+        renderChoiceSelectionState();
         if (hasSteamAccountData()) {
             ownedApps = new Set(nextState.account.ownedApps);
             wishlistApps = new Set(nextState.account.wishlistApps);
             reconcileVisibleGameClasses(ownedApps, wishlistApps).catch(error => {
                 console.warn('[HB-Helper] Reconcile Steam ownership classes failed:', error);
             });
+        }
+        if (isChoiceActivationUiAvailable()) {
+            satisfyDeferredChoiceOwnershipRefresh();
         }
         refreshHelperPage(nextState.status === 'authenticated');
     }
@@ -1809,11 +1786,6 @@
         return 'https://www.steamgifts.com/discussions/search?q=' + encodeURIComponent(term);
     }
 
-    function isSteamRegisterKeyPage() {
-        return location.hostname === 'store.steampowered.com'
-            && location.pathname.startsWith('/account/registerkey');
-    }
-
     function waitForCondition(check, timeout = 8000, interval = 120) {
         return new Promise(resolve => {
             const startedAt = Date.now();
@@ -1939,9 +1911,10 @@
     }
 
     function renderChoiceSelectionState() {
-        if (!hasSteamAccountData()) {
+        if (!isChoiceActivationUiAvailable()) {
             choiceSelectionMode = false;
             document.documentElement.classList.remove('hb-helper-choice-select-mode');
+            renderChoiceSelectionTiles(getVisibleChoiceTiles(), new Set());
             return;
         }
         renderChoiceSelectionTiles(getVisibleChoiceTiles());
@@ -2391,11 +2364,7 @@
         return true;
     }
 
-    function finishChoiceActivationCollection(
-        batch,
-        saveBatch,
-        openTab = GM_openInTab
-    ) {
+    function finishChoiceActivationCollection(batch, saveBatch) {
         const persist = requireLockScopedBatchPersistence(saveBatch);
         const pendingCount = batch.items.filter(
             item => item.status === choiceActivationItemStates.pending
@@ -2414,19 +2383,12 @@
             batch.state = choiceActivationBatchStates.activating;
             batch.runner = {
                 phase: choiceActivationBatchStates.activating,
-                owner: null,
-                leaseExpiresAt: null,
+                owner: batch.runner.owner,
+                leaseExpiresAt: Date.now() + choiceActivationRunnerLeaseMs,
             };
         }
         const saved = persist(batch);
         if (saved === false) return null;
-        if (pendingCount > 0) {
-            openTab(steamRegisterKeyUrl, {
-                active: true,
-                insert: true,
-                setParent: true,
-            });
-        }
         return pendingCount;
     }
 
@@ -2435,7 +2397,6 @@
         {
             lockManager,
             revealKey = ({tile}) => revealChoiceSteamKey(tile),
-            openTab = GM_openInTab,
             owner = choiceRuntimeOwnerId,
             onBatchStarted = () => {},
             onProgress = () => {},
@@ -2468,11 +2429,7 @@
                     saveBatch
                 );
                 if (!collected) return {started: false, stopped: true, batch};
-                const pendingCount = finishChoiceActivationCollection(
-                    batch,
-                    saveBatch,
-                    openTab
-                );
+                const pendingCount = finishChoiceActivationCollection(batch, saveBatch);
                 if (pendingCount === null) {
                     return {started: false, stopped: true, batch};
                 }
@@ -2653,6 +2610,33 @@
         );
     }
 
+    async function runDirectChoiceActivation(
+        selectedItems,
+        {
+            syncSession = syncSteamSession,
+            collectWork = runChoiceCollectionWork,
+            activationWork = runSteamActivationWork,
+            collectionOptions = {},
+            activationOptions = {},
+        } = {}
+    ) {
+        const sessionState = await syncSession({force: true});
+        if (sessionState.status !== 'authenticated'
+            || !isSteamAccountData(sessionState.account)) {
+            return {started: false, authenticationRequired: true, sessionState};
+        }
+
+        const collection = await collectWork(selectedItems, collectionOptions);
+        if (!collection?.started || collection.pendingCount === 0) return collection;
+
+        const activation = await activationWork({
+            ...activationOptions,
+            sessionId: sessionState.account.sessionId,
+            recheckSession: options => syncSession(options),
+        });
+        return {...collection, ...activation, activation};
+    }
+
     async function startChoiceActivation() {
         if (choiceActivationInProgress) {
             setChoiceStatus(t('choiceActivationBusy'));
@@ -2674,31 +2658,41 @@
         let completionStatus = '';
         setChoiceStatus(t('choiceRevealStarting', {count: tiles.length}));
         try {
-            const result = await runChoiceCollectionWork(selectedItems, {
-                onBatchStarted: batch => {
-                    setChoiceSelectionMode(false);
-                    renderChoiceActivationResults(batch);
+            const result = await runDirectChoiceActivation(selectedItems, {
+                collectionOptions: {
+                    onBatchStarted: batch => {
+                        setChoiceSelectionMode(false);
+                        renderChoiceActivationResults(batch);
+                    },
+                    onProgress: item => setChoiceStatus(t('choiceRevealProgress', {
+                        title: item.title,
+                        current: item.index + 1,
+                        total: selectedItems.length,
+                    })),
+                    revealKey: async item => {
+                        const key = await revealChoiceSteamKey(item.tile);
+                        if (!key) setChoiceStatus(t('choiceRevealFailed', {title: item.title}));
+                        return key;
+                    },
                 },
-                onProgress: item => setChoiceStatus(t('choiceRevealProgress', {
-                    title: item.title,
-                    current: item.index + 1,
-                    total: selectedItems.length,
-                })),
-                revealKey: async item => {
-                    const key = await revealChoiceSteamKey(item.tile);
-                    if (!key) setChoiceStatus(t('choiceRevealFailed', {title: item.title}));
-                    return key;
+                activationOptions: {
+                    showProgress: (item, index, total) => setChoiceStatus(
+                        t('steamActivationProgress', {
+                            title: item.title,
+                            current: index + 1,
+                            total,
+                        })
+                    ),
                 },
             });
-            if (result.unsupported) {
+            if (result.authenticationRequired) {
+                completionStatus = t('loginSteamLoadAccountData');
+            } else if (result.unsupported) {
                 completionStatus = result.message;
             } else if (!result.started) {
                 completionStatus = t('choiceActivationBusy');
-            } else if (result.pendingCount > 0) {
-                completionStatus = t('choiceQueueReady', {count: result.pendingCount});
-            } else {
-                await reconcileChoiceActivationBatch(result.batch);
             }
+            await reconcileChoiceActivationBatch();
         } finally {
             choiceActivationInProgress = false;
             renderChoiceSelectionState();
@@ -2709,7 +2703,7 @@
 
     function ensureChoiceActivationControls(controls, summary) {
         let choiceControls = document.getElementById('hb-helper-choice-activation-controls');
-        if (!isChoicePage() || !hasSteamAccountData()) {
+        if (!isChoicePage() || !isChoiceActivationUiAvailable()) {
             choiceControls?.remove();
             return;
         }
@@ -3140,7 +3134,6 @@
             '#hb-helper-controls',
             '#hb-helper-choice-activation-controls',
             '#hb-helper-choice-activation-results',
-            '#hb-helper-steam-activation-status',
             '.hb-helper-steam-store-link',
             '.hb-helper-steam-store-row',
         ].join(', ')));
@@ -3316,10 +3309,39 @@
         return lockResult.value;
     }
 
+    async function fetchFreshSteamAccountAfterActivation(
+        syncSession = syncSteamSession
+    ) {
+        const state = await syncSession({force: true});
+        if (state.status !== 'authenticated' || !isSteamAccountData(state.account)) {
+            throw state.error || new Error(t('loginSteamLoadAccountData'));
+        }
+        return state.account;
+    }
+
+    function satisfyDeferredChoiceOwnershipRefresh() {
+        const batch = getChoiceActivationBatch();
+        if (!batch
+            || batch.state !== choiceActivationBatchStates.complete
+            || batch.ownershipRefresh.state !== choiceActivationOwnershipStates.failed) {
+            return false;
+        }
+        const completedBatch = JSON.parse(JSON.stringify(batch));
+        completedBatch.ownershipRefresh = {
+            state: choiceActivationOwnershipStates.complete,
+            owner: null,
+            leaseExpiresAt: null,
+            error: null,
+        };
+        GM_setValue(steamActivationBatchKey, completedBatch);
+        return true;
+    }
+
     async function refreshCompletedChoiceActivationBatch(batch) {
         const result = await runChoiceOwnershipRefreshWork(
             batch.id,
             {
+                loadAccount: fetchFreshSteamAccountAfterActivation,
                 reconcileClasses: async (refreshedOwnedApps, refreshedWishlistApps, account) =>
                     applySteamSessionState({status: 'authenticated', account, error: null}),
             }
@@ -3368,6 +3390,25 @@
                     }, 1000);
                 }
             }, Math.max(0, batch.runner.leaseExpiresAt - Date.now()) + 25);
+            return;
+        }
+        if (batch.state === choiceActivationBatchStates.activating) {
+            const result = await runSteamActivationWork({
+                sessionId: isChoiceActivationUiAvailable()
+                    ? steamSessionState.account.sessionId
+                    : '',
+            });
+            if (result.unsupported) setChoiceStatus(result.message);
+            const latest = getChoiceActivationBatch();
+            if (latest?.id === batch.id) {
+                renderChoiceActivationResults(latest);
+                if (latest.state === choiceActivationBatchStates.complete) {
+                    await reconcileChoiceActivationBatch(latest, {
+                        refreshBatch,
+                        ownershipRetryMs,
+                    });
+                }
+            }
             return;
         }
         if (batch.state !== choiceActivationBatchStates.complete) return;
@@ -3423,49 +3464,7 @@
         );
     }
 
-    function renderSteamActivationStatus(message) {
-        let panel = document.getElementById('hb-helper-steam-activation-status');
-        if (!panel) {
-            panel = document.createElement('div');
-            panel.id = 'hb-helper-steam-activation-status';
-            const title = document.createElement('strong');
-            title.textContent = t('steamActivationTitle');
-            const body = document.createElement('div');
-            body.className = 'hb-helper-steam-activation-body';
-            panel.append(title, body);
-            (document.body || document.documentElement).appendChild(panel);
-        }
-        setElementTextContent(
-            panel.querySelector('.hb-helper-steam-activation-body'),
-            message
-        );
-    }
-
-    function readJsonDataset(element, name) {
-        try {
-            return JSON.parse(element?.getAttribute(name) || '{}');
-        } catch (error) {
-            return {};
-        }
-    }
-
-    function getSteamSessionId() {
-        const config = document.getElementById('application_config');
-        const userInfo = readJsonDataset(config, 'data-userinfo');
-        if (userInfo.logged_in === false) return null;
-        const sessionId = typeof unsafeWindow !== 'undefined'
-            ? unsafeWindow.g_sessionID
-            : '';
-        return isNonEmptyString(sessionId) ? sessionId : '';
-    }
-
-    function waitForSteamSessionId() {
-        return waitForCondition(getSteamSessionId, 15000);
-    }
-
     function postSteamActivationKey(sessionId, key) {
-        // Steam's register-key page submits this authenticated Store form.
-        // Source: https://store.steampowered.com/account/registerkey
         const url = 'https://store.steampowered.com/account/ajaxregisterkey/';
         const data = new URLSearchParams({
             product_key: key,
@@ -3539,6 +3538,51 @@
             && lineItems.length > 0;
     }
 
+    function isSteamActivationResponse(response) {
+        const data = response?.response || response;
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            return false;
+        }
+        const hasResult = Object.prototype.hasOwnProperty.call(
+            data,
+            'purchase_result_details'
+        ) || Object.prototype.hasOwnProperty.call(data, 'purchase_result_detail');
+        if (!hasResult) return false;
+        const rawDetail = data.purchase_result_details ?? data.purchase_result_detail;
+        if (rawDetail === null || rawDetail === '' || !Number.isFinite(Number(rawDetail))) {
+            return false;
+        }
+        const detail = Number(rawDetail);
+        return detail !== 0 || isSteamActivationSuccess(response);
+    }
+
+    function completeSteamActivationBatch(batch) {
+        batch.state = choiceActivationBatchStates.complete;
+        batch.runner = {phase: null, owner: null, leaseExpiresAt: null};
+        batch.ownershipRefresh = {
+            state: choiceActivationOwnershipStates.pending,
+            owner: null,
+            leaseExpiresAt: null,
+            error: null,
+        };
+    }
+
+    function cancelUncertainSteamActivationBatch(batch) {
+        for (const item of batch.items) {
+            if (item.status === choiceActivationItemStates.activating) {
+                item.status = choiceActivationItemStates.steamFailed;
+                item.error = t('steamActivationInterruptedUncertain');
+                item.code = null;
+            } else if (item.status === choiceActivationItemStates.pending) {
+                item.status = choiceActivationItemStates.steamFailed;
+                item.error = t('steamActivationCancelledNotSubmitted');
+                item.code = null;
+            }
+        }
+        completeSteamActivationBatch(batch);
+        return batch;
+    }
+
     async function processSteamActivationBatch(
         batch,
         sessionId,
@@ -3549,26 +3593,23 @@
             owner = batch.runner.owner,
             now = () => Date.now(),
             leaseMs = choiceActivationRunnerLeaseMs,
+            recheckSession = options => syncSteamSession(options),
         } = {}
     ) {
         const persist = requireLockScopedBatchPersistence(saveBatch);
-        const interruptedItems = batch.items.filter(
-            item => item.status === choiceActivationItemStates.activating
-        );
-        if (interruptedItems.length > 0) {
-            for (const item of interruptedItems) {
-                item.status = choiceActivationItemStates.steamFailed;
-                item.error = t('steamActivationInterruptedUncertain');
-                item.code = null;
-            }
-            if (persist(batch) === false) {
-                return {batch, paused: false, stopped: true};
-            }
+        if (batch.items.some(item => item.status === choiceActivationItemStates.activating)) {
+            cancelUncertainSteamActivationBatch(batch);
+            persist(batch);
+            return {batch, paused: false, stopped: true};
         }
         const pendingItems = batch.items.filter(
             item => item.status === choiceActivationItemStates.pending
         );
-        if (!sessionId && pendingItems.length > 0) return {batch, paused: true};
+        if (!isNonEmptyString(sessionId) && pendingItems.length > 0) {
+            cancelUncertainSteamActivationBatch(batch);
+            persist(batch);
+            return {batch, paused: false, stopped: true};
+        }
         if (batch.state !== choiceActivationBatchStates.activating) {
             return {batch, paused: false, stopped: true};
         }
@@ -3585,6 +3626,9 @@
             }
             try {
                 const response = await activateKey(sessionId, item.key);
+                if (!isSteamActivationResponse(response)) {
+                    throw new Error(t('steamInvalidAccountData'));
+                }
                 if (isSteamActivationSuccess(response)) {
                     item.status = choiceActivationItemStates.activated;
                     item.key = null;
@@ -3602,6 +3646,24 @@
                     message: error?.message || String(error),
                 });
                 item.code = null;
+                let recheckedState;
+                try {
+                    recheckedState = await recheckSession({force: true});
+                } catch (syncError) {
+                    recheckedState = {status: 'error', account: null, error: syncError};
+                }
+                if (recheckedState.status !== 'authenticated'
+                    || !isSteamAccountData(recheckedState.account)) {
+                    item.status = choiceActivationItemStates.activating;
+                    delete item.error;
+                    delete item.code;
+                    cancelUncertainSteamActivationBatch(batch);
+                    if (persist(batch) === false) {
+                        return {batch, paused: false, stopped: true};
+                    }
+                    return {batch, paused: false, stopped: true};
+                }
+                sessionId = recheckedState.account.sessionId;
             }
             if (isNonEmptyString(owner)) {
                 batch.runner.leaseExpiresAt = now() + leaseMs;
@@ -3611,14 +3673,7 @@
             }
         }
 
-        batch.state = choiceActivationBatchStates.complete;
-        batch.runner = {phase: null, owner: null, leaseExpiresAt: null};
-        batch.ownershipRefresh = {
-            state: choiceActivationOwnershipStates.pending,
-            owner: null,
-            leaseExpiresAt: null,
-            error: null,
-        };
+        completeSteamActivationBatch(batch);
         if (persist(batch) === false) {
             return {batch, paused: false, stopped: true};
         }
@@ -3633,6 +3688,7 @@
         owner = choiceRuntimeOwnerId,
         now = () => Date.now(),
         leaseMs = choiceActivationRunnerLeaseMs,
+        recheckSession = options => syncSteamSession(options),
     } = {}) {
         const lockResult = await requestChoiceExclusiveLock(
             steamActivationLockName,
@@ -3643,6 +3699,14 @@
                 }
 
                 const batch = JSON.parse(JSON.stringify(current));
+                if (batch.runner.owner !== owner
+                    || batch.items.some(
+                        item => item.status === choiceActivationItemStates.activating
+                    )) {
+                    cancelUncertainSteamActivationBatch(batch);
+                    GM_setValue(steamActivationBatchKey, batch);
+                    return {processed: false, stopped: true, batch};
+                }
                 batch.runner = {
                     phase: choiceActivationBatchStates.activating,
                     owner,
@@ -3673,7 +3737,7 @@
                     activateKey,
                     saveBatch,
                     showProgress,
-                    {owner, now, leaseMs}
+                    {owner, now, leaseMs, recheckSession}
                 );
                 return {...result, processed: !result.paused && !result.stopped};
             },
@@ -3683,57 +3747,7 @@
         return lockResult.value;
     }
 
-    async function runSteamActivationPage() {
-        if (steamActivationInProgress) return;
-        const batch = getChoiceActivationBatch();
-        if (!batch || batch.state !== choiceActivationBatchStates.activating) {
-            document.getElementById('hb-helper-steam-activation-status')?.remove();
-            return;
-        }
-
-        steamActivationInProgress = true;
-        if (!getChoiceLockManager()) {
-            renderSteamActivationStatus(t('choiceWebLocksUnavailable'));
-            steamActivationInProgress = false;
-            return;
-        }
-        const sessionId = await waitForSteamSessionId();
-        const result = await runSteamActivationWork({
-            sessionId,
-            showProgress: (item, index, total) => renderSteamActivationStatus(t('steamActivationProgress', {
-                title: item.title,
-                current: index + 1,
-                total,
-            })),
-        });
-        if (result.unsupported) {
-            renderSteamActivationStatus(result.message);
-            steamActivationInProgress = false;
-            return;
-        }
-        if (result.paused) {
-            renderSteamActivationStatus(t('steamActivationLoginRequired'));
-            steamActivationInProgress = false;
-            return;
-        }
-        if (!result.processed) {
-            steamActivationInProgress = false;
-            return;
-        }
-
-        const activatedCount = result.batch.items.filter(
-            item => item.status === choiceActivationItemStates.activated
-        ).length;
-        renderSteamActivationStatus(t('steamActivationComplete', {count: activatedCount}));
-        steamActivationInProgress = false;
-    }
-
     async function run() {
-        if (isSteamRegisterKeyPage()) {
-            runSteamActivationPage();
-            return;
-        }
-
         if (isLandingSortPage()) {
             observeLandingSortPageChanges();
             refreshLandingSortPage();
@@ -4232,6 +4246,14 @@
             };
         }
 
+        function setSteamSessionStateForTest(state) {
+            steamSessionState = state;
+        }
+
+        function setChoiceActivationBatchForTest(batch) {
+            GM_setValue(steamActivationBatchKey, batch);
+        }
+
         globalThis.__HB_HELPER_TEST_API__ = {
             parseSteamSession,
             createSteamSessionSynchronizer,
@@ -4242,7 +4264,17 @@
             clearSteamAccountDerivedState,
             getSteamDerivedStateForTest,
             setSteamDerivedStateForTest,
+            setSteamSessionStateForTest,
+            isChoiceActivationUiAvailable,
+            renderChoiceSelectionStateForTest: renderChoiceSelectionState,
             getTestDocument: () => document,
+            runDirectChoiceActivation,
+            postSteamActivationKey,
+            processSteamActivationBatch,
+            runSteamActivationWork,
+            fetchFreshSteamAccountAfterActivation,
+            setChoiceActivationBatchForTest,
+            getChoiceActivationBatchForTest: getChoiceActivationBatch,
             reconcileChoiceActivationBatch,
         };
     }

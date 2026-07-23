@@ -64,11 +64,11 @@ game details; selected games have an amber outline and check mark. Use
 `Select unowned` or `选择未拥有` to replace the current
 selection with visible Choice games that are not marked as owned, `Clear` or
 `清空选择` to clear the current selection, and `Activate` or `激活` to reveal
-selected Steam keys and open one foreground Steam key activation tab. Log in
-to the Steam Store in the same browser before activation. If Steam asks you to
-sign in, complete the login and refresh the activation tab. A failed Humble key
-retrieval or Steam activation does not stop later selected games from being
-processed.
+selected Steam keys and activate them directly while staying on Humble Choice.
+Log in to the Steam Store in the same browser before activation. The helper
+checks the live Steam session again before revealing any key. A normal Humble
+key retrieval or Steam product activation failure does not stop later selected
+games from being processed.
 
 Activation results remain below the Choice controls and group Humble key
 retrieval failures separately from Steam activation failures. A failed Steam
@@ -76,11 +76,12 @@ key is shown in full; clicking it copies the key without opening or navigating
 to Steam. Successfully activated games are removed from the selection, while
 failed games remain selected for follow-up. Return to Humble Choice and start
 activation again to retry them. Results remain visible until the next batch.
-If the activation page is closed or interrupted while processing a key, the
-script will not retry that key automatically; check it in Steam before trying
-again. After each completed batch, the script refreshes Steam ownership and
-wishlist data so highlights, selection, and price totals reflect the latest
-account state.
+If the Humble page is closed, reloaded, or loses a verifiable Steam session
+while processing a key, the script marks that key's result as uncertain,
+cancels every key not yet submitted, and never resumes the batch
+automatically. Check uncertain keys in Steam before trying again. After each
+completed batch, the script refreshes Steam ownership and wishlist data so
+highlights, selection, and price totals reflect the latest account state.
 
 ## Data Sources
 
