@@ -1102,7 +1102,7 @@
         const sync = ({force = false} = {}) => {
             if (!force && pendingSync) return pendingSync;
             const requestGeneration = ++generation;
-            const retainedAccount = state.status === 'authenticated' ? state.account : null;
+            const retainedAccount = isSteamAccountData(state.account) ? state.account : null;
             const retainedError = state.status === 'error' ? state.error : null;
             updateState({status: 'syncing', account: retainedAccount, error: retainedError});
             const task = (async () => {
@@ -1197,7 +1197,7 @@
         choiceSelectionMode = false;
         document.documentElement.classList.remove('hb-helper-choice-select-mode');
         renderChoiceSelectionTiles(getVisibleChoiceTiles(), new Set());
-        reconcileVisibleGameClasses(new Set(), new Set()).catch(error => {
+        return reconcileVisibleGameClasses(new Set(), new Set()).catch(error => {
             console.warn('[HB-Helper] Clear Steam ownership classes failed:', error);
         });
     }
@@ -1214,6 +1214,11 @@
 
     function syncSteamSession(options = {}) {
         return getSteamSessionSynchronizer().sync(options);
+    }
+
+    function getLiveSteamAccount() {
+        if (!hasSteamAccountData()) throw new Error(t('loginSteamLoadAccountData'));
+        return steamSessionState.account;
     }
 
     function fetchSteamAccountData(options = {}) {
@@ -3161,12 +3166,7 @@
         batchId,
         {
             lockManager,
-            loadAccount = () => fetchSteamAccountData({
-                force: true,
-                allowCachedFallback: false,
-                lockManager,
-                requireLock: true,
-            }),
+            loadAccount = getLiveSteamAccount,
             reconcileClasses = async () => {},
             owner = choiceRuntimeOwnerId,
             now = () => Date.now(),
@@ -3330,7 +3330,6 @@
         }
         const currentBatch = getChoiceActivationBatch();
         if (currentBatch?.id === batch.id) renderChoiceActivationResults(currentBatch);
-        await applyCachedSteamAccountData();
         return result;
     }
 
@@ -3339,7 +3338,6 @@
         {
             refreshBatch = refreshCompletedChoiceActivationBatch,
             ownershipRetryMs = choiceLockRetryMs,
-            applyCachedAccount = applyCachedSteamAccountData,
         } = {}
     ) {
         const currentBatch = getChoiceActivationBatch();
@@ -3379,7 +3377,6 @@
             choiceActivationOwnershipStates.complete,
             choiceActivationOwnershipStates.failed,
         ].includes(refresh.state)) {
-            await applyCachedAccount();
             return;
         }
         if (refresh.state === choiceActivationOwnershipStates.pending
@@ -3801,8 +3798,8 @@
         });
     }
 
-    async function fetchSteamCountryCode() {
-        return (await fetchSteamAccountData()).countryCode;
+    function getSteamCountryCode() {
+        return getLiveSteamAccount().countryCode;
     }
 
     function getXiaoheiheRegionCode(steamCountryCode) {
@@ -4070,7 +4067,7 @@
                 !game.appId
                 || resolvedGames.findIndex(other => other.appId === game.appId) === index
             );
-            const steamCountryCode = await fetchSteamCountryCode();
+            const steamCountryCode = getSteamCountryCode();
             const appIds = games.map(game => game.appId).filter(Boolean);
             const pricesByAppId = new Map();
             for (const appId of appIds) {
@@ -4210,10 +4207,43 @@
     }
 
     if (globalThis.__HB_HELPER_TEST__) {
+        function setSteamDerivedStateForTest(account) {
+            steamSessionState = {status: 'authenticated', account, error: null};
+            ownedApps = new Set(account.ownedApps);
+            wishlistApps = new Set(account.wishlistApps);
+            priceScope = 'unowned';
+            lastPriceResult = {region: account.countryCode};
+            choiceSelectionMode = true;
+            selectedChoiceGameIds.add('id:choice-1');
+            document.documentElement.classList.add('hb-helper-choice-select-mode');
+        }
+
+        function getSteamDerivedStateForTest() {
+            return {
+                countryCode: steamSessionState.account?.countryCode || null,
+                ownedApps: [...(ownedApps || [])],
+                wishlistApps: [...(wishlistApps || [])],
+                priceScope,
+                hasPriceResult: Boolean(lastPriceResult),
+                choiceSelectionMode,
+                choiceModeClass: document.documentElement.classList.contains(
+                    'hb-helper-choice-select-mode'
+                ),
+            };
+        }
+
         globalThis.__HB_HELPER_TEST_API__ = {
             parseSteamSession,
             createSteamSessionSynchronizer,
             createSteamSessionSyncTrigger,
+            getLiveSteamAccount,
+            getSteamCountryCode,
+            applySteamSessionState,
+            clearSteamAccountDerivedState,
+            getSteamDerivedStateForTest,
+            setSteamDerivedStateForTest,
+            getTestDocument: () => document,
+            reconcileChoiceActivationBatch,
         };
     }
 

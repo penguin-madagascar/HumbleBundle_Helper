@@ -5,11 +5,23 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 function loadSteamSessionApi() {
+    const createClassList = () => {
+        const names = new Set();
+        return {
+            add(...values) { values.forEach(value => names.add(value)); },
+            remove(...values) { values.forEach(value => names.delete(value)); },
+            toggle(value, enabled) {
+                if (enabled) names.add(value);
+                else names.delete(value);
+            },
+            contains(value) { return names.has(value); },
+        };
+    };
     const element = () => ({
         appendChild() {},
         append() {},
         addEventListener() {},
-        classList: {toggle() {}, contains() { return false; }},
+        classList: createClassList(),
         dataset: {},
         style: {},
     });
@@ -21,7 +33,12 @@ function loadSteamSessionApi() {
         addEventListener() {},
         getElementById() { return null; },
         querySelector() { return null; },
-        querySelectorAll() { return []; },
+        choiceTiles: [],
+        querySelectorAll(selector) {
+            return selector.includes('.choice-content.js-open-choice-modal')
+                ? this.choiceTiles
+                : [];
+        },
     };
     const context = {
         __HB_HELPER_TEST__: true,
@@ -172,6 +189,29 @@ test('does not let stale generations overwrite newer Steam session state', async
     assert.equal(sync.getState().account.countryCode, 'US');
 });
 
+test('retains the authenticated account through repeated forced synchronization', async () => {
+    const pendingResponses = [];
+    let rootRequests = 0;
+    const sync = api.createSteamSessionSynchronizer({
+        request: (url, responseType) => {
+            if (responseType === 'json') return Promise.resolve({rgOwnedApps: [2], rgWishlist: [3]});
+            rootRequests += 1;
+            return rootRequests === 1
+                ? Promise.resolve(steamHtml)
+                : new Promise(resolve => pendingResponses.push(resolve));
+        },
+    });
+
+    await sync.sync();
+    const firstForced = sync.sync({force: true});
+    const secondForced = sync.sync({force: true});
+    assert.equal(sync.getState().account.countryCode, 'US');
+    pendingResponses.at(-1)(steamHtml);
+    await secondForced;
+    pendingResponses[0](steamHtml);
+    await firstForced;
+});
+
 test('clears derived UI state after logged-out and error transitions', async () => {
     const cleared = [];
     const responses = [steamHtml, {rgOwnedApps: [1], rgWishlist: [2]},
@@ -186,6 +226,65 @@ test('clears derived UI state after logged-out and error transitions', async () 
     await sync.sync({force: true});
     await sync.sync({force: true});
     assert.deepEqual(cleared, ['logged-out', 'error']);
+});
+
+test('clears country, sets, markings, Choice styling, filter, and price state after logout', async () => {
+    const document = api.getTestDocument();
+    const tileClasses = new Set(['owned', 'wishlist', 'hb-helper-choice-selected']);
+    const tile = {
+        classList: {
+            toggle(name, enabled) {
+                if (enabled) tileClasses.add(name);
+                else tileClasses.delete(name);
+            },
+            contains(name) { return tileClasses.has(name); },
+        },
+        dataset: {id: 'choice-1'},
+        getAttribute() { return null; },
+        getClientRects() { return [{}]; },
+        querySelector() { return null; },
+        textContent: 'Choice game',
+    };
+    document.choiceTiles = [tile];
+    api.setSteamDerivedStateForTest({
+        countryCode: 'US',
+        ownedApps: [1],
+        wishlistApps: [2],
+        sessionId: 'ephemeral-session',
+    });
+    api.applySteamSessionState({status: 'logged-out', account: null, error: null});
+    await api.clearSteamAccountDerivedState();
+
+    assert.deepEqual(plain(api.getSteamDerivedStateForTest()), {
+        countryCode: null,
+        ownedApps: [],
+        wishlistApps: [],
+        priceScope: 'all',
+        hasPriceResult: false,
+        choiceSelectionMode: false,
+        choiceModeClass: false,
+    });
+    assert.equal(tile.classList.contains('owned'), false);
+    assert.equal(tile.classList.contains('wishlist'), false);
+    assert.equal(tile.classList.contains('hb-helper-choice-selected'), false);
+});
+
+test('reads the price country from authenticated memory without starting another sync', () => {
+    api.setSteamDerivedStateForTest({
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'ephemeral-session',
+    });
+    assert.equal(api.getSteamCountryCode(), 'CA');
+});
+
+test('uses the authenticated account for legacy Choice reconciliation without a sync request', () => {
+    assert.equal(api.getLiveSteamAccount().countryCode, 'CA');
+});
+
+test('reconciles inactive Choice batches without a deleted cache helper', async () => {
+    await assert.doesNotReject(() => api.reconcileChoiceActivationBatch());
 });
 
 test('coalesces adjacent focus and visibility synchronization triggers', async () => {
