@@ -19,7 +19,8 @@ download pages.
 - Adds sorting controls to Humble bundle landing pages for default order,
   bundles ending soon, and newly added bundles.
 - Adds Humble Choice controls for selecting games, revealing selected Steam
-  keys, activating them on Steam, and showing partial failures.
+  keys, activating them directly from Humble Choice, and showing partial
+  failures while a Steam account is authenticated.
 - Supports game bundle pages and the Humble Choice membership page.
 - Shows Steam key activation restrictions on Humble download pages.
 - Supports English and Chinese script UI.
@@ -33,8 +34,16 @@ download pages.
 ## Usage
 
 Steam Store links use public Steam search and work without logging in to Steam.
-Log in to Steam in the same browser before opening Humble Bundle to enable
-owned-game checks, wishlist checks, and regional prices.
+The helper synchronizes the live Steam login state when Humble first loads and
+again when the page regains focus or becomes visible, including after returning
+from Steam login. Log in to Steam in the same browser to enable owned-game
+checks, wishlist checks, and regional prices. Account-dependent controls,
+price summaries, and Choice activation controls appear only while that live
+Steam session is authenticated.
+
+The current implementation keeps newly loaded Steam account and session data
+in memory for the current page only; it does not persist new session or account
+data.
 
 The script follows your browser language by default. Open the Tampermonkey
 script menu on a Humble Bundle page, choose `Settings` or `设置`, and change
@@ -65,10 +74,11 @@ game details; selected games have an amber outline and check mark. Use
 selection with visible Choice games that are not marked as owned, `Clear` or
 `清空选择` to clear the current selection, and `Activate` or `激活` to reveal
 selected Steam keys and activate them directly while staying on Humble Choice.
-Log in to the Steam Store in the same browser before activation. The helper
-checks the live Steam session again before revealing any key. A normal Humble
-key retrieval or Steam product activation failure does not stop later selected
-games from being processed.
+No separate Steam activation page is opened. Log in to the Steam Store in the
+same browser before activation. The helper checks the live Steam session again
+before revealing any key, then reports reveal and activation progress on the
+same Humble page. A normal Humble key retrieval or Steam product activation
+failure does not stop later selected games from being processed.
 
 Activation results remain below the Choice controls and group Humble key
 retrieval failures separately from Steam activation failures. A failed Steam
@@ -78,9 +88,9 @@ failed games remain selected for follow-up. Return to Humble Choice and start
 activation again to retry them. Results remain visible until the next batch.
 If the Humble page is closed, reloaded, or loses a verifiable Steam session
 while processing a key, the script marks that key's result as uncertain,
-cancels every key not yet submitted, and never resumes the batch
+cancels every key not yet submitted, and never resumes or retries the batch
 automatically. Check uncertain keys in Steam before trying again. After each
-completed batch, the script refreshes Steam ownership and wishlist data so
+completed batch, the script synchronizes Steam ownership and wishlist data so
 highlights, selection, and price totals reflect the latest account state.
 
 ## Data Sources

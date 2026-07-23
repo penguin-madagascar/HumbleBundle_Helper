@@ -19,29 +19,139 @@ function createTestClassList() {
 
 function loadApi({onRequest = () => {}} = {}) {
     const values = new Map();
-    const element = () => ({
-        appendChild() {},
-        append() {},
-        addEventListener() {},
-        classList: createTestClassList(),
-        dataset: {},
-        style: {},
-    });
-    const document = {
+    let document;
+    const element = () => {
+        const children = [];
+        const attributes = new Map();
+        const testElement = {
+            children,
+            parentNode: null,
+            appendChild(child) {
+                child.remove?.();
+                children.push(child);
+                child.parentNode = this;
+                return child;
+            },
+            append(...items) { items.forEach(item => this.appendChild(item)); },
+            insertBefore(child, reference) {
+                child.remove?.();
+                const index = children.indexOf(reference);
+                children.splice(index < 0 ? children.length : index, 0, child);
+                child.parentNode = this;
+                return child;
+            },
+            insertAdjacentElement(position, child) {
+                const parent = this.parentNode;
+                if (!parent) return child;
+                const index = parent.children.indexOf(this);
+                child.remove?.();
+                parent.children.splice(position === 'beforebegin' ? index : index + 1, 0, child);
+                child.parentNode = parent;
+                return child;
+            },
+            remove() {
+                const parent = this.parentNode;
+                if (parent) {
+                    const index = parent.children.indexOf(this);
+                    if (index >= 0) parent.children.splice(index, 1);
+                }
+                this.parentNode = null;
+                if (this.id) document.elements.delete(this.id);
+            },
+            replaceChildren(...items) {
+                children.splice(0).forEach(child => { child.parentNode = null; });
+                this.append(...items);
+            },
+            addEventListener() {},
+            classList: createTestClassList(),
+            dataset: {},
+            style: {},
+            setAttribute(name, value) {
+                attributes.set(name, String(value));
+            },
+            getAttribute(name) { return attributes.get(name) || null; },
+            querySelector(selector) {
+                return findMatchingElement(this, selector);
+            },
+            querySelectorAll(selector) {
+                return findMatchingElements(this, selector);
+            },
+        };
+        Object.defineProperty(testElement, 'id', {
+            get() { return attributes.get('id') || ''; },
+            set(value) {
+                const previous = attributes.get('id');
+                if (previous) document.elements.delete(previous);
+                attributes.set('id', String(value));
+                document.elements.set(String(value), testElement);
+            },
+        });
+        Object.defineProperty(testElement, 'nextElementSibling', {
+            get() {
+                const siblings = this.parentNode?.children || [];
+                return siblings[siblings.indexOf(this) + 1] || null;
+            },
+        });
+        Object.defineProperty(testElement, 'firstElementChild', {
+            get() { return children[0] || null; },
+        });
+        return testElement;
+    };
+    const matchesSelector = (testElement, selector) => {
+        if (selector.startsWith('#')) return testElement.id === selector.slice(1);
+        if (selector.startsWith('.')) {
+            return testElement.classList.contains(selector.slice(1))
+                || testElement.className?.split(/\s+/).includes(selector.slice(1));
+        }
+        const action = selector.match(/^\[data-hb-helper-choice-action="([^"]+)"\]$/);
+        return action
+            ? testElement.dataset.hbHelperChoiceAction === action[1]
+            : false;
+    };
+    const descendants = root => root.children.flatMap(child => [child, ...descendants(child)]);
+    const findMatchingElements = (root, selector) => descendants(root).filter(testElement =>
+        selector.split(', ').some(part => matchesSelector(testElement, part))
+    );
+    const findMatchingElement = (root, selector) => {
+        const [ancestor, descendant] = selector.split(' ');
+        if (descendant) {
+            const parent = findMatchingElement(root, ancestor);
+            return parent ? findMatchingElement(parent, descendant) : null;
+        }
+        return findMatchingElements(root, selector)[0] || null;
+    };
+    document = {
         body: element(),
         head: element(),
         documentElement: element(),
         elements: new Map(),
         createElement: element,
         addEventListener() {},
-        getElementById(id) { return this.elements.get(id) || null; },
-        querySelector() { return null; },
+        getElementById(id) {
+            return this.elements.get(id)
+                || [this.body, this.head, this.documentElement]
+                    .map(root => findMatchingElement(root, `#${id}`))
+                    .find(Boolean)
+                || null;
+        },
+        querySelector(selector) {
+            if (selector === '.choice-content.js-open-choice-modal') {
+                return this.choiceTiles[0] || null;
+            }
+            return [this.body, this.head, this.documentElement]
+                .map(root => findMatchingElement(root, selector))
+                .find(Boolean)
+            || null;
+        },
         choiceTiles: [],
         querySelectorAll(selector) {
+            if (selector === 'h1, h2, h3, h4, h5, h6, p, div') return this.textAnchors;
             return selector.includes('.choice-content.js-open-choice-modal')
                 ? this.choiceTiles
-                : [];
+                : [this.body, this.head, this.documentElement]
+                    .flatMap(root => findMatchingElements(root, selector));
         },
+        textAnchors: [],
     };
     const context = {
         __HB_HELPER_TEST__: true,
@@ -50,8 +160,8 @@ function loadApi({onRequest = () => {}} = {}) {
         navigator: {language: 'en', languages: ['en']},
         location: {
             hostname: 'www.humblebundle.com',
-            pathname: '/membership/july-2026',
-            href: 'https://www.humblebundle.com/membership/july-2026',
+            pathname: '/membership',
+            href: 'https://www.humblebundle.com/membership',
         },
         DOMParser: class {
             parseFromString() {
@@ -197,6 +307,62 @@ test('an unauthenticated transition removes Choice controls and failed-key resul
         document.getElementById('hb-helper-choice-activation-results'),
         null
     );
+});
+
+test('an exact authenticated transition recreates Choice controls and restores results', () => {
+    const {api} = loadApi();
+    const document = api.getTestDocument();
+    const heading = document.createElement('h2');
+    heading.textContent = 'YOUR GAMES';
+    document.body.appendChild(heading);
+    document.textAnchors = [heading];
+    document.choiceTiles = [{
+        classList: createTestClassList(),
+        dataset: {id: 'choice-1'},
+        getAttribute() { return null; },
+        getClientRects() { return [{}]; },
+        querySelector() { return null; },
+        textContent: 'Choice game',
+    }];
+    api.setChoiceActivationBatchForTest({
+        version: 2,
+        id: 'completed-batch',
+        state: 'complete',
+        runner: {phase: null, owner: null, leaseExpiresAt: null},
+        ownershipRefresh: {
+            state: 'complete',
+            owner: null,
+            leaseExpiresAt: null,
+            error: null,
+        },
+        items: [{
+            id: 'choice-1',
+            title: 'Choice game',
+            key: 'AAAAA-BBBBB-CCCCC',
+            status: 'steam-activation-failed',
+            error: 'already owned',
+        }],
+    });
+    assert.ok(api.getChoiceActivationBatchForTest());
+
+    api.applySteamSessionState(authenticatedState('live-session'));
+    const firstControls = document.getElementById('hb-helper-choice-activation-controls');
+    const firstResults = document.getElementById('hb-helper-choice-activation-results');
+    assert.ok(firstControls);
+    assert.ok(firstResults);
+
+    api.applySteamSessionState({status: 'logged-out', account: null, error: null});
+    assert.equal(document.getElementById('hb-helper-choice-activation-controls'), null);
+    assert.equal(document.getElementById('hb-helper-choice-activation-results'), null);
+
+    api.applySteamSessionState(authenticatedState('live-session'));
+    const restoredControls = document.getElementById('hb-helper-choice-activation-controls');
+    const restoredResults = document.getElementById('hb-helper-choice-activation-results');
+    assert.ok(restoredControls);
+    assert.ok(restoredResults);
+    assert.notEqual(restoredControls, firstControls);
+    assert.notEqual(restoredResults, firstResults);
+    assert.ok(api.getChoiceActivationBatchForTest());
 });
 
 test('forces Steam session synchronization before collecting or activating keys', async () => {
