@@ -17,7 +17,7 @@ function createTestClassList() {
     };
 }
 
-function loadApi({onRequest = () => {}} = {}) {
+function loadApi({onRequest = () => {}, lockManager} = {}) {
     const values = new Map();
     let document;
     const element = () => {
@@ -157,7 +157,7 @@ function loadApi({onRequest = () => {}} = {}) {
         __HB_HELPER_TEST__: true,
         console: {log() {}, warn() {}, error() {}},
         document,
-        navigator: {language: 'en', languages: ['en']},
+        navigator: {language: 'en', languages: ['en'], locks: lockManager},
         location: {
             hostname: 'www.humblebundle.com',
             pathname: '/membership',
@@ -611,6 +611,125 @@ test('cancels an interrupted batch only after acquiring the activation Web Lock'
     assert.match(stored.items[1].error, /cancelled|not submitted/i);
 });
 
+test('a foreign tab leaves an unexpired collection-to-activation handoff untouched', async () => {
+    const {api} = loadApi();
+    const batch = activationBatch([
+        {id: 'one', title: 'One', key: 'AAAAA-BBBBB-CCCCC'},
+    ], 'originating-tab');
+    batch.runner.leaseExpiresAt = 2000;
+    const lockManager = {
+        request(name, options, callback) {
+            return callback({name});
+        },
+    };
+    let handoffPublished;
+    const published = new Promise(resolve => { handoffPublished = resolve; });
+    let releaseCollection;
+    const collectionCanReturn = new Promise(resolve => { releaseCollection = resolve; });
+    let originatingSubmissions = 0;
+    const originatingRun = api.runDirectChoiceActivation(
+        [{id: 'one', title: 'One'}],
+        {
+            syncSession: async () => authenticatedState('live-session'),
+            collectWork: async () => {
+                api.setChoiceActivationBatchForTest(batch);
+                handoffPublished();
+                await collectionCanReturn;
+                return {started: true, pendingCount: 1, batch};
+            },
+            activationWork: options => api.runSteamActivationWork({
+                ...options,
+                owner: 'originating-tab',
+                lockManager,
+                now: () => 1000,
+                activateKey: async () => {
+                    originatingSubmissions += 1;
+                    return successResponse;
+                },
+            }),
+        }
+    );
+    await published;
+    const beforeForeignRun = api.getChoiceActivationBatchForTest();
+    let foreignSubmissions = 0;
+    const scheduled = [];
+    await api.reconcileChoiceActivationBatch(undefined, {
+        activationWork: options => api.runSteamActivationWork({
+            ...options,
+            owner: 'foreign-tab',
+            lockManager,
+            now: () => 1000,
+            activateKey: async () => { foreignSubmissions += 1; },
+        }),
+        scheduleActivationRetry(callback, delay) {
+            scheduled.push({callback, delay});
+        },
+        now: () => 1000,
+        refreshBatch: async () => ({refreshed: true}),
+    });
+
+    assert.equal(foreignSubmissions, 0);
+    assert.deepEqual(api.getChoiceActivationBatchForTest(), beforeForeignRun);
+    assert.equal(scheduled.length, 1);
+    assert.equal(scheduled[0].delay, 1025);
+
+    releaseCollection();
+    const originatingResult = await originatingRun;
+    assert.equal(originatingResult.processed, true);
+    assert.equal(originatingSubmissions, 1);
+    assert.equal(api.getChoiceActivationBatchForTest().items[0].status, 'activated');
+});
+
+test('a visible foreign tab retries at lease expiry and cancels abandoned activation without resuming it', async () => {
+    const {api} = loadApi();
+    const batch = activationBatch([
+        {id: 'one', title: 'One', key: 'AAAAA-BBBBB-CCCCC'},
+    ], 'abandoned-tab');
+    batch.runner.leaseExpiresAt = 2000;
+    api.setChoiceActivationBatchForTest(batch);
+    const scheduled = [];
+    let currentTime = 1000;
+    let submissions = 0;
+    const lockManager = {
+        request(name, options, callback) {
+            return callback({name});
+        },
+    };
+    const activationWork = options => api.runSteamActivationWork({
+        ...options,
+        owner: 'visible-foreign-tab',
+        lockManager,
+        now: () => currentTime,
+        activateKey: async () => {
+            submissions += 1;
+            return successResponse;
+        },
+    });
+
+    await api.reconcileChoiceActivationBatch(undefined, {
+        activationWork,
+        scheduleActivationRetry(callback, delay) {
+            scheduled.push({callback, delay});
+        },
+        now: () => currentTime,
+        refreshBatch: async () => ({refreshed: true}),
+    });
+
+    assert.equal(submissions, 0);
+    assert.equal(api.getChoiceActivationBatchForTest().state, 'activating');
+    assert.equal(scheduled.length, 1);
+    assert.equal(scheduled[0].delay, 1025);
+
+    currentTime = 2025;
+    await scheduled[0].callback();
+
+    const cancelled = api.getChoiceActivationBatchForTest();
+    assert.equal(submissions, 0);
+    assert.equal(cancelled.state, 'complete');
+    assert.equal(cancelled.items[0].status, 'steam-activation-failed');
+    assert.match(cancelled.items[0].error, /cancelled|not submitted/i);
+});
+
 test('a queued second Humble tab rechecks the completed batch after the first runner releases the lock', async () => {
     const {api} = loadApi();
     const batch = activationBatch([
@@ -723,8 +842,13 @@ test('completed successful and partial batches request a forced Steam account re
     }
 });
 
-test('the next successful account sync satisfies a deferred ownership refresh', () => {
-    const {api} = loadApi();
+test('the next successful account sync satisfies a deferred ownership refresh', async () => {
+    const lockManager = {
+        request(name, options, callback) {
+            return callback({name});
+        },
+    };
+    const {api} = loadApi({lockManager});
     api.setChoiceActivationBatchForTest({
         version: 2,
         id: 'batch-1',
@@ -745,9 +869,73 @@ test('the next successful account sync satisfies a deferred ownership refresh', 
     });
 
     api.applySteamSessionState(authenticatedState('fresh-session'));
+    await new Promise(resolve => setImmediate(resolve));
 
     assert.equal(
         api.getChoiceActivationBatchForTest().ownershipRefresh.state,
         'complete'
     );
+});
+
+test('deferred ownership completion does not overwrite a new batch installed while waiting for the mutation lock', async () => {
+    const {api} = loadApi();
+    api.setChoiceActivationBatchForTest({
+        version: 2,
+        id: 'old-completed-batch',
+        state: 'complete',
+        runner: {phase: null, owner: null, leaseExpiresAt: null},
+        ownershipRefresh: {
+            state: 'failed',
+            owner: null,
+            leaseExpiresAt: null,
+            error: 'refresh deferred',
+        },
+        items: [{
+            id: 'one',
+            title: 'One',
+            key: null,
+            status: 'activated',
+        }],
+    });
+    let queuedRequest;
+    let lockRequested;
+    const requested = new Promise(resolve => { lockRequested = resolve; });
+    const lockManager = {
+        request(name, options, callback) {
+            return new Promise((resolve, reject) => {
+                queuedRequest = {name, callback, resolve, reject};
+                lockRequested();
+            });
+        },
+    };
+
+    const completion = api.satisfyDeferredChoiceOwnershipRefreshForTest({
+        lockManager,
+    });
+    await requested;
+    const newBatch = {
+        version: 2,
+        id: 'new-collecting-batch',
+        state: 'collecting',
+        runner: {
+            phase: 'collecting',
+            owner: 'new-tab',
+            leaseExpiresAt: 5000,
+        },
+        ownershipRefresh: {
+            state: 'waiting',
+            owner: null,
+            leaseExpiresAt: null,
+            error: null,
+        },
+        items: [],
+    };
+    api.setChoiceActivationBatchForTest(newBatch);
+    Promise.resolve(queuedRequest.callback({name: queuedRequest.name}))
+        .then(queuedRequest.resolve, queuedRequest.reject);
+
+    const result = await completion;
+
+    assert.equal(result.updated, false);
+    assert.deepEqual(api.getChoiceActivationBatchForTest(), newBatch);
 });

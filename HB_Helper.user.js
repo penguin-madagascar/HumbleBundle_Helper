@@ -779,6 +779,7 @@
     let steamSessionTriggersObserved = false;
     let pageRefreshTimer;
     let choiceCollectionRecoveryTimer;
+    let choiceActivationRecoveryTimer;
     let choiceOwnershipRefreshTimer;
     let landingSortRefreshTimer;
     let priceTotalsRunId = 0;
@@ -1158,7 +1159,9 @@
             });
         }
         if (isChoiceActivationUiAvailable()) {
-            satisfyDeferredChoiceOwnershipRefresh();
+            satisfyDeferredChoiceOwnershipRefresh().catch(error => {
+                console.warn('[HB-Helper] Complete deferred ownership refresh failed:', error);
+            });
         }
         refreshHelperPage(nextState.status === 'authenticated');
     }
@@ -3319,22 +3322,46 @@
         return state.account;
     }
 
-    function satisfyDeferredChoiceOwnershipRefresh() {
-        const batch = getChoiceActivationBatch();
-        if (!batch
-            || batch.state !== choiceActivationBatchStates.complete
-            || batch.ownershipRefresh.state !== choiceActivationOwnershipStates.failed) {
-            return false;
+    async function satisfyDeferredChoiceOwnershipRefresh({lockManager} = {}) {
+        const deferredBatch = getChoiceActivationBatch();
+        if (!deferredBatch
+            || deferredBatch.state !== choiceActivationBatchStates.complete
+            || deferredBatch.ownershipRefresh.state
+                !== choiceActivationOwnershipStates.failed) {
+            return {updated: false};
         }
-        const completedBatch = JSON.parse(JSON.stringify(batch));
-        completedBatch.ownershipRefresh = {
-            state: choiceActivationOwnershipStates.complete,
-            owner: null,
-            leaseExpiresAt: null,
-            error: null,
-        };
-        GM_setValue(steamActivationBatchKey, completedBatch);
-        return true;
+        const expectedBatchId = deferredBatch.id;
+        const lockResult = await requestChoiceExclusiveLock(
+            choiceCollectionLockName,
+            () => {
+                const current = getChoiceActivationBatch();
+                if (!current
+                    || current.id !== expectedBatchId
+                    || current.state !== choiceActivationBatchStates.complete
+                    || current.ownershipRefresh.state
+                        !== choiceActivationOwnershipStates.failed) {
+                    return {updated: false, batch: current};
+                }
+                const completedBatch = JSON.parse(JSON.stringify(current));
+                completedBatch.ownershipRefresh = {
+                    state: choiceActivationOwnershipStates.complete,
+                    owner: null,
+                    leaseExpiresAt: null,
+                    error: null,
+                };
+                const updated = saveChoiceActivationBatchIfCurrent(
+                    completedBatch,
+                    {state: choiceActivationBatchStates.complete}
+                );
+                return {
+                    updated,
+                    batch: updated ? completedBatch : getChoiceActivationBatch(),
+                };
+            },
+            {lockManager}
+        );
+        if (!lockResult.acquired) return {...lockResult, updated: false};
+        return lockResult.value;
     }
 
     async function refreshCompletedChoiceActivationBatch(batch) {
@@ -3360,6 +3387,9 @@
         {
             refreshBatch = refreshCompletedChoiceActivationBatch,
             ownershipRetryMs = choiceLockRetryMs,
+            activationWork = runSteamActivationWork,
+            scheduleActivationRetry = (callback, delay) => setTimeout(callback, delay),
+            now = () => Date.now(),
         } = {}
     ) {
         const currentBatch = getChoiceActivationBatch();
@@ -3367,6 +3397,7 @@
         batch = currentBatch;
         if (!batch) {
             clearTimeout(choiceCollectionRecoveryTimer);
+            clearTimeout(choiceActivationRecoveryTimer);
             clearTimeout(choiceOwnershipRefreshTimer);
             renderChoiceActivationResults(null);
             return;
@@ -3377,6 +3408,7 @@
         renderChoiceActivationResults(batch);
 
         clearTimeout(choiceCollectionRecoveryTimer);
+        clearTimeout(choiceActivationRecoveryTimer);
         if (batch.state === choiceActivationBatchStates.collecting) {
             choiceCollectionRecoveryTimer = setTimeout(async () => {
                 const recovery = await recoverStaleChoiceCollection();
@@ -3393,12 +3425,28 @@
             return;
         }
         if (batch.state === choiceActivationBatchStates.activating) {
-            const result = await runSteamActivationWork({
+            const result = await activationWork({
                 sessionId: isChoiceActivationUiAvailable()
                     ? steamSessionState.account.sessionId
                     : '',
             });
             if (result.unsupported) setChoiceStatus(result.message);
+            if (result.busy && Number.isFinite(result.retryAt)) {
+                const retryDelay = Math.max(0, result.retryAt - now()) + 25;
+                choiceActivationRecoveryTimer = scheduleActivationRetry(
+                    () => reconcileChoiceActivationBatch(undefined, {
+                        refreshBatch,
+                        ownershipRetryMs,
+                        activationWork,
+                        scheduleActivationRetry,
+                        now,
+                    }).catch(error => {
+                        console.warn('[HB-Helper] Recover activation lease failed:', error);
+                    }),
+                    retryDelay
+                );
+                return;
+            }
             const latest = getChoiceActivationBatch();
             if (latest?.id === batch.id) {
                 renderChoiceActivationResults(latest);
@@ -3406,6 +3454,9 @@
                     await reconcileChoiceActivationBatch(latest, {
                         refreshBatch,
                         ownershipRetryMs,
+                        activationWork,
+                        scheduleActivationRetry,
+                        now,
                     });
                 }
             }
@@ -3699,8 +3750,19 @@
                 }
 
                 const batch = JSON.parse(JSON.stringify(current));
-                if (batch.runner.owner !== owner
-                    || batch.items.some(
+                const foreignRunner = batch.runner.owner !== owner;
+                const runnerLeaseActive = isNonEmptyString(batch.runner.owner)
+                    && Number.isFinite(batch.runner.leaseExpiresAt)
+                    && batch.runner.leaseExpiresAt > now();
+                if (foreignRunner && runnerLeaseActive) {
+                    return {
+                        processed: false,
+                        busy: true,
+                        retryAt: batch.runner.leaseExpiresAt,
+                        batch: current,
+                    };
+                }
+                if (foreignRunner || batch.items.some(
                         item => item.status === choiceActivationItemStates.activating
                     )) {
                     cancelUncertainSteamActivationBatch(batch);
@@ -4273,6 +4335,8 @@
             processSteamActivationBatch,
             runSteamActivationWork,
             fetchFreshSteamAccountAfterActivation,
+            satisfyDeferredChoiceOwnershipRefreshForTest:
+                satisfyDeferredChoiceOwnershipRefresh,
             setChoiceActivationBatchForTest,
             getChoiceActivationBatchForTest: getChoiceActivationBatch,
             reconcileChoiceActivationBatch,
