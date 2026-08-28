@@ -56,7 +56,9 @@ below `YOUR GAMES` and above the current month's game heading.
 On the Humble Games, Bundles, Books, and Software landing pages, sorting
 controls appear next to each bundle section heading. Use `Default` to restore
 Humble's original order, `Ending Soon` to show bundles closest to ending first,
-and `Newly Added` to show the newest bundles first.
+and `Newly Added` to show the newest bundles first. A click changes only that
+section immediately, while the last clicked mode initializes every landing
+section on the next page load.
 
 The price summary follows the active Bundle Filters. Use `Show unowned` or
 `Show all` in the top-right corner of the summary to change which games are

@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.28
+// @version      0.0.29
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -734,6 +734,7 @@
     const priceHistoryCache = new Map();
     const exchangeRateCache = new Map();
     const choiceSelectionCacheKey = 'hb-helper-choice-selected-games-v1';
+    const landingSortModeStorageKey = 'hb-helper-landing-sort-mode';
     const steamActivationBatchKey = 'hb-helper-steam-activation-batch-v2';
     const legacySteamActivationQueueKey = 'hb-helper-steam-activation-queue-v1';
     const choiceActivationBatchStates = Object.freeze({
@@ -843,6 +844,25 @@
             stamp: 'software',
         },
     ];
+
+    function isLandingSortMode(value) {
+        return ['default', 'ending', 'newest'].includes(value);
+    }
+
+    function readLandingSortMode() {
+        const value = GM_getValue(landingSortModeStorageKey, 'default');
+        return isLandingSortMode(value) ? value : 'default';
+    }
+
+    function initializeLandingSortModes() {
+        const mode = readLandingSortMode();
+        landingSortSectionConfigs.forEach(config => {
+            landingSortModeBySection.set(config.sectionKey, mode);
+        });
+    }
+
+    initializeLandingSortModes();
+
     const europeanSteamCountries = new Set([
         'AT', 'BE', 'CY', 'DE', 'EE', 'ES', 'FI', 'FR', 'GR', 'HR',
         'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'SI', 'SK',
@@ -1419,6 +1439,13 @@
         return landingSortModeBySection.get(sectionKey) || 'default';
     }
 
+    function setLandingSortMode(config, mode) {
+        landingSortModeBySection.set(config.sectionKey, mode);
+        GM_setValue(landingSortModeStorageKey, mode);
+        renderLandingSortControls(config);
+        applyLandingSort(getLandingSortState(config));
+    }
+
     function compareLandingSortEntries(a, b, mode) {
         let result = 0;
         if (mode === 'ending') {
@@ -1503,9 +1530,7 @@
                 button.title = t(mode.titleKey);
                 button.dataset.hbHelperSort = mode.key;
                 button.addEventListener('click', () => {
-                    landingSortModeBySection.set(config.sectionKey, mode.key);
-                    renderLandingSortControls(config);
-                    applyLandingSort(getLandingSortState(config));
+                    setLandingSortMode(config, mode.key);
                 });
                 controls.appendChild(button);
             }
@@ -4317,6 +4342,8 @@
         }
 
         globalThis.__HB_HELPER_TEST_API__ = {
+            getLandingSortMode,
+            ensureLandingSortControls,
             parseSteamSession,
             createSteamSessionSynchronizer,
             createSteamSessionSyncTrigger,
