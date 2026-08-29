@@ -463,13 +463,19 @@ test('renders inline and details country lists at the 12/13 item boundary withou
         'US'
     );
     assert.equal(inline.querySelector('details'), null);
-    assert.ok(details.querySelector('details'));
+    const disclosure = details.querySelector('details');
+    assert.ok(disclosure);
+    assert.equal(hasClass(disclosure, 'hb-helper-disclosure'), true);
+    assert.equal(hasClass(disclosure, 'hb-helper-region-restrictions__details'), true);
     assert.match(panelText(details), /Steam region is unavailable/);
     assert.match(panelText(noRestriction), /Humble has not declared a region restriction/);
 });
 
 test('renders redeemed external Choice restrictions at the key container end without Gift', () => {
     const {api, document} = loadApi();
+    const countries = ['US', ...Array.from({length: 12}, (_, index) =>
+        String.fromCharCode(65 + Math.floor(index / 26)) + String.fromCharCode(65 + (index % 26))
+    )];
     const row = makeRow({gift: false});
     const redeemed = makeRedeemedChoiceSurface('display-alpha', [row], {
         displayMachineName: 'display-alpha',
@@ -481,7 +487,7 @@ test('renders redeemed external Choice restrictions at the key container end wit
     document.elements.set('webpack-subscriber-hub-data', makeChoiceSource(choicePayload({
         alpha: {
             display_item_machine_name: 'display-alpha',
-            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+            tpkds: [{exclusive_countries: countries, disallowed_countries: []}],
         },
     })));
     api.setSteamSessionStateForTest({
@@ -493,6 +499,10 @@ test('renders redeemed external Choice restrictions at the key container end wit
     assert.equal(row.container.children.at(-1).className.includes(
         'hb-helper-region-restrictions'
     ), true);
+    const disclosure = row.container.children.at(-1).querySelector('details');
+    assert.ok(disclosure);
+    assert.equal(hasClass(disclosure, 'hb-helper-disclosure'), true);
+    assert.equal(hasClass(disclosure, 'hb-helper-region-restrictions__details'), true);
     assert.match(panelText(row.container.children.at(-1)), /can be activated/);
 });
 
@@ -791,6 +801,18 @@ test('reuses the shared restriction panel primitive for Downloads', () => {
     assert.equal(hasClass(firstDisclaimer.children[0], 'hb-helper-region-restrictions'), true);
     assert.equal(hasClass(secondDisclaimer.children[0], 'hb-helper-region-restrictions'), true);
     assert.match(panelText(secondDisclaimer.children[0]), /can be activated/);
+
+    const countries = Array.from({length: 13}, (_, index) =>
+        String.fromCharCode(65 + Math.floor(index / 26)) + String.fromCharCode(65 + (index % 26))
+    );
+    const longCountryPanel = api.createRegionRestrictionPanel(
+        {exclusive_countries: countries, disallowed_countries: []},
+        'US'
+    );
+    const disclosure = longCountryPanel.querySelector('details');
+    assert.ok(disclosure);
+    assert.equal(hasClass(disclosure, 'hb-helper-disclosure'), true);
+    assert.equal(hasClass(disclosure, 'hb-helper-region-restrictions__details'), true);
 
     assert.equal(document.body.children.length, 0);
 });

@@ -407,7 +407,7 @@
     #hb-helper-price-summary .hb-helper-match-details {
       margin-top: 4px !important;
     }
-    #hb-helper-price-summary .hb-helper-match-details summary {
+    .hb-helper-disclosure summary {
       display: inline-flex !important;
       align-items: center !important;
       gap: 6px !important;
@@ -421,24 +421,24 @@
       padding: 3px 8px !important;
       user-select: none !important;
     }
-    #hb-helper-price-summary .hb-helper-match-details summary::-webkit-details-marker {
+    .hb-helper-disclosure summary::-webkit-details-marker {
       display: none !important;
     }
-    #hb-helper-price-summary .hb-helper-match-details summary::before {
+    .hb-helper-disclosure summary::before {
       content: '' !important;
       border-bottom: 4px solid transparent !important;
       border-left: 6px solid currentColor !important;
       border-top: 4px solid transparent !important;
       transition: transform 0.15s ease !important;
     }
-    #hb-helper-price-summary .hb-helper-match-details summary:hover {
+    .hb-helper-disclosure summary:hover {
       background: rgba(255, 255, 255, 0.25) !important;
     }
-    #hb-helper-price-summary .hb-helper-match-details summary:focus-visible {
+    .hb-helper-disclosure summary:focus-visible {
       outline: 2px solid #fff !important;
       outline-offset: 2px !important;
     }
-    #hb-helper-price-summary .hb-helper-match-details[open] summary::before {
+    .hb-helper-disclosure[open] summary::before {
       transform: rotate(90deg) !important;
     }
     #hb-helper-price-summary .hb-helper-match-group {
@@ -477,13 +477,8 @@
     .hb-helper-region-restrictions__list {
       margin-top: 4px !important;
     }
-    .hb-helper-region-restrictions details {
+    .hb-helper-region-restrictions__details {
       margin-top: 4px !important;
-    }
-    .hb-helper-region-restrictions summary {
-      color: #fff !important;
-      cursor: pointer !important;
-      font-weight: 700 !important;
     }
     .hb-helper-region-restrictions__countries {
       margin-top: 4px !important;
@@ -6915,21 +6910,25 @@
         }).format(value);
     }
 
-    function appendMatchDetails(summary, unmatchedGames, unpricedGames) {
+    function createHelperDisclosure(summaryText, contentNodes, {className, open} = {}) {
+        const details = document.createElement('details');
+        details.className = ['hb-helper-disclosure', className].filter(Boolean).join(' ');
+        details.open = Boolean(open);
+        const summary = document.createElement('summary');
+        summary.textContent = summaryText;
+        details.append(summary, ...contentNodes);
+        return details;
+    }
+
+    function appendMatchDetails(summary, unmatchedGames, unpricedGames, open) {
         const groups = [
             [t('steamItemNotFound'), unmatchedGames],
             [t('regionalPriceUnavailable'), unpricedGames],
         ].filter(([, games]) => games.length > 0);
         if (groups.length === 0) return;
 
-        const details = document.createElement('details');
-        details.className = 'hb-helper-match-details';
-        const detailsSummary = document.createElement('summary');
         const missingCount = groups.reduce((total, [, games]) => total + games.length, 0);
-        detailsSummary.textContent = t('showUnpricedItems', {count: missingCount});
-        details.appendChild(detailsSummary);
-
-        for (const [label, games] of groups) {
+        const contentNodes = groups.map(([label, games]) => {
             const group = document.createElement('div');
             group.className = 'hb-helper-match-group';
             const heading = document.createElement('strong');
@@ -6941,9 +6940,13 @@
                 list.appendChild(item);
             }
             group.append(heading, list);
-            details.appendChild(group);
-        }
-        summary.appendChild(details);
+            return group;
+        });
+        summary.appendChild(createHelperDisclosure(
+            t('showUnpricedItems', {count: missingCount}),
+            contentNodes,
+            {className: 'hb-helper-match-details', open}
+        ));
     }
 
     function createPriceTotalsContent(result, detailsOpen, staleVisible) {
@@ -7030,9 +7033,7 @@
             matched: matchedGames.length,
         });
         content.append(matchedLine, pricedLine);
-        appendMatchDetails(content, unmatchedGames, unpricedGames);
-        const details = content.querySelector('.hb-helper-match-details');
-        if (details) details.open = detailsOpen;
+        appendMatchDetails(content, unmatchedGames, unpricedGames, detailsOpen);
 
         scopeButton.addEventListener('click', () => {
             priceScope = priceScope === 'all' ? 'unowned' : 'all';
@@ -7245,14 +7246,14 @@
         const list = document.createElement('div');
         list.className = 'hb-helper-region-restrictions__list';
         if (countries.length > 12) {
-            const details = document.createElement('details');
-            const summary = document.createElement('summary');
-            summary.textContent = t('regionCountryList', {count: countries.length});
             const values = document.createElement('div');
             values.className = 'hb-helper-region-restrictions__countries';
             values.textContent = `${label} ${countries.join(', ')}`;
-            details.append(summary, values);
-            list.appendChild(details);
+            list.appendChild(createHelperDisclosure(
+                t('regionCountryList', {count: countries.length}),
+                [values],
+                {className: 'hb-helper-region-restrictions__details', open: false}
+            ));
         } else {
             list.textContent = `${label} ${countries.join(', ')}`;
         }

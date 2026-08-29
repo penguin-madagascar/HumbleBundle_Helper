@@ -487,6 +487,28 @@ test('refresh preserves an expanded missing-price details section', async () => 
     assert.equal(newDetails.open, true);
 });
 
+test('missing-price details use the shared disclosure classes and controls', async () => {
+    const {api, summary} = loadPriceTotalsApi();
+    await api.loadPriceTotalsForTest(['Unknown Game'], priceDependencies({findApp: async () => null}));
+
+    const details = summary.querySelector('.hb-helper-match-details');
+    assert.ok(details);
+    assert.equal(details.className.split(/\s+/).includes('hb-helper-disclosure'), true);
+
+    const css = api.getStyleTextForTest();
+    for (const selector of [
+        '.hb-helper-disclosure summary',
+        '.hb-helper-disclosure summary::-webkit-details-marker',
+        '.hb-helper-disclosure summary::before',
+        '.hb-helper-disclosure summary:hover',
+        '.hb-helper-disclosure summary:focus-visible',
+        '.hb-helper-disclosure[open] summary::before',
+    ]) {
+        assert.match(css, new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+    assert.doesNotMatch(css, /hb-helper-match-details summary/);
+});
+
 test('scope label describes current data and sits immediately left of the action button', async () => {
     const loaded = loadPriceTotalsApi();
     loaded.api.setSteamDerivedStateForTest({
