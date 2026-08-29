@@ -298,6 +298,26 @@ test('falls back to monthly data and an exact hash identifier when the Choice ti
     assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 1);
 });
 
+test('falls back to an exact hash identifier when the present Choice title is unmatched', () => {
+    const {api, document, context} = loadApi();
+    const rows = [makeRow()];
+    document.choiceModal = makeChoiceModal('display-not-in-catalog', rows);
+    setActiveChoiceModal(document, document.choiceModal);
+    context.location.hash = '#/membership/choices/choice-beta';
+    const source = makeElement('script');
+    source.textContent = choicePayload({
+        'choice-beta': {
+            display_item_machine_name: 'display-beta',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+});
+
 test('cleans stale Choice panels when source identity, row count, fields, or anchors are unreliable', () => {
     const {api, document} = loadApi();
     const rows = [makeRow()];

@@ -4500,9 +4500,12 @@
         const modal = getActiveChoiceModal()?.querySelector?.('.choice-modal');
         if (!modal) return;
         const identifier = getChoiceModalIdentifier(modal);
-        const match = identifier
+        const titleMatch = identifier
             ? findChoiceRegionGame('byDisplayMachineName', identifier)
-            : findChoiceRegionGame('byChoiceIdentifier', getChoiceHashIdentifier());
+            : {status: 'missing'};
+        const match = titleMatch.status === 'missing'
+            ? findChoiceRegionGame('byChoiceIdentifier', getChoiceHashIdentifier())
+            : titleMatch;
         const game = match.status === 'found' ? match.game : null;
         const rows = Array.from(modal.querySelectorAll?.('.js-key-redeemer > .key-redeemer') || []);
         const fields = rows.map(row => row.querySelector?.('.giftfield'));
