@@ -135,6 +135,14 @@ eligible; gifts and direct or keyless redemption are excluded. Hidden entries
 that are expired or sold out are also excluded, but an already revealed valid
 Steam key remains usable if it later expires or sells out.
 
+The white Steam status card at the top of this toolbar reports the session
+check. On the initial page load it checks whether Steam is logged in. If a
+previously verified account is retained, it reports that the Steam session is
+being revalidated while keeping the order controls and local selection usable.
+If Steam is logged out, the card provides a Steam login link; if the check
+fails, it provides a retry action. `Activate` remains disabled during either
+check and becomes available only after exact authentication succeeds.
+
 Selections are persisted and synchronized separately for each order.
 `Select unowned` excludes only entries positively matched to games owned by the
 current Steam account, so unknown items remain selected.
@@ -145,6 +153,11 @@ then retrieves hidden keys as needed and submits Steam activations sequentially.
 An item-specific Humble retrieval or Steam activation failure does not stop
 later entries. Successful entries are cleared from the selection; failed
 entries remain selected for follow-up.
+
+If the same order is refreshed or its rows are remapped during the mandatory
+Steam preflight, activation continues when the order, selection, and eligible
+rows still match. A genuine route or order change, selection change, or
+eligibility change remains fail-closed before any key is revealed.
 
 While activation work is active, Choice and every order's activation controls
 are locked. Detailed results, including failed Steam keys, are visible only on
