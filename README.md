@@ -72,14 +72,15 @@ and `Newly Added` to show the newest bundles first. A click changes only that
 section immediately, while the last clicked mode initializes every landing
 section on the next page load.
 
-When Humble provides activation metadata that can be mapped reliably, each
-Steam redemption row in a Choice game dialog shows its restriction below
-`Gift to a friend on Steam` before the key is revealed. Humble download pages
-use the same restriction card. A card saying Humble has not marked a regional
-restriction means only that both supplied country lists are explicitly empty;
-it is not a guarantee that the key is global. Missing or ambiguous metadata is
-not shown. These notices are an early warning based on Humble metadata; Steam's
-activation result is authoritative.
+When Humble provides activation metadata that can be mapped reliably, a
+restriction card appears at the end of the Choice redemption container in both
+unclaimed and claimed views. For games with multiple keys, each card is labeled
+`Key 1/2`, `Key 2/2`, and so on to match redemption-row order. Humble download
+pages use the same restriction card. A card saying Humble has not marked a
+regional restriction means only that both supplied country lists are explicitly
+empty; it is not a guarantee that the key is global. Missing or ambiguous
+metadata is not shown. These notices are an early warning based on Humble
+metadata; Steam's activation result is authoritative.
 
 The price summary follows the active Bundle Filters. Its header shows the
 current all/unowned scope immediately before the existing `Show unowned` or
