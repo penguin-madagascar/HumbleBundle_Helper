@@ -4733,8 +4733,11 @@
         else if (verdict.status === 'restricted') status.textContent = t('regionRestricted', {country: verdict.country});
         else status.textContent = t('regionAllowed', {country: verdict.country});
         panel.appendChild(status);
-        appendRegionCountryList(panel, t('regionExclusiveCountries', {countries: ''}).trim(), restrictions.exclusiveCountries);
-        appendRegionCountryList(panel, t('regionDisallowedCountries', {countries: ''}).trim(), restrictions.disallowedCountries);
+        if (restrictions.exclusiveCountries.length) {
+            appendRegionCountryList(panel, t('regionExclusiveCountries', {countries: ''}).trim(), restrictions.exclusiveCountries);
+        } else {
+            appendRegionCountryList(panel, t('regionDisallowedCountries', {countries: ''}).trim(), restrictions.disallowedCountries);
+        }
         return panel;
     }
 
@@ -4870,6 +4873,10 @@
         });
     }
 
+    let downloadRegionProducts = null;
+    let downloadRegionObserver = null;
+    let downloadRegionRenderTimer = null;
+
     // Region Restriction Check
     if (!globalThis.__HB_HELPER_TEST__) getRegionLockInfo();
 
@@ -4879,7 +4886,6 @@
         if (splitedURL.length >= 2) {
             const orderID = splitedURL[1];
             const ApiURL = `https://www.humblebundle.com/api/v1/order/${orderID}?all_tpkds=true`;
-            console.log('Humble Key Restriction User Script::', `Request API ${ApiURL}`);
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: ApiURL,
@@ -4893,16 +4899,45 @@
                             return;
                         }
                         if (!Array.isArray(products)) return;
-                        setTimeout(() => {
-                            const disclaimers = document.querySelectorAll('.disclaimer');
-                            products.forEach((product, index) => insertRegionLockInfo(product, disclaimers[index]));
-                        }, 1000);
+                        startDownloadRegionRestrictionRendering(products);
                     } else {
-                        console.error('Humble Key Restriction User Script::', `Request order failed with ${status} HTTP status and ${responseText} content.`);
+                        console.error('Humble Key Restriction User Script::', `Request order metadata failed with ${status} HTTP status.`);
                     }
                 },
             });
         }
+    }
+
+    function renderDownloadRegionRestrictions() {
+        if (!downloadRegionProducts) return;
+        const disclaimers = document.querySelectorAll('.disclaimer');
+        downloadRegionProducts.forEach((product, index) => insertRegionLockInfo(product, disclaimers[index]));
+    }
+
+    function scheduleDownloadRegionRestrictionRendering() {
+        clearTimeout(downloadRegionRenderTimer);
+        downloadRegionRenderTimer = setTimeout(() => {
+            downloadRegionRenderTimer = null;
+            renderDownloadRegionRestrictions();
+        }, 100);
+    }
+
+    function startDownloadRegionRestrictionRendering(products) {
+        downloadRegionProducts = products;
+        if (!document.body) {
+            document.addEventListener('DOMContentLoaded', () => {
+                startDownloadRegionRestrictionRendering(downloadRegionProducts);
+            }, {once: true});
+            return;
+        }
+        renderDownloadRegionRestrictions();
+        if (downloadRegionObserver) return;
+        downloadRegionObserver = new MutationObserver(mutations => {
+            if (mutations.some(mutation => !isHelperUiMutation(mutation))) {
+                scheduleDownloadRegionRestrictionRendering();
+            }
+        });
+        downloadRegionObserver.observe(document.body, {childList: true, subtree: true});
     }
 
     function insertRegionLockInfo(productInfo, container) {
@@ -4954,6 +4989,7 @@
             getRegionRestrictionVerdict,
             createRegionRestrictionPanel,
             isHelperUiMutation,
+            getRegionLockInfoForTest: getRegionLockInfo,
             ensureChoiceRegionRestrictionsForTest: ensureChoiceRegionRestrictions,
             renderDownloadRegionRestrictionsForTest(products, disclaimers, steamCountryCode) {
                 const previousState = steamSessionState;

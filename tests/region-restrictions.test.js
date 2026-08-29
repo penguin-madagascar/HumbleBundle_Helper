@@ -68,22 +68,31 @@ function makeElement(tagName = 'div') {
     return element;
 }
 
-function loadApi() {
+function loadApi({
+    setTimeoutImpl = setTimeout,
+    clearTimeoutImpl = clearTimeout,
+    gmRequestImpl = () => {},
+    consoleImpl = {log() {}, warn() {}, error() {}},
+} = {}) {
+    const mutationObservers = [];
     const document = {
         body: makeElement('body'),
         head: makeElement('head'),
         documentElement: makeElement('html'),
         elements: new Map(),
+        downloadDisclaimers: [],
         createElement: makeElement,
         addEventListener() {},
         getElementById(id) { return this.elements.get(id) || null; },
         querySelector(selector) { return selector === '.choice-modal' ? this.choiceModal : null; },
-        querySelectorAll() { return []; },
+        querySelectorAll(selector) {
+            return selector === '.disclaimer' ? this.downloadDisclaimers : [];
+        },
         choiceModal: null,
     };
     const context = {
         __HB_HELPER_TEST__: true,
-        console: {log() {}, warn() {}, error() {}},
+        console: consoleImpl,
         document,
         navigator: {language: 'en', languages: ['en']},
         location: {
@@ -99,9 +108,20 @@ function loadApi() {
         GM_addValueChangeListener() {},
         GM_setClipboard() {},
         GM_registerMenuCommand() {},
-        GM_xmlhttpRequest() {},
-        setTimeout,
-        clearTimeout,
+        GM_xmlhttpRequest: gmRequestImpl,
+        MutationObserver: class {
+            constructor(callback) {
+                this.callback = callback;
+                mutationObservers.push(this);
+            }
+            observe(target, options) {
+                this.target = target;
+                this.options = options;
+            }
+            trigger(mutations) { this.callback(mutations); }
+        },
+        setTimeout: setTimeoutImpl,
+        clearTimeout: clearTimeoutImpl,
         setInterval,
         clearInterval,
         URLSearchParams,
@@ -125,7 +145,7 @@ function loadApi() {
         context,
         {filename: 'HB_Helper.user.js'}
     );
-    return {api: context.__HB_HELPER_TEST_API__, document, context};
+    return {api: context.__HB_HELPER_TEST_API__, document, context, mutationObservers};
 }
 
 function plain(value) {
@@ -269,7 +289,7 @@ test('maps Choice rows by exact machine name and TPKD order, immediately after G
     assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
     assert.match(panelText(rows[0].giftField.nextElementSibling), /can be activated/);
     assert.match(panelText(rows[0].giftField.nextElementSibling), /Humble allowlist/);
-    assert.match(panelText(rows[0].giftField.nextElementSibling), /Humble blocklist/);
+    assert.doesNotMatch(panelText(rows[0].giftField.nextElementSibling), /Humble blocklist/);
     assert.equal(hasClass(rows[1].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
     assert.match(panelText(rows[1].giftField.nextElementSibling), /restricted/);
 });
@@ -353,6 +373,94 @@ test('reuses the shared panel for Downloads in API order and never falls back to
         'US'
     );
     assert.equal(document.body.children.length, 0);
+});
+
+test('restores Downloads panels for late, partial, and replaced disclaimer rows', () => {
+    const scheduled = [];
+    let request;
+    const {api, document, context, mutationObservers} = loadApi({
+        setTimeoutImpl(callback) {
+            scheduled.push(callback);
+            return scheduled.length;
+        },
+        clearTimeoutImpl() {},
+        gmRequestImpl(options) { request = options; },
+    });
+    context.location.href = 'https://www.humblebundle.com/downloads?key=TESTORDER123';
+    api.getRegionLockInfoForTest();
+    request.onload({
+        status: 200,
+        responseText: JSON.stringify({
+            tpkd_dict: {
+                all_tpks: [
+                    {exclusive_countries: ['US'], disallowed_countries: []},
+                    {exclusive_countries: [], disallowed_countries: ['CA']},
+                ],
+            },
+        }),
+    });
+
+    assert.equal(mutationObservers.length, 1);
+    assert.equal(scheduled.length, 0);
+    const observer = mutationObservers[0];
+    observer.trigger([{
+        target: document.body,
+        addedNodes: [makeMutationNode(true)],
+        removedNodes: [],
+    }]);
+    assert.equal(scheduled.length, 0, 'helper-only mutations must not schedule a repaint');
+
+    const first = makeElement();
+    document.downloadDisclaimers = [first];
+    observer.trigger([{target: document.body, addedNodes: [first], removedNodes: []}]);
+    scheduled.shift()();
+    assert.equal(first.querySelectorAll('.hb-helper-region-restrictions').length, 1);
+
+    const second = makeElement();
+    document.downloadDisclaimers = [first, second];
+    observer.trigger([{target: document.body, addedNodes: [second], removedNodes: []}]);
+    scheduled.shift()();
+    assert.equal(first.querySelectorAll('.hb-helper-region-restrictions').length, 1);
+    assert.equal(second.querySelectorAll('.hb-helper-region-restrictions').length, 1);
+
+    const replacements = [makeElement(), makeElement()];
+    document.downloadDisclaimers = replacements;
+    observer.trigger([{
+        target: document.body,
+        addedNodes: replacements,
+        removedNodes: [first, second],
+    }]);
+    scheduled.shift()();
+    replacements.forEach(disclaimer => {
+        assert.equal(disclaimer.querySelectorAll('.hb-helper-region-restrictions').length, 1);
+    });
+
+    observer.trigger([{target: document.body, addedNodes: [makeMutationNode(false)], removedNodes: []}]);
+    scheduled.shift()();
+    replacements.forEach(disclaimer => {
+        assert.equal(disclaimer.querySelectorAll('.hb-helper-region-restrictions').length, 1);
+    });
+});
+
+test('does not log Downloads order keys or API response bodies', () => {
+    const messages = [];
+    let request;
+    const {api, context} = loadApi({
+        gmRequestImpl(options) { request = options; },
+        consoleImpl: {
+            log(...values) { messages.push(values.join(' ')); },
+            warn(...values) { messages.push(values.join(' ')); },
+            error(...values) { messages.push(values.join(' ')); },
+        },
+    });
+    context.location.href = 'https://www.humblebundle.com/downloads?key=SECRETORDER123';
+    api.getRegionLockInfoForTest();
+    assert.ok(request);
+    assert.match(request.url, /SECRETORDER123/);
+    assert.doesNotMatch(messages.join('\n'), /SECRETORDER123/);
+
+    request.onload({status: 503, responseText: 'SECRET_RESPONSE_BODY'});
+    assert.doesNotMatch(messages.join('\n'), /SECRET_RESPONSE_BODY/);
 });
 
 test('renders only inside the active visible site modal, not a stale Choice modal', () => {
