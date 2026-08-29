@@ -45,8 +45,8 @@ from Steam login. Log in to Steam in the same browser to enable owned-game
 checks, wishlist checks, and regional prices. Account-dependent price summaries
 and Choice controls first appear after an authenticated Steam snapshot and
 remain visible during later retained-account checks. The `Activate` action stays
-disabled until the check settles as authenticated. Download-order activation
-controls remain disabled until then.
+on Choice and Downloads stays disabled until the check settles as authenticated;
+local selection controls remain usable as described below.
 
 During a retained-account Steam session check, Choice and Downloads keep their
 controls, results, selection mode, and selected presentation. Local selection
