@@ -2431,7 +2431,7 @@
         if (!isChoicePage()) return;
         const activationCurrent = choiceActivationInProgress
             && isActivationUiContextCurrent(choiceActivationContext);
-        if (!isChoiceActivationUiAvailable() && !activationCurrent) {
+        if (!hasSteamAccountData() && !activationCurrent) {
             choiceSelectionMode = false;
             document.documentElement.classList.remove('hb-helper-choice-select-mode');
             renderChoiceSelectionTiles(getVisibleChoiceTiles(), new Set());
@@ -2449,7 +2449,9 @@
         const selectUnownedButton = controls.querySelector('[data-hb-helper-choice-action="select-unowned"]');
         const selectButton = controls.querySelector('[data-hb-helper-choice-action="select"]');
         const clearButton = controls.querySelector('[data-hb-helper-choice-action="clear"]');
-        if (activateButton) activateButton.disabled = controlsLocked;
+        if (activateButton) {
+            activateButton.disabled = controlsLocked || !isChoiceActivationUiAvailable();
+        }
         if (selectUnownedButton) selectUnownedButton.disabled = controlsLocked;
         if (selectButton) {
             selectButton.disabled = controlsLocked;
@@ -2529,7 +2531,7 @@
             && getDownloadActivationItemId(scope, pair.tpkd));
     }
 
-    function isDownloadActivationUiAvailable() {
+    function isDownloadSelectionUiAvailable() {
         const lockManager = getChoiceLockManager();
         return isDownloadsPage()
             && downloadOrderRouteKey === getDownloadsOrderKey()
@@ -2537,8 +2539,12 @@
             && Boolean(downloadOrderMapping)
             && !downloadOrderLoadError
             && Boolean(lockManager && typeof lockManager.request === 'function')
-            && steamSessionState.status === 'authenticated'
-            && isSteamAccountData(steamSessionState.account);
+            && hasSteamAccountData();
+    }
+
+    function isDownloadActivationUiAvailable() {
+        return steamSessionState.status === 'authenticated'
+            && isDownloadSelectionUiAvailable();
     }
 
     function setDownloadRowSelectionInteraction(row, enabled) {
@@ -2565,32 +2571,53 @@
 
     function ensureDownloadLoginReminder(controls) {
         let reminder = document.getElementById('hb-helper-login-reminder');
-        const needsReminder = steamSessionState.status !== 'authenticated'
-            || !isSteamAccountData(steamSessionState.account);
-        if (!needsReminder) {
+        if (hasSteamAccountData()) {
             reminder?.remove();
             return;
         }
+        const errorPresentation = steamSessionState.status === 'error'
+            || (steamSessionState.status === 'syncing' && steamSessionState.error);
+        if (steamSessionState.status !== 'logged-out' && !errorPresentation) return;
         if (!reminder) {
             reminder = document.createElement('div');
             reminder.id = 'hb-helper-login-reminder';
             reminder.className = 'hb-helper-downloads-login';
-            const link = document.createElement('a');
-            link.href = 'https://store.steampowered.com/login/';
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            reminder.appendChild(link);
-            const message = document.createElement('div');
+        }
+        let link = reminder.querySelector('a');
+        let message = reminder.querySelector('.hb-helper-login-message');
+        if (!message) {
+            message = document.createElement('div');
             message.className = 'hb-helper-login-message';
             reminder.appendChild(message);
         }
-        const link = reminder.querySelector('a');
-        if (link) link.textContent = t('loginSteamCheckOwned');
-        const message = reminder.querySelector('.hb-helper-login-message');
-        if (message) {
-            message.textContent = steamSessionState.status === 'error'
-                ? t('steamSyncError')
-                : t('downloadLoginSteam');
+        if (errorPresentation) {
+            link?.remove();
+            message.textContent = t('steamSyncError');
+            let retryButton = reminder.querySelector('button');
+            if (!retryButton) {
+                retryButton = document.createElement('button');
+                retryButton.type = 'button';
+                retryButton.addEventListener('click', () => {
+                    retryButton.disabled = true;
+                    syncSteamSession({force: true}).finally(() => {
+                        retryButton.disabled = false;
+                    });
+                });
+                reminder.appendChild(retryButton);
+            }
+            retryButton.textContent = t('steamSyncRetry');
+            retryButton.disabled = steamSessionState.status === 'syncing';
+        } else {
+            if (!link) {
+                link = document.createElement('a');
+                link.href = 'https://store.steampowered.com/login/';
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                reminder.insertBefore(link, reminder.firstChild);
+            }
+            link.textContent = t('loginSteamCheckOwned');
+            message.textContent = t('downloadLoginSteam');
+            reminder.querySelector('button')?.remove();
         }
         if (reminder.parentNode !== controls || controls.firstElementChild !== reminder) {
             controls.insertBefore(reminder, controls.firstChild);
@@ -2625,8 +2652,8 @@
         const activationCurrent = downloadActivationInProgress
             && isActivationUiContextCurrent(downloadActivationContext);
         const controlsLocked = batchActive || activationCurrent;
-        const uiAvailable = isDownloadActivationUiAvailable();
-        if (!uiAvailable || controlsLocked) downloadSelectionMode = false;
+        const selectionUiAvailable = isDownloadSelectionUiAvailable();
+        if (!selectionUiAvailable || controlsLocked) downloadSelectionMode = false;
         for (const pair of downloadOrderMapping?.pairs || []) {
             const eligible = isDownloadMappingPairEligible(pair);
             const id = eligible
@@ -2634,7 +2661,7 @@
                 : null;
             pair.row.classList.toggle(
                 'hb-helper-download-selected',
-                Boolean(uiAvailable && id && selectedDownloadItemIds.has(id))
+                Boolean(selectionUiAvailable && id && selectedDownloadItemIds.has(id))
             );
             setDownloadRowSelectionInteraction(
                 pair.row,
@@ -2652,8 +2679,11 @@
         );
         const selectButton = controls.querySelector('[data-hb-helper-choice-action="select"]');
         const clearButton = controls.querySelector('[data-hb-helper-choice-action="clear"]');
-        for (const button of [activateButton, selectUnownedButton, selectButton, clearButton]) {
-            if (button) button.disabled = !uiAvailable || controlsLocked;
+        if (activateButton) {
+            activateButton.disabled = !isDownloadActivationUiAvailable() || controlsLocked;
+        }
+        for (const button of [selectUnownedButton, selectButton, clearButton]) {
+            if (button) button.disabled = !selectionUiAvailable || controlsLocked;
         }
         if (selectButton) {
             setElementTextContent(
@@ -2674,7 +2704,7 @@
                 setChoiceStatus(t('choiceWebLocksUnavailable'));
             } else if (batchActive) {
                 setChoiceStatus(t('activationBusy'));
-            } else if (!uiAvailable) {
+            } else if (!selectionUiAvailable) {
                 setChoiceStatus(t('downloadLoginSteam'));
             } else {
                 setChoiceStatus(t('choiceSelectedCount', {
@@ -2686,7 +2716,7 @@
     }
 
     function setDownloadSelectionMode(enabled) {
-        if (enabled && (!isDownloadActivationUiAvailable()
+        if (enabled && (!isDownloadSelectionUiAvailable()
             || isChoiceActivationBatchActive())) {
             return;
         }
@@ -2695,7 +2725,7 @@
     }
 
     async function toggleDownloadRowSelection(row) {
-        if (!isDownloadActivationUiAvailable() || isChoiceActivationBatchActive()) return;
+        if (!isDownloadSelectionUiAvailable() || isChoiceActivationBatchActive()) return;
         const pair = getDownloadMappingPairForRow(row);
         if (!isDownloadMappingPairEligible(pair)) return;
         const id = getDownloadActivationItemId(downloadOrderScope, pair.tpkd);
@@ -2721,7 +2751,7 @@
     }
 
     async function selectUnownedDownloadRows({isOwned = isOwnedDownloadMappingPair} = {}) {
-        if (!isDownloadActivationUiAvailable() || isChoiceActivationBatchActive()) return;
+        if (!isDownloadSelectionUiAvailable() || isChoiceActivationBatchActive()) return;
         const routeKey = downloadOrderRouteKey;
         const scope = downloadOrderScope;
         const generation = downloadOrderInitializationGeneration;
@@ -2732,7 +2762,7 @@
             && scope === downloadOrderScope
             && generation === downloadOrderInitializationGeneration
             && mapping === downloadOrderMapping
-            && isDownloadActivationUiAvailable()
+            && isDownloadSelectionUiAvailable()
             && !isChoiceActivationBatchActive();
         const eligiblePairs = (mapping?.pairs || [])
             .filter(pair => isDownloadMappingPairEligible(pair, mapping, scope));
@@ -2760,7 +2790,7 @@
     }
 
     function clearDownloadSelection() {
-        if (!isDownloadActivationUiAvailable() || isChoiceActivationBatchActive()) return;
+        if (!isDownloadSelectionUiAvailable() || isChoiceActivationBatchActive()) return;
         return updateDownloadSelection(
             downloadOrderScope,
             selection => selection.clear()
@@ -2770,7 +2800,7 @@
     function handleDownloadSelectionEvent(event) {
         if (!downloadSelectionMode
             || !isDownloadsPage()
-            || !isDownloadActivationUiAvailable()
+            || !isDownloadSelectionUiAvailable()
             || isChoiceActivationBatchActive()) {
             return;
         }
@@ -4943,7 +4973,7 @@
         const activationCurrent = choiceActivationInProgress
             && isActivationUiContextCurrent(choiceActivationContext);
         if (!isChoicePage()
-            || (!isChoiceActivationUiAvailable() && !activationCurrent)) {
+            || (!hasSteamAccountData() && !activationCurrent)) {
             choiceControls?.remove();
             return;
         }
@@ -5357,7 +5387,7 @@
         if (['logged-out', 'error'].includes(steamSessionState.status)
             || (steamSessionState.status === 'syncing' && steamSessionState.error)) {
             ensureSteamLoginReminder();
-        } else {
+        } else if (hasSteamAccountData()) {
             document.getElementById('hb-helper-login-reminder')?.remove();
         }
         if (hasSteamAccountData()) {

@@ -2434,8 +2434,7 @@ test('live downloads controls gate interaction, restore native rows, and select 
 
     const controls = api.mountDownloadActivationControlsForTest();
     api.renderDownloadSelectionStateForTest();
-    assert.ok(controls.querySelector('.hb-helper-downloads-login'));
-    assert.match(treeText(controls), /Steam/i);
+    assert.equal(controls.querySelector('.hb-helper-downloads-login'), null);
 
     api.setSteamDerivedStateForTest({
         countryCode: 'CA',
@@ -2473,6 +2472,177 @@ test('live downloads controls gate interaction, restore native rows, and select 
     assert.equal(ownedRow.getAttribute('role'), 'link');
     assert.equal(unknownRow.hasAttribute('tabindex'), false);
     assert.equal(unknownRow.hasAttribute('role'), false);
+});
+
+test('retained Downloads synchronization preserves UI and keeps local selection usable', async () => {
+    const {api, document, orderSecret} = loadApi();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const first = tpk({human_name: 'First game', machine_name: 'first-game'});
+    const second = tpk({
+        human_name: 'Second game',
+        machine_name: 'second-game',
+        keyindex: 1,
+    });
+    const firstRow = downloadRow(document, {
+        title: first.human_name,
+        machineName: first.machine_name,
+        keyindex: first.keyindex,
+    });
+    const secondRow = downloadRow(document, {
+        title: second.human_name,
+        machineName: second.machine_name,
+        keyindex: second.keyindex,
+    });
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.append(firstRow, secondRow);
+    document.body.appendChild(container);
+    api.setDownloadOrderStateForTest(
+        scope,
+        {gamekey: orderSecret, tpkd_dict: {all_tpks: [first, second]}},
+        api.mapDownloadOrderRows([first, second], [firstRow, secondRow])
+    );
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [101],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    const authenticated = {status: 'authenticated', account, error: null};
+    api.setSteamDerivedStateForTest(account);
+    const firstId = api.getDownloadActivationItemId(scope, first);
+    const secondId = api.getDownloadActivationItemId(scope, second);
+    await api.updateDownloadSelection(scope, selection => selection.add(firstId));
+    const controls = api.mountDownloadActivationControlsForTest();
+    api.setChoiceActivationBatchForTest(activationBatch([{
+        id: firstId,
+        title: 'First game',
+        key: steamKey(3),
+        status: 'steam-activation-failed',
+        error: 'already owned',
+    }]));
+    api.renderChoiceActivationResultsForTest();
+    api.setDownloadSelectionModeForTest(true);
+    const results = document.getElementById('hb-helper-choice-activation-results');
+    const resultText = treeText(results);
+    const activate = controls.querySelector('[data-hb-helper-choice-action="activate"]');
+    const selectUnowned = controls.querySelector(
+        '[data-hb-helper-choice-action="select-unowned"]'
+    );
+    const select = controls.querySelector('[data-hb-helper-choice-action="select"]');
+    const clear = controls.querySelector('[data-hb-helper-choice-action="clear"]');
+    assert.match(resultText, new RegExp(steamKey(3)));
+    assert.equal(firstRow.classList.contains('hb-helper-download-selected'), true);
+    assert.equal(firstRow.getAttribute('tabindex'), '0');
+    assert.equal(firstRow.getAttribute('role'), 'button');
+
+    api.applySteamSessionState({...authenticated, status: 'syncing'});
+
+    assert.equal(document.getElementById('hb-helper-choice-activation-controls'), controls);
+    assert.equal(document.getElementById('hb-helper-choice-activation-results'), results);
+    assert.equal(treeText(results), resultText);
+    assert.equal(firstRow.classList.contains('hb-helper-download-selected'), true);
+    assert.equal(document.documentElement.classList.contains(
+        'hb-helper-download-select-mode'
+    ), true);
+    assert.equal(firstRow.getAttribute('tabindex'), '0');
+    assert.equal(firstRow.getAttribute('role'), 'button');
+    assert.equal(activate.disabled, true);
+    assert.equal(selectUnowned.disabled, false);
+    assert.equal(select.disabled, false);
+    assert.equal(clear.disabled, false);
+    assert.deepEqual(clone(await api.startDownloadActivationForTest()), {
+        started: false,
+        unavailable: true,
+    });
+    assert.match(treeText(controls.querySelector('.hb-helper-choice-status')), /1 selected/);
+    assert.equal(document.getElementById('hb-helper-login-reminder'), null);
+
+    await api.handleDownloadSelectionEventForTest({
+        type: 'click',
+        target: firstRow,
+        preventDefault() {},
+        stopPropagation() {},
+        stopImmediatePropagation() {},
+    });
+    assert.deepEqual([...api.getDownloadSelection(scope)], []);
+    await api.selectUnownedDownloadRowsForTest({
+        isOwned: async pair => pair.tpkd === first,
+    });
+    assert.deepEqual([...api.getDownloadSelection(scope)], [secondId]);
+    clear.dispatch('click');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([...api.getDownloadSelection(scope)], []);
+    select.dispatch('click');
+    assert.equal(document.documentElement.classList.contains(
+        'hb-helper-download-select-mode'
+    ), false);
+
+    await api.updateDownloadSelection(scope, selection => selection.add(firstId));
+    api.applySteamSessionState(authenticated);
+    assert.equal(document.getElementById('hb-helper-choice-activation-controls'), controls);
+    assert.equal(document.getElementById('hb-helper-choice-activation-results'), results);
+    assert.equal(activate.disabled, false);
+
+    api.applySteamSessionState({status: 'logged-out', account: null, error: null});
+    await api.clearSteamAccountDerivedState();
+    assert.ok([activate, selectUnowned, select, clear].every(button => button.disabled));
+    assert.equal(firstRow.classList.contains('hb-helper-download-selected'), false);
+    assert.equal(firstRow.hasAttribute('tabindex'), false);
+    assert.equal(firstRow.hasAttribute('role'), false);
+    assert.equal(document.documentElement.classList.contains(
+        'hb-helper-download-select-mode'
+    ), false);
+    assert.deepEqual([...api.getDownloadSelection(scope)], [firstId]);
+
+    api.applySteamSessionState(authenticated);
+    assert.equal(firstRow.classList.contains('hb-helper-download-selected'), true);
+    api.applySteamSessionState({status: 'error', account: null, error: new Error('failed')});
+    await api.clearSteamAccountDerivedState();
+    assert.ok([activate, selectUnowned, select, clear].every(button => button.disabled));
+    assert.equal(firstRow.classList.contains('hb-helper-download-selected'), false);
+    assert.deepEqual([...api.getDownloadSelection(scope)], [firstId]);
+});
+
+test('Downloads login reminder follows unknown, terminal, retry, and retained-account states', () => {
+    const {api, document} = loadApi();
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    document.body.appendChild(container);
+    api.mountDownloadActivationControlsForTest();
+    assert.equal(document.getElementById('hb-helper-login-reminder'), null);
+
+    api.applySteamSessionState({status: 'logged-out', account: null, error: null});
+    const reminder = document.getElementById('hb-helper-login-reminder');
+    assert.ok(reminder);
+    assert.match(treeText(reminder), /Log in to Steam/);
+    api.applySteamSessionState({status: 'syncing', account: null, error: null});
+    assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
+    assert.match(treeText(reminder), /Log in to Steam/);
+    api.applySteamSessionState({status: 'logged-out', account: null, error: null});
+    assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
+
+    api.applySteamSessionState({status: 'error', account: null, error: new Error('failed')});
+    assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
+    assert.match(treeText(reminder), /Could not synchronize/);
+    assert.equal(reminder.querySelector('a'), null);
+    const retry = reminder.querySelector('button');
+    assert.ok(retry);
+    api.applySteamSessionState({status: 'syncing', account: null, error: new Error('failed')});
+    assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
+    assert.match(treeText(reminder), /Could not synchronize/);
+    assert.equal(retry.disabled, true);
+
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.applySteamSessionState({status: 'authenticated', account, error: null});
+    assert.equal(document.getElementById('hb-helper-login-reminder'), null);
+    api.applySteamSessionState({status: 'syncing', account, error: null});
+    assert.equal(document.getElementById('hb-helper-login-reminder'), null);
 });
 
 test('select unowned abandons an ownership result after navigation to another order', async () => {

@@ -26,9 +26,11 @@ function loadApi({
 } = {}) {
     const values = new Map();
     let document;
+    const documentListeners = new Map();
     const element = () => {
         const children = [];
         const attributes = new Map();
+        const listeners = new Map();
         const testElement = {
             children,
             parentNode: null,
@@ -68,7 +70,13 @@ function loadApi({
                 children.splice(0).forEach(child => { child.parentNode = null; });
                 this.append(...items);
             },
-            addEventListener() {},
+            addEventListener(type, listener) {
+                if (!listeners.has(type)) listeners.set(type, []);
+                listeners.get(type).push(listener);
+            },
+            dispatch(type, event = {}) {
+                for (const listener of listeners.get(type) || []) listener.call(this, event);
+            },
             classList: createTestClassList(),
             dataset: {},
             style: {},
@@ -109,6 +117,9 @@ function loadApi({
             return testElement.classList.contains(selector.slice(1))
                 || testElement.className?.split(/\s+/).includes(selector.slice(1));
         }
+        if (/^[a-z]+$/i.test(selector)) {
+            return testElement.tagName?.toLowerCase() === selector.toLowerCase();
+        }
         const action = selector.match(/^\[data-hb-helper-choice-action="([^"]+)"\]$/);
         return action
             ? testElement.dataset.hbHelperChoiceAction === action[1]
@@ -131,8 +142,18 @@ function loadApi({
         head: element(),
         documentElement: element(),
         elements: new Map(),
-        createElement: element,
-        addEventListener() {},
+        createElement(tagName = 'div') {
+            const created = element();
+            created.tagName = String(tagName).toUpperCase();
+            return created;
+        },
+        addEventListener(type, listener) {
+            if (!documentListeners.has(type)) documentListeners.set(type, []);
+            documentListeners.get(type).push(listener);
+        },
+        dispatch(type, event) {
+            for (const listener of documentListeners.get(type) || []) listener(event);
+        },
         getElementById(id) {
             return this.elements.get(id)
                 || [this.body, this.head, this.documentElement]
@@ -185,6 +206,9 @@ function loadApi({
         GM_setClipboard() {},
         GM_registerMenuCommand() {},
         GM_xmlhttpRequest: onRequest,
+        MutationObserver: class {
+            observe() {}
+        },
         setTimeout,
         clearTimeout,
         setInterval: setIntervalImplementation,
@@ -205,12 +229,19 @@ function loadApi({
         Error,
     };
     context.globalThis = context;
+    context.window = context;
+    context.history = {};
+    context.addEventListener = () => {};
     vm.runInNewContext(
         fs.readFileSync(path.join(__dirname, '..', 'HB_Helper.user.js'), 'utf8'),
         context,
         {filename: 'HB_Helper.user.js'}
     );
     return {api: context.__HB_HELPER_TEST_API__, values};
+}
+
+function treeText(node) {
+    return node ? [node.textContent || '', ...node.children.map(treeText)].join(' ') : '';
 }
 
 const authenticatedState = sessionId => ({
@@ -1663,7 +1694,7 @@ test('Choice activation UI is available only for an authenticated Steam snapshot
     });
     api.renderChoiceSelectionStateForTest();
     assert.equal(api.isChoiceActivationUiAvailable(), false);
-    assert.equal(tile.classList.contains('hb-helper-choice-selected'), false);
+    assert.equal(tile.classList.contains('hb-helper-choice-selected'), true);
 
     api.setSteamSessionStateForTest(authenticatedState('live-session'));
     api.renderChoiceSelectionStateForTest();
@@ -1674,6 +1705,167 @@ test('Choice activation UI is available only for an authenticated Steam snapshot
     api.renderChoiceSelectionStateForTest();
     assert.equal(api.isChoiceActivationUiAvailable(), false);
     assert.equal(tile.classList.contains('hb-helper-choice-selected'), false);
+});
+
+test('retained Choice synchronization preserves presentation and local selection controls', async () => {
+    const {api, values} = loadApi({lockManager: immediateLockManager});
+    const document = api.getTestDocument();
+    const heading = document.createElement('h2');
+    heading.textContent = 'YOUR GAMES';
+    document.body.appendChild(heading);
+    document.textAnchors = [heading];
+    const tile = id => ({
+        classList: createTestClassList(),
+        dataset: {id},
+        getAttribute() { return null; },
+        getClientRects() { return [{}]; },
+        querySelector() { return null; },
+        closest(selector) {
+            return selector === '.choice-content.js-open-choice-modal' ? this : null;
+        },
+        textContent: id,
+    });
+    const selectedTile = tile('choice-1');
+    selectedTile.classList.add('owned');
+    const unownedTile = tile('choice-2');
+    document.choiceTiles = [selectedTile, unownedTile];
+    api.setChoiceActivationBatchForTest({
+        version: 2,
+        id: 'completed-batch',
+        state: 'complete',
+        runner: {phase: null, owner: null, leaseExpiresAt: null},
+        ownershipRefresh: {
+            state: 'complete',
+            owner: null,
+            leaseExpiresAt: null,
+            error: null,
+        },
+        items: [{
+            id: 'choice-1',
+            title: 'Choice game',
+            key: 'AAAAA-BBBBB-CCCCC',
+            status: 'steam-activation-failed',
+            error: 'already owned',
+        }],
+    });
+    const authenticated = authenticatedState('live-session');
+    await api.installHelperRouteLifecycleForTest({
+        syncSession: async () => authenticated,
+        recoverCollection: async () => ({}),
+        reconcileBatch: async () => {},
+    });
+    values.set('hb-helper-choice-selected-games-v1', ['id:choice-1']);
+    api.setSteamDerivedStateForTest(authenticated.account);
+    api.applySteamSessionState(authenticated);
+
+    const controls = document.getElementById('hb-helper-choice-activation-controls');
+    const results = document.getElementById('hb-helper-choice-activation-results');
+    const resultText = treeText(results);
+    assert.match(resultText, /AAAAA-BBBBB-CCCCC/);
+    assert.equal(selectedTile.classList.contains('hb-helper-choice-selected'), true);
+    assert.equal(document.documentElement.classList.contains(
+        'hb-helper-choice-select-mode'
+    ), true);
+
+    api.applySteamSessionState({...authenticated, status: 'syncing'});
+
+    assert.equal(api.isChoiceActivationUiAvailable(), false);
+    assert.equal(document.getElementById('hb-helper-choice-activation-controls'), controls);
+    assert.equal(document.getElementById('hb-helper-choice-activation-results'), results);
+    assert.equal(treeText(results), resultText);
+    assert.equal(selectedTile.classList.contains('hb-helper-choice-selected'), true);
+    assert.equal(document.documentElement.classList.contains(
+        'hb-helper-choice-select-mode'
+    ), true);
+    const activate = controls.querySelector('[data-hb-helper-choice-action="activate"]');
+    const selectUnowned = controls.querySelector(
+        '[data-hb-helper-choice-action="select-unowned"]'
+    );
+    const select = controls.querySelector('[data-hb-helper-choice-action="select"]');
+    const clear = controls.querySelector('[data-hb-helper-choice-action="clear"]');
+    assert.equal(activate.disabled, true);
+    assert.equal(selectUnowned.disabled, false);
+    assert.equal(select.disabled, false);
+    assert.equal(clear.disabled, false);
+
+    document.dispatch('click', {
+        target: selectedTile,
+        preventDefault() {},
+        stopPropagation() {},
+        stopImmediatePropagation() {},
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([...api.getSelectedChoiceGameIdsForTest()], []);
+
+    selectedTile.classList.add('owned');
+    selectUnowned.dispatch('click');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([...api.getSelectedChoiceGameIdsForTest()], ['id:choice-2']);
+    clear.dispatch('click');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([...api.getSelectedChoiceGameIdsForTest()], []);
+    select.dispatch('click');
+    assert.equal(document.documentElement.classList.contains(
+        'hb-helper-choice-select-mode'
+    ), false);
+
+    api.applySteamSessionState(authenticated);
+    assert.equal(document.getElementById('hb-helper-choice-activation-controls'), controls);
+    assert.equal(document.getElementById('hb-helper-choice-activation-results'), results);
+    assert.equal(activate.disabled, false);
+});
+
+test('initial unknown Choice sync stays blank and terminal unauthenticated state clears UI', async () => {
+    const {api} = loadApi();
+    const document = api.getTestDocument();
+    const heading = document.createElement('h2');
+    heading.textContent = 'YOUR GAMES';
+    document.body.appendChild(heading);
+    document.textAnchors = [heading];
+    const tile = {
+        classList: createTestClassList(),
+        dataset: {id: 'choice-1'},
+        getAttribute() { return null; },
+        getClientRects() { return [{}]; },
+        querySelector() { return null; },
+        textContent: 'Choice game',
+    };
+    tile.classList.add('hb-helper-choice-selected');
+    document.choiceTiles = [tile];
+
+    api.applySteamSessionState({status: 'syncing', account: null, error: null});
+    assert.equal(document.getElementById('hb-helper-choice-activation-controls'), null);
+    assert.equal(tile.classList.contains('hb-helper-choice-selected'), false);
+    assert.equal(document.getElementById('hb-helper-login-reminder'), null);
+
+    api.applySteamSessionState({status: 'logged-out', account: null, error: null});
+    const reminder = document.getElementById('hb-helper-login-reminder');
+    assert.ok(reminder);
+    api.applySteamSessionState({status: 'syncing', account: null, error: null});
+    assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
+    api.applySteamSessionState({status: 'error', account: null, error: new Error('failed')});
+    const retry = reminder.querySelector('button');
+    assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
+    assert.match(treeText(reminder), /Could not synchronize/);
+    assert.equal(reminder.querySelector('a'), null);
+    api.applySteamSessionState({status: 'syncing', account: null, error: new Error('failed')});
+    assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
+    assert.match(treeText(reminder), /Could not synchronize/);
+    assert.equal(retry.disabled, true);
+
+    const authenticated = authenticatedState('live-session');
+    api.applySteamSessionState(authenticated);
+    assert.equal(document.getElementById('hb-helper-login-reminder'), null);
+    api.applySteamSessionState({...authenticated, status: 'syncing'});
+    assert.equal(document.getElementById('hb-helper-login-reminder'), null);
+
+    api.applySteamSessionState({status: 'error', account: null, error: new Error('failed')});
+    await api.clearSteamAccountDerivedState();
+    assert.equal(document.getElementById('hb-helper-choice-activation-controls'), null);
+    assert.equal(tile.classList.contains('hb-helper-choice-selected'), false);
+    assert.equal(document.documentElement.classList.contains(
+        'hb-helper-choice-select-mode'
+    ), false);
 });
 
 test('an unauthenticated transition removes Choice controls and failed-key results without an insertion point', () => {
