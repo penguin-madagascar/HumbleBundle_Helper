@@ -241,6 +241,57 @@
       min-height: 1.5em !important;
       margin-top: 4px !important;
     }
+    #hb-helper-choice-activation-controls.hb-helper-downloads-controls {
+      background: #fff !important;
+      border: 1px solid #d0d7de !important;
+      color: #1f2328 !important;
+    }
+    #hb-helper-choice-activation-controls.hb-helper-downloads-controls
+    .hb-helper-choice-result-group {
+      background: #f6f8fa !important;
+      border: 1px solid #d0d7de !important;
+    }
+    #hb-helper-choice-activation-controls.hb-helper-downloads-controls
+    .hb-helper-choice-result-warning {
+      color: #9a6700 !important;
+    }
+    #hb-helper-choice-activation-controls.hb-helper-downloads-controls
+    .hb-helper-choice-failed-key {
+      background: #fff !important;
+      border-color: #d0d7de !important;
+      color: #1f2328 !important;
+    }
+    #hb-helper-choice-activation-controls.hb-helper-downloads-controls
+    #hb-helper-login-reminder {
+      background: #fff !important;
+      border: 1px solid #d0d7de !important;
+      color: #1f2328 !important;
+      flex: 1 0 100% !important;
+      margin: 0 !important;
+    }
+    #hb-helper-choice-activation-controls.hb-helper-downloads-controls
+    #hb-helper-login-reminder a {
+      color: #0969da !important;
+    }
+    .key-redeemer.hb-helper-download-selected {
+      box-shadow: 0 0 0 4px #ffbf00 !important;
+      background: rgba(255, 191, 0, 0.2) !important;
+      position: relative !important;
+    }
+    html.hb-helper-download-select-mode .key-redeemer:not(.hb-helper-download-mapping-disabled) {
+      cursor: pointer !important;
+    }
+    .hb-helper-download-mapping-disabled {
+      opacity: 0.72 !important;
+    }
+    .hb-helper-download-mapping-warning,
+    .hb-helper-download-mapping-summary-warning,
+    .hb-helper-download-region-warning {
+      box-sizing: border-box !important;
+      color: #9a6700 !important;
+      font-weight: 700 !important;
+      margin-top: 6px !important;
+    }
     .choice-content.js-open-choice-modal.hb-helper-choice-selected {
       position: relative !important;
       box-shadow: 0 0 0 4px #ffbf00 !important;
@@ -530,6 +581,18 @@
             choiceSelectedCount: '{count} selected',
             choiceNoSelection: 'Select at least one Choice game first',
             choiceActivationBusy: 'Another Humble Choice activation batch is already in progress.',
+            activationBusy: 'Another Humble key activation batch is already in progress.',
+            downloadNoSelection: 'Select at least one eligible Steam key from this order first.',
+            downloadWebCryptoUnavailable: 'Activation is disabled because this browser does not support Web Crypto SHA-256.',
+            downloadOrderInvalid: 'Humble returned invalid order data.',
+            downloadOrderLoadFailed: 'Could not load this Humble order.',
+            downloadMappingMismatch: 'This key entry could not be matched safely. Activation is disabled for this duplicate group.',
+            downloadMappingSummaryMismatch: 'One or more order keys have no matching page entry. Activation is disabled for those keys.',
+            downloadRevealStarting: 'Preparing {count} selected key(s) from this order for Steam activation...',
+            downloadRevealProgress: 'Retrieving the Steam key for {title} from this order ({current}/{total})...',
+            downloadRevealFailed: 'Could not retrieve a Steam key for {title} from this order.',
+            downloadHumbleFailureReason: 'Humble did not provide a valid Steam key for this order item.',
+            downloadLoginSteam: 'Log in to Steam, then return to this downloads page to activate selected keys.',
             choiceWebLocksUnavailable: 'Activation was stopped because this browser does not support the Web Locks API. Update or switch browsers, then try again.',
             choiceRevealStarting: 'Preparing {count} selected game key(s) for activation on this Humble page...',
             choiceRevealProgress: 'Revealing the key for {title} on this page ({current}/{total})...',
@@ -622,6 +685,18 @@
             choiceSelectedCount: '已选择 {count} 个',
             choiceNoSelection: '请先至少选择一个 Humble Choice 游戏',
             choiceActivationBusy: '另一个 Humble Choice 激活批次正在处理中。',
+            activationBusy: '另一个 Humble key 激活批次正在处理中。',
+            downloadNoSelection: '请先在此订单中至少选择一个符合条件的 Steam key。',
+            downloadWebCryptoUnavailable: '此浏览器不支持 Web Crypto SHA-256，已禁用激活功能。',
+            downloadOrderInvalid: 'Humble 返回的订单数据无效。',
+            downloadOrderLoadFailed: '无法加载此 Humble 订单。',
+            downloadMappingMismatch: '无法安全匹配此 key 条目，已禁用该重复组的激活功能。',
+            downloadMappingSummaryMismatch: '一个或多个订单 key 没有匹配的页面条目，已禁用这些 key 的激活功能。',
+            downloadRevealStarting: '正在准备此订单中选中的 {count} 个 key，以便在 Steam 激活...',
+            downloadRevealProgress: '正在从此订单获取 {title} 的 Steam key（{current}/{total}）...',
+            downloadRevealFailed: '无法从此订单获取 {title} 的 Steam key。',
+            downloadHumbleFailureReason: 'Humble 未能为此订单条目提供有效的 Steam key。',
+            downloadLoginSteam: '登录 Steam 后返回此下载页面，即可激活所选 key。',
             choiceWebLocksUnavailable: '此浏览器不支持 Web Locks API，已停止激活。请更新或更换浏览器后重试。',
             choiceRevealStarting: '正在准备 {count} 个已选游戏的 key，以便在此 Humble 页面激活...',
             choiceRevealProgress: '正在此页面显示 {title} 的 key（{current}/{total}）...',
@@ -784,6 +859,7 @@
     const priceHistoryCache = new Map();
     const exchangeRateCache = new Map();
     const choiceSelectionCacheKey = 'hb-helper-choice-selected-games-v1';
+    const downloadSelectionCacheKeyPrefix = 'hb-helper-download-selected-games-v1:';
     const landingSortModeStorageKey = 'hb-helper-landing-sort-mode';
     const steamActivationBatchKey = 'hb-helper-steam-activation-batch-v2';
     const choiceActivationItemIdPrefix = 'hb-helper-key-v1:';
@@ -817,6 +893,7 @@
     const choiceLockRetryMs = 250;
     const gmRequestTimeoutMs = 20000;
     const choiceRuntimeOwnerId = typeof crypto !== 'undefined'
+        && crypto
         && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -829,6 +906,13 @@
     let steamSessionSyncTrigger;
     let steamSessionState = {status: 'syncing', account: null, error: null};
     let steamSessionTriggersObserved = false;
+    let pageChangesObserved = false;
+    let landingSortPageChangesObserved = false;
+    let helperRouteLifecycleInstalled = false;
+    let helperRouteFingerprint;
+    let helperRouteTransitionGeneration = 0;
+    let helperRouteTransitionPromise = Promise.resolve();
+    let helperRouteDependencies = {};
     let pageRefreshTimer;
     let choiceCollectionRecoveryTimer;
     let choiceActivationRecoveryTimer;
@@ -845,8 +929,23 @@
     let wishlistApps;
     let choiceSelectionMode = false;
     let choiceActivationInProgress = false;
+    let choiceActivationContext;
     let choiceActivationBatchListener;
     let choiceSelectionListener;
+    let downloadOrderCache;
+    let downloadOrderScope;
+    let downloadOrderData;
+    let downloadOrderMapping;
+    let downloadOrderRouteKey;
+    let downloadOrderInitializationGeneration = 0;
+    let downloadOrderLoadError = false;
+    let downloadSelectionMode = false;
+    let downloadActivationInProgress = false;
+    let downloadActivationContext;
+    const downloadSelectionListeners = new Map();
+    const selectedDownloadItemIds = new Set();
+    const downloadRowInteractionState = new WeakMap();
+    const downloadMappingAriaState = new WeakMap();
     const cachedChoiceSelection = GM_getValue(choiceSelectionCacheKey, []);
     const selectedChoiceGameIds = new Set(
         Array.isArray(cachedChoiceSelection) ? cachedChoiceSelection : []
@@ -1222,6 +1321,7 @@
     function applySteamSessionState(nextState) {
         steamSessionState = nextState;
         renderChoiceSelectionState();
+        renderDownloadSelectionState();
         if (hasSteamAccountData()) {
             ownedApps = new Set(nextState.account.ownedApps);
             wishlistApps = new Set(nextState.account.wishlistApps);
@@ -1246,6 +1346,12 @@
         choiceSelectionMode = false;
         document.documentElement.classList.remove('hb-helper-choice-select-mode');
         renderChoiceSelectionTiles(getVisibleChoiceTiles(), new Set());
+        downloadSelectionMode = false;
+        document.documentElement.classList.remove('hb-helper-download-select-mode');
+        for (const pair of downloadOrderMapping?.pairs || []) {
+            setDownloadRowSelectionInteraction(pair.row, false);
+        }
+        renderDownloadSelectionState();
         return reconcileVisibleGameClasses(new Set(), new Set()).catch(error => {
             console.warn('[HB-Helper] Clear Steam ownership classes failed:', error);
         });
@@ -1321,8 +1427,143 @@
             || location.pathname.startsWith('/membership/home');
     }
 
+    function getDownloadsOrderKey() {
+        if (location.pathname !== '/downloads') return null;
+        const orderKey = new URLSearchParams(location.search || '').get('key');
+        return isNonEmptyString(orderKey) ? orderKey : null;
+    }
+
+    function isDownloadsPage() {
+        return getDownloadsOrderKey() !== null;
+    }
+
     function isPriceTotalsPage() {
         return isGamesBundlePage() || isChoicePage();
+    }
+
+    function getHelperPageMode() {
+        if (isLandingSortPage()) return 'landing';
+        if (isDownloadsPage()) return 'downloads';
+        if (isPriceTotalsPage()) return 'price-totals';
+        return 'unsupported';
+    }
+
+    function validateDownloadOrder(order, expectedOrderKey) {
+        if (!order
+            || typeof order !== 'object'
+            || Array.isArray(order)
+            || order.gamekey !== expectedOrderKey
+            || !order.tpkd_dict
+            || !Array.isArray(order.tpkd_dict.all_tpks)) {
+            throw new Error(t('downloadOrderInvalid'));
+        }
+        return order;
+    }
+
+    function invalidateDownloadOrder() {
+        downloadOrderCache = undefined;
+    }
+
+    function loadDownloadOrder(
+        orderKey = getDownloadsOrderKey(),
+        {requestOrder = url => gmRequest(url)} = {}
+    ) {
+        if (!isNonEmptyString(orderKey)) {
+            return Promise.reject(new Error(t('downloadOrderInvalid')));
+        }
+        if (downloadOrderCache?.orderKey === orderKey) return downloadOrderCache.promise;
+
+        const cache = {orderKey, promise: null};
+        const apiUrl = `${location.origin}/api/v1/order/${encodeURIComponent(orderKey)}?all_tpkds=true`;
+        cache.promise = Promise.resolve()
+            .then(() => requestOrder(apiUrl))
+            .then(order => validateDownloadOrder(order, orderKey))
+            .catch(error => {
+                if (downloadOrderCache === cache) downloadOrderCache = undefined;
+                throw error;
+            });
+        downloadOrderCache = cache;
+        return cache.promise;
+    }
+
+    async function hashDownloadOrderKey(orderKey, cryptoProvider = globalThis.crypto) {
+        if (!isNonEmptyString(orderKey)
+            || !cryptoProvider?.subtle
+            || typeof cryptoProvider.subtle.digest !== 'function'
+            || typeof TextEncoder !== 'function') {
+            return null;
+        }
+        try {
+            const digest = await cryptoProvider.subtle.digest(
+                'SHA-256',
+                new TextEncoder().encode(orderKey)
+            );
+            const bytes = new Uint8Array(digest);
+            if (bytes.length !== 32) return null;
+            return Array.from(bytes)
+                .map(byte => byte.toString(16).padStart(2, '0'))
+                .join('');
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function getValidDownloadTuple(value) {
+        const machineName = value?.machine_name;
+        const keyindex = value?.keyindex;
+        if (!isNonEmptyString(machineName)
+            || machineName !== machineName.trim()
+            || !Number.isInteger(keyindex)
+            || keyindex < 0) {
+            return null;
+        }
+        return {machineName, keyindex};
+    }
+
+    function getDownloadActivationItemId(scope, tpkd) {
+        const tuple = getValidDownloadTuple(tpkd);
+        if (!/^[0-9a-f]{64}$/.test(scope || '') || !tuple) return null;
+        return `download:${scope}:${encodeURIComponent(tuple.machineName)}:${tuple.keyindex}`;
+    }
+
+    function parseDownloadActivationItemId(id) {
+        const match = String(id || '').match(/^download:([0-9a-f]{64}):(.+):(\d+)$/);
+        if (!match) return null;
+        let machineName;
+        try {
+            machineName = decodeURIComponent(match[2]);
+        } catch (error) {
+            return null;
+        }
+        const keyindex = Number(match[3]);
+        const parsed = {scope: match[1], machineName, keyindex};
+        const normalized = getDownloadActivationItemId(parsed.scope, {
+            machine_name: parsed.machineName,
+            keyindex: parsed.keyindex,
+        });
+        return normalized === id ? parsed : null;
+    }
+
+    function isEligibleDownloadTpkd(tpkd) {
+        if (!getValidDownloadTuple(tpkd) || tpkd.is_gift === true) return false;
+        const keyType = String(tpkd.key_type || '').trim().toLowerCase();
+        const keyTypeDescription = [keyType, tpkd.key_type_human_name]
+            .join(' ')
+            .toLowerCase();
+        if (keyType !== 'steam'
+            || /(?:direct|keyless)/.test(keyTypeDescription)
+            || tpkd.is_direct === true
+            || tpkd.direct === true
+            || tpkd.direct_redeem === true
+            || tpkd.is_keyless === true
+            || tpkd.keyless === true) {
+            return false;
+        }
+
+        const revealedKey = findSteamKeyInText(tpkd.redeemed_key_val);
+        if (revealedKey) return true;
+        if (isNonEmptyString(tpkd.redeemed_key_val)) return false;
+        return !isDownloadTpkdExpired(tpkd) && tpkd.sold_out !== true;
     }
 
     function normalizedText(element) {
@@ -1343,6 +1584,12 @@
         const hasTimezone = /(?:Z|[+-]\d\d:\d\d)$/i.test(dateText);
         const time = Date.parse(hasTimezone ? dateText : `${dateText}Z`);
         return Number.isFinite(time) ? time : null;
+    }
+
+    function isDownloadTpkdExpired(tpkd, now = Date.now()) {
+        if (tpkd?.is_expired === true) return true;
+        const expiryTime = parseHumbleDateTime(tpkd?.expiry_date);
+        return expiryTime !== null && expiryTime <= now;
     }
 
     function hasLandingPageProductData(pageData) {
@@ -1671,6 +1918,8 @@
     }
 
     function observeLandingSortPageChanges() {
+        if (landingSortPageChangesObserved) return;
+        landingSortPageChangesObserved = true;
         const observer = new MutationObserver(() => scheduleLandingSortPageRefresh());
         observer.observe(document.body, {childList: true, subtree: true});
     }
@@ -1954,8 +2203,15 @@
             const changed = nextSelection.size !== storedSelection.size
                 || [...nextSelection].some(id => !storedSelection.has(id));
             if (changed) GM_setValue(choiceSelectionCacheKey, [...nextSelection]);
-            replaceChoiceSelection(nextSelection);
-            return {updated: changed, selection: new Set(nextSelection)};
+            const persistedSelection = getChoiceSelection();
+            const persisted = persistedSelection.size === nextSelection.size
+                && [...nextSelection].every(id => persistedSelection.has(id));
+            replaceChoiceSelection(persistedSelection);
+            return {
+                updated: changed && persisted,
+                persisted,
+                selection: persistedSelection,
+            };
         };
         const lockResult = await requestChoiceExclusiveLock(
             choiceSelectionLockName,
@@ -1965,6 +2221,175 @@
         if (lockResult.unsupported) return mutateStoredSelection();
         if (!lockResult.acquired) return lockResult;
         return lockResult.value;
+    }
+
+    function getDownloadSelectionStorageKey(scope) {
+        return /^[0-9a-f]{64}$/.test(scope || '')
+            ? `${downloadSelectionCacheKeyPrefix}${scope}`
+            : null;
+    }
+
+    function getDownloadSelectionMap(scope, value) {
+        const map = {};
+        const storageKey = getDownloadSelectionStorageKey(scope);
+        if (!storageKey) return map;
+        const storedValue = value === undefined ? GM_getValue(storageKey, {}) : value;
+        if (!storedValue || typeof storedValue !== 'object' || Array.isArray(storedValue)) {
+            return map;
+        }
+        const ids = storedValue[scope];
+        if (!Array.isArray(ids)) return map;
+        const selection = [...new Set(ids.filter(id =>
+            parseDownloadActivationItemId(id)?.scope === scope
+        ))];
+        if (selection.length > 0) map[scope] = selection;
+        return map;
+    }
+
+    function getDownloadSelection(scope, value) {
+        return new Set(getDownloadSelectionMap(scope, value)[scope] || []);
+    }
+
+    function replaceDownloadSelection(scope, value) {
+        if (scope !== downloadOrderScope) return false;
+        const nextSelection = getDownloadSelection(scope, value);
+        if (nextSelection.size === selectedDownloadItemIds.size
+            && [...nextSelection].every(id => selectedDownloadItemIds.has(id))) {
+            return false;
+        }
+        selectedDownloadItemIds.clear();
+        nextSelection.forEach(id => selectedDownloadItemIds.add(id));
+        renderDownloadSelectionState();
+        return true;
+    }
+
+    function observeDownloadSelection(scope) {
+        downloadOrderScope = scope;
+        const storageKey = getDownloadSelectionStorageKey(scope);
+        if (!storageKey) return;
+        if (!downloadSelectionListeners.has(scope)) {
+            const listenerScope = scope;
+            const id = GM_addValueChangeListener(
+                storageKey,
+                (name, oldValue, newValue) => {
+                    if (downloadOrderScope === listenerScope) {
+                        replaceDownloadSelection(listenerScope, newValue);
+                    }
+                }
+            );
+            downloadSelectionListeners.set(scope, id);
+        }
+        replaceDownloadSelection(scope, GM_getValue(storageKey, {}));
+    }
+
+    async function updateDownloadSelection(
+        scope,
+        update,
+        {lockManager, shouldPersist = () => true} = {}
+    ) {
+        if (!/^[0-9a-f]{64}$/.test(scope || '')) {
+            return {updated: false, invalidScope: true, selection: new Set()};
+        }
+        const storageKey = getDownloadSelectionStorageKey(scope);
+        const mutateStoredSelection = async () => {
+            const storedMap = getDownloadSelectionMap(scope);
+            const storedSelection = new Set(storedMap[scope] || []);
+            const nextSelection = new Set(storedSelection);
+            await update(nextSelection);
+            if (!shouldPersist()) {
+                const currentMap = getDownloadSelectionMap(scope);
+                const currentSelection = new Set(currentMap[scope] || []);
+                replaceDownloadSelection(scope, currentMap);
+                return {
+                    updated: false,
+                    persisted: false,
+                    aborted: true,
+                    selection: currentSelection,
+                };
+            }
+            for (const id of [...nextSelection]) {
+                if (parseDownloadActivationItemId(id)?.scope !== scope) {
+                    nextSelection.delete(id);
+                }
+            }
+            const changed = nextSelection.size !== storedSelection.size
+                || [...nextSelection].some(id => !storedSelection.has(id));
+            if (changed) {
+                if (nextSelection.size > 0) storedMap[scope] = [...nextSelection];
+                else delete storedMap[scope];
+                GM_setValue(storageKey, storedMap);
+            }
+            const persistedMap = getDownloadSelectionMap(scope);
+            const persistedSelection = new Set(persistedMap[scope] || []);
+            const persisted = persistedSelection.size === nextSelection.size
+                && [...nextSelection].every(id => persistedSelection.has(id));
+            replaceDownloadSelection(scope, persistedMap);
+            return {
+                updated: changed && persisted,
+                persisted,
+                selection: persistedSelection,
+            };
+        };
+        const lockResult = await requestChoiceExclusiveLock(
+            scope,
+            mutateStoredSelection,
+            {lockManager}
+        );
+        if (!lockResult.acquired) return {...lockResult, updated: false};
+        return lockResult.value;
+    }
+
+    function inferActivationBatchScope(batch) {
+        if (!Array.isArray(batch?.items) || batch.items.length === 0) return null;
+        const ids = batch.items.map(item => item?.id);
+        if (ids.some(id => !isNonEmptyString(id))
+            || new Set(ids).size !== ids.length) {
+            return null;
+        }
+        let kind;
+        let downloadScope;
+        for (const id of ids) {
+            if (id.startsWith('download:')) {
+                const parsed = parseDownloadActivationItemId(id);
+                if (!parsed || kind === 'choice') return null;
+                kind = 'download';
+                if (downloadScope && downloadScope !== parsed.scope) return null;
+                downloadScope = parsed.scope;
+            } else {
+                if (kind === 'download') return null;
+                kind = 'choice';
+            }
+        }
+        return kind === 'download'
+            ? {kind, scope: downloadScope}
+            : {kind: 'choice'};
+    }
+
+    function preflightActivationSelection(selectedItems) {
+        if (!Array.isArray(selectedItems) || selectedItems.length === 0) {
+            return {valid: false, scope: null};
+        }
+        if (selectedItems.some(item =>
+            !isNonEmptyString(item?.id) || !isNonEmptyString(item?.title))) {
+            return {valid: false, scope: null};
+        }
+        const scope = inferActivationBatchScope({items: selectedItems});
+        return scope ? {valid: true, scope} : {valid: false, scope: null};
+    }
+
+    function activationScopesMatch(left, right) {
+        if (!left || !right || left.kind !== right.kind) return false;
+        return left.kind === 'choice' || left.scope === right.scope;
+    }
+
+    function getActivationBatchPresentation(batch, currentScope) {
+        if (!batch) return {kind: 'none'};
+        const batchScope = inferActivationBatchScope(batch);
+        if (activationScopesMatch(batchScope, currentScope)) {
+            return {kind: 'details', batch};
+        }
+        if (isChoiceActivationBatchActive(batch)) return {kind: 'busy'};
+        return {kind: 'none'};
     }
 
     function setElementTextContent(element, value) {
@@ -1988,7 +2413,10 @@
     }
 
     function renderChoiceSelectionState() {
-        if (!isChoiceActivationUiAvailable()) {
+        if (!isChoicePage()) return;
+        const activationCurrent = choiceActivationInProgress
+            && isActivationUiContextCurrent(choiceActivationContext);
+        if (!isChoiceActivationUiAvailable() && !activationCurrent) {
             choiceSelectionMode = false;
             document.documentElement.classList.remove('hb-helper-choice-select-mode');
             renderChoiceSelectionTiles(getVisibleChoiceTiles(), new Set());
@@ -2000,7 +2428,7 @@
 
         const controls = document.getElementById('hb-helper-choice-activation-controls');
         if (!controls) return;
-        const controlsLocked = choiceActivationInProgress || isChoiceActivationBatchActive();
+        const controlsLocked = activationCurrent || isChoiceActivationBatchActive();
         if (controlsLocked) choiceSelectionMode = false;
         const activateButton = controls.querySelector('[data-hb-helper-choice-action="activate"]');
         const selectUnownedButton = controls.querySelector('[data-hb-helper-choice-action="select-unowned"]');
@@ -2017,7 +2445,7 @@
             selectButton.setAttribute('aria-pressed', String(choiceSelectionMode));
         }
         if (clearButton) clearButton.disabled = controlsLocked;
-        if (!choiceActivationInProgress) {
+        if (!activationCurrent) {
             setChoiceStatus(t('choiceSelectedCount', {count: selectedChoiceGameIds.size}));
         }
         document.documentElement.classList.toggle('hb-helper-choice-select-mode', choiceSelectionMode);
@@ -2071,6 +2499,282 @@
         });
     }
 
+    function getDownloadMappingPairForRow(row) {
+        return downloadOrderMapping?.pairs.find(pair => pair.row === row) || null;
+    }
+
+    function isDownloadMappingPairEligible(
+        pair,
+        mapping = downloadOrderMapping,
+        scope = downloadOrderScope
+    ) {
+        return Boolean(pair
+            && !mapping?.disabledRows.has(pair.row)
+            && isEligibleDownloadTpkd(pair.tpkd)
+            && getDownloadActivationItemId(scope, pair.tpkd));
+    }
+
+    function isDownloadActivationUiAvailable() {
+        const lockManager = getChoiceLockManager();
+        return isDownloadsPage()
+            && downloadOrderRouteKey === getDownloadsOrderKey()
+            && /^[0-9a-f]{64}$/.test(downloadOrderScope || '')
+            && Boolean(downloadOrderMapping)
+            && !downloadOrderLoadError
+            && Boolean(lockManager && typeof lockManager.request === 'function')
+            && steamSessionState.status === 'authenticated'
+            && isSteamAccountData(steamSessionState.account);
+    }
+
+    function setDownloadRowSelectionInteraction(row, enabled) {
+        if (enabled) {
+            if (downloadRowInteractionState.has(row)) return;
+            downloadRowInteractionState.set(row, {
+                hadTabindex: row.hasAttribute?.('tabindex') || false,
+                tabindex: row.getAttribute?.('tabindex'),
+                hadRole: row.hasAttribute?.('role') || false,
+                role: row.getAttribute?.('role'),
+            });
+            row.setAttribute?.('tabindex', '0');
+            row.setAttribute?.('role', 'button');
+            return;
+        }
+        const previous = downloadRowInteractionState.get(row);
+        if (!previous) return;
+        if (previous.hadTabindex) row.setAttribute?.('tabindex', previous.tabindex);
+        else row.removeAttribute?.('tabindex');
+        if (previous.hadRole) row.setAttribute?.('role', previous.role);
+        else row.removeAttribute?.('role');
+        downloadRowInteractionState.delete(row);
+    }
+
+    function ensureDownloadLoginReminder(controls) {
+        let reminder = document.getElementById('hb-helper-login-reminder');
+        const needsReminder = steamSessionState.status !== 'authenticated'
+            || !isSteamAccountData(steamSessionState.account);
+        if (!needsReminder) {
+            reminder?.remove();
+            return;
+        }
+        if (!reminder) {
+            reminder = document.createElement('div');
+            reminder.id = 'hb-helper-login-reminder';
+            reminder.className = 'hb-helper-downloads-login';
+            const link = document.createElement('a');
+            link.href = 'https://store.steampowered.com/login/';
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            reminder.appendChild(link);
+            const message = document.createElement('div');
+            message.className = 'hb-helper-login-message';
+            reminder.appendChild(message);
+        }
+        const link = reminder.querySelector('a');
+        if (link) link.textContent = t('loginSteamCheckOwned');
+        const message = reminder.querySelector('.hb-helper-login-message');
+        if (message) {
+            message.textContent = steamSessionState.status === 'error'
+                ? t('steamSyncError')
+                : t('downloadLoginSteam');
+        }
+        if (reminder.parentNode !== controls || controls.firstElementChild !== reminder) {
+            controls.insertBefore(reminder, controls.firstChild);
+        }
+    }
+
+    function upsertDownloadMappingSummaryWarning(controls, mapping) {
+        let warning = controls.querySelector(
+            '.hb-helper-download-mapping-summary-warning'
+        );
+        const hasApiOnlyMismatch = (mapping?.mismatches || []).some(mismatch =>
+            mismatch.tpkds.length > 0 && mismatch.rows.length === 0
+        );
+        if (!hasApiOnlyMismatch) {
+            warning?.remove();
+            return;
+        }
+        if (!warning) {
+            warning = document.createElement('div');
+            warning.className = 'hb-helper-download-mapping-summary-warning';
+            controls.appendChild(warning);
+        }
+        warning.textContent = t('downloadMappingSummaryMismatch');
+    }
+
+    function renderDownloadSelectionState() {
+        if (!isDownloadsPage()) return;
+        const controls = document.getElementById('hb-helper-choice-activation-controls');
+        if (!controls?.classList.contains('hb-helper-downloads-controls')) return;
+
+        const batchActive = isChoiceActivationBatchActive();
+        const activationCurrent = downloadActivationInProgress
+            && isActivationUiContextCurrent(downloadActivationContext);
+        const controlsLocked = batchActive || activationCurrent;
+        const uiAvailable = isDownloadActivationUiAvailable();
+        if (!uiAvailable || controlsLocked) downloadSelectionMode = false;
+        for (const pair of downloadOrderMapping?.pairs || []) {
+            const eligible = isDownloadMappingPairEligible(pair);
+            const id = eligible
+                ? getDownloadActivationItemId(downloadOrderScope, pair.tpkd)
+                : null;
+            pair.row.classList.toggle(
+                'hb-helper-download-selected',
+                Boolean(uiAvailable && id && selectedDownloadItemIds.has(id))
+            );
+            setDownloadRowSelectionInteraction(
+                pair.row,
+                Boolean(downloadSelectionMode && eligible && !controlsLocked)
+            );
+        }
+        document.documentElement.classList.toggle(
+            'hb-helper-download-select-mode',
+            downloadSelectionMode
+        );
+
+        const activateButton = controls.querySelector('[data-hb-helper-choice-action="activate"]');
+        const selectUnownedButton = controls.querySelector(
+            '[data-hb-helper-choice-action="select-unowned"]'
+        );
+        const selectButton = controls.querySelector('[data-hb-helper-choice-action="select"]');
+        const clearButton = controls.querySelector('[data-hb-helper-choice-action="clear"]');
+        for (const button of [activateButton, selectUnownedButton, selectButton, clearButton]) {
+            if (button) button.disabled = !uiAvailable || controlsLocked;
+        }
+        if (selectButton) {
+            setElementTextContent(
+                selectButton,
+                downloadSelectionMode ? t('choiceSelectDone') : t('choiceSelect')
+            );
+            selectButton.setAttribute('aria-pressed', String(downloadSelectionMode));
+        }
+
+        upsertDownloadMappingSummaryWarning(controls, downloadOrderMapping);
+        ensureDownloadLoginReminder(controls);
+        if (!activationCurrent) {
+            if (downloadOrderLoadError) {
+                setChoiceStatus(t('downloadOrderLoadFailed'));
+            } else if (!globalThis.crypto?.subtle || !downloadOrderScope) {
+                setChoiceStatus(t('downloadWebCryptoUnavailable'));
+            } else if (!getChoiceLockManager()?.request) {
+                setChoiceStatus(t('choiceWebLocksUnavailable'));
+            } else if (batchActive) {
+                setChoiceStatus(t('activationBusy'));
+            } else if (!uiAvailable) {
+                setChoiceStatus(t('downloadLoginSteam'));
+            } else {
+                setChoiceStatus(t('choiceSelectedCount', {
+                    count: selectedDownloadItemIds.size,
+                }));
+            }
+        }
+        renderChoiceActivationResults();
+    }
+
+    function setDownloadSelectionMode(enabled) {
+        if (enabled && (!isDownloadActivationUiAvailable()
+            || isChoiceActivationBatchActive())) {
+            return;
+        }
+        downloadSelectionMode = enabled;
+        renderDownloadSelectionState();
+    }
+
+    async function toggleDownloadRowSelection(row) {
+        if (!isDownloadActivationUiAvailable() || isChoiceActivationBatchActive()) return;
+        const pair = getDownloadMappingPairForRow(row);
+        if (!isDownloadMappingPairEligible(pair)) return;
+        const id = getDownloadActivationItemId(downloadOrderScope, pair.tpkd);
+        return updateDownloadSelection(downloadOrderScope, selection => {
+            if (selection.has(id)) selection.delete(id);
+            else selection.add(id);
+        });
+    }
+
+    async function isOwnedDownloadMappingPair(pair) {
+        if (!ownedApps) return false;
+        const rawAppId = pair.tpkd.steam_app_id;
+        const numericAppId = Number(rawAppId);
+        if (Number.isInteger(numericAppId) && numericAppId > 0) {
+            return ownedApps.has(numericAppId) || ownedApps.has(String(rawAppId));
+        }
+        try {
+            const app = await findSteamApp(pair.tpkd.human_name);
+            return Boolean(app && (ownedApps.has(app.appid) || ownedApps.has(String(app.appid))));
+        } catch (error) {
+            return false;
+        }
+    }
+
+    async function selectUnownedDownloadRows({isOwned = isOwnedDownloadMappingPair} = {}) {
+        if (!isDownloadActivationUiAvailable() || isChoiceActivationBatchActive()) return;
+        const routeKey = downloadOrderRouteKey;
+        const scope = downloadOrderScope;
+        const generation = downloadOrderInitializationGeneration;
+        const mapping = downloadOrderMapping;
+        const isSnapshotCurrent = () =>
+            routeKey === downloadOrderRouteKey
+            && routeKey === getDownloadsOrderKey()
+            && scope === downloadOrderScope
+            && generation === downloadOrderInitializationGeneration
+            && mapping === downloadOrderMapping
+            && isDownloadActivationUiAvailable()
+            && !isChoiceActivationBatchActive();
+        const eligiblePairs = (mapping?.pairs || [])
+            .filter(pair => isDownloadMappingPairEligible(pair, mapping, scope));
+        const ownership = await Promise.all(eligiblePairs.map(isOwned));
+        if (!isSnapshotCurrent()) return {stale: true};
+        const ids = eligiblePairs
+            .filter((pair, index) => !ownership[index])
+            .map(pair => getDownloadActivationItemId(scope, pair.tpkd));
+        let stale = false;
+        const result = await updateDownloadSelection(scope, selection => {
+            if (!isSnapshotCurrent()) {
+                stale = true;
+                return;
+            }
+            selection.clear();
+            ids.forEach(id => selection.add(id));
+        }, {
+            shouldPersist: () => {
+                const current = isSnapshotCurrent();
+                if (!current) stale = true;
+                return current;
+            },
+        });
+        return stale || result.aborted ? {...result, stale: true} : result;
+    }
+
+    function clearDownloadSelection() {
+        if (!isDownloadActivationUiAvailable() || isChoiceActivationBatchActive()) return;
+        return updateDownloadSelection(
+            downloadOrderScope,
+            selection => selection.clear()
+        );
+    }
+
+    function handleDownloadSelectionEvent(event) {
+        if (!downloadSelectionMode
+            || !isDownloadsPage()
+            || !isDownloadActivationUiAvailable()
+            || isChoiceActivationBatchActive()) {
+            return;
+        }
+        if (event.type === 'keydown' && !['Enter', ' ', 'Spacebar'].includes(event.key)) {
+            return;
+        }
+        if (event.target.closest?.('.hb-helper-region-restrictions')) return;
+        const row = event.target.closest?.('.key-redeemer');
+        if (!isDownloadMappingPairEligible(getDownloadMappingPairForRow(row))) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        const update = toggleDownloadRowSelection(row);
+        update.catch(error => {
+            console.warn('[HB-Helper] Update download selection failed:', error);
+        });
+        return update;
+    }
+
     function getActiveChoiceModal() {
         const modal = document.getElementById('site-modal');
         if (!modal || modal.getClientRects().length === 0) return null;
@@ -2084,6 +2788,370 @@
         );
     }
 
+    function findSteamKeyInText(text) {
+        return findSteamKeysInText(text)[0] || null;
+    }
+
+    function getDownloadTupleSignature(tuple) {
+        return tuple ? JSON.stringify([tuple.machineName, tuple.keyindex]) : null;
+    }
+
+    function getDownloadRowNativeTuple(row) {
+        const candidates = [
+            row,
+            ...Array.from(row.querySelectorAll?.(
+                '[data-machine-name], [data-keyindex], [data-key-index]'
+            ) || []),
+        ];
+        for (const source of candidates) {
+            const machineName = source.dataset?.machineName
+                || source.getAttribute?.('data-machine-name');
+            const rawIndex = source.dataset?.keyindex
+                ?? source.dataset?.keyIndex
+                ?? source.getAttribute?.('data-keyindex')
+                ?? source.getAttribute?.('data-key-index');
+            if (!/^\d+$/.test(String(rawIndex ?? ''))) continue;
+            const tuple = getValidDownloadTuple({
+                machine_name: machineName,
+                keyindex: Number(rawIndex),
+            });
+            if (tuple) return tuple;
+        }
+        return null;
+    }
+
+    function normalizeDownloadPlatform(value) {
+        const text = String(value || '').replace(/\s+/g, ' ').trim();
+        if (/\bsteam\b/i.test(text)) return 'steam';
+        return normalizeSteamTitle(text);
+    }
+
+    function getDownloadTpkdDisplayState(tpkd) {
+        if (findSteamKeyInText(tpkd.redeemed_key_val)) return 'revealed';
+        if (tpkd.is_gift === true) return 'gift';
+        if (isDownloadTpkdExpired(tpkd)) return 'expired';
+        if (tpkd.sold_out === true) return 'sold-out';
+        return 'hidden';
+    }
+
+    function getDownloadRowDisplayState(row, displayedKey) {
+        if (displayedKey) return 'revealed';
+        const explicitState = row.dataset?.downloadDisplayState;
+        if (isNonEmptyString(explicitState)) return explicitState.trim().toLowerCase();
+        const statusElements = Array.from(row.querySelectorAll?.([
+            '[data-key-state]',
+            '[data-redeem-state]',
+            '.key-redeemer-status',
+            '.keyfield-status-message',
+            '.keyfield-gifted',
+            '.keyfield-expired',
+            '.keyfield-sold-out',
+            '.gifted-key',
+            '.expired-key',
+            '.sold-out',
+            '.keyfield',
+        ].join(', ')) || []);
+        const statusText = [
+            row.dataset?.keyState,
+            row.dataset?.redeemState,
+            row.dataset?.status,
+            row.getAttribute?.('data-key-state'),
+            row.getAttribute?.('data-redeem-state'),
+            row.getAttribute?.('data-status'),
+            row.getAttribute?.('status'),
+            row.className,
+            ...statusElements.flatMap(element => [
+                element.dataset?.keyState,
+                element.dataset?.redeemState,
+                element.dataset?.status,
+                element.getAttribute?.('data-key-state'),
+                element.getAttribute?.('data-redeem-state'),
+                element.getAttribute?.('data-status'),
+                element.getAttribute?.('title'),
+                element.getAttribute?.('aria-label'),
+                element.className,
+                normalizedText(element),
+            ]),
+        ].join(' ').toLowerCase();
+        if (/\bgift(?:ed)?\b|赠送|礼物/.test(statusText)) return 'gift';
+        if (/expired|已过期|过期/.test(statusText)) return 'expired';
+        if (/sold[\s-]*out|out\s*of\s*keys|已售罄|暂无.*key/.test(statusText)) {
+            return 'sold-out';
+        }
+        return 'hidden';
+    }
+
+    function getDownloadCompositeSignature(title, platform, displayState) {
+        const normalizedTitle = normalizeSteamTitle(title);
+        const normalizedPlatform = normalizeDownloadPlatform(platform);
+        if (!normalizedTitle || !normalizedPlatform || !isNonEmptyString(displayState)) return null;
+        return JSON.stringify([normalizedTitle, normalizedPlatform, displayState]);
+    }
+
+    function getDownloadTpkdDescriptor(tpkd, index) {
+        const tuple = getValidDownloadTuple(tpkd);
+        const displayedKey = findSteamKeyInText(tpkd.redeemed_key_val);
+        return {
+            value: tpkd,
+            index,
+            tuple,
+            tupleSignature: getDownloadTupleSignature(tuple),
+            displayedKey,
+            compositeSignature: getDownloadCompositeSignature(
+                tpkd.human_name || tpkd.machine_name,
+                tpkd.key_type_human_name || tpkd.key_type,
+                getDownloadTpkdDisplayState(tpkd)
+            ),
+            assigned: false,
+            blocked: false,
+        };
+    }
+
+    function getDownloadRowTitle(row) {
+        const heading = row.querySelector?.('.heading-text');
+        const headingTitle = heading?.dataset?.title
+            || heading?.getAttribute?.('data-title');
+        if (isNonEmptyString(headingTitle)) return headingTitle.trim();
+        const headingText = heading?.querySelector?.('h4');
+        if (headingText && isNonEmptyString(normalizedText(headingText))) {
+            return normalizedText(headingText);
+        }
+        const titleElement = row.querySelector?.([
+            '.human-name-title',
+            '.key-redeemer-title',
+            '.product-title',
+            '.game-title',
+            'h1',
+            'h2',
+            'h3',
+            'h4',
+        ].join(', '));
+        return titleElement ? normalizedText(titleElement) : row.dataset?.humanName;
+    }
+
+    function getDownloadRowPlatform(row) {
+        const platformElement = row.querySelector?.([
+            '.key-type',
+            '.key-type-human-name',
+            '.platform',
+            '.platform-name',
+        ].join(', '));
+        if (platformElement && isNonEmptyString(normalizedText(platformElement))) {
+            return normalizedText(platformElement);
+        }
+        const keyfield = row.querySelector?.('.keyfield');
+        const keyfieldEvidence = [
+            keyfield?.dataset?.keyType,
+            keyfield?.dataset?.platform,
+            keyfield?.getAttribute?.('data-key-type'),
+            keyfield?.getAttribute?.('data-platform'),
+            keyfield?.getAttribute?.('title'),
+            keyfield?.getAttribute?.('aria-label'),
+            keyfield?.className,
+        ].filter(isNonEmptyString).join(' ');
+        return keyfieldEvidence || row.dataset?.keyType;
+    }
+
+    function getDownloadRowDescriptor(row, index) {
+        const displayedKey = extractSteamKeyFromScope(row);
+        const tuple = getDownloadRowNativeTuple(row);
+        return {
+            value: row,
+            index,
+            tuple,
+            tupleSignature: getDownloadTupleSignature(tuple),
+            displayedKey,
+            compositeSignature: getDownloadCompositeSignature(
+                getDownloadRowTitle(row),
+                getDownloadRowPlatform(row),
+                getDownloadRowDisplayState(row, displayedKey)
+            ),
+            assigned: false,
+            blocked: false,
+        };
+    }
+
+    function groupUnassignedDownloadEntries(entries, signatureKey) {
+        const groups = new Map();
+        for (const entry of entries) {
+            const signature = entry.assigned || entry.blocked ? null : entry[signatureKey];
+            if (!signature) continue;
+            if (!groups.has(signature)) groups.set(signature, []);
+            groups.get(signature).push(entry);
+        }
+        return groups;
+    }
+
+    function clearDownloadMappingWarning(row) {
+        row.classList.remove('hb-helper-download-mapping-disabled');
+        const previousAriaState = downloadMappingAriaState.get(row);
+        if (previousAriaState) {
+            if (previousAriaState.hadAriaDisabled) {
+                row.setAttribute?.('aria-disabled', previousAriaState.ariaDisabled);
+            } else {
+                row.removeAttribute?.('aria-disabled');
+            }
+            downloadMappingAriaState.delete(row);
+        }
+        row.querySelectorAll?.('.hb-helper-download-mapping-warning')
+            .forEach(warning => warning.remove());
+    }
+
+    function markDownloadMappingMismatch(rows) {
+        for (const row of rows) {
+            row.classList.add('hb-helper-download-mapping-disabled');
+            if (!downloadMappingAriaState.has(row)) {
+                downloadMappingAriaState.set(row, {
+                    hadAriaDisabled: row.hasAttribute?.('aria-disabled') || false,
+                    ariaDisabled: row.getAttribute?.('aria-disabled'),
+                });
+            }
+            row.setAttribute?.('aria-disabled', 'true');
+            let warning = row.querySelector?.('.hb-helper-download-mapping-warning');
+            if (!warning) {
+                warning = document.createElement('div');
+                warning.className = 'hb-helper-download-mapping-warning';
+                row.appendChild(warning);
+            }
+            warning.textContent = t('downloadMappingMismatch');
+        }
+    }
+
+    function mapDownloadOrderRows(
+        tpkds,
+        rows = Array.from(document.querySelectorAll('.key-redeemer'))
+    ) {
+        const apiEntries = Array.from(tpkds || [], getDownloadTpkdDescriptor);
+        const domEntries = Array.from(rows || [], getDownloadRowDescriptor);
+        domEntries.forEach(entry => clearDownloadMappingWarning(entry.value));
+        const pairs = [];
+        const mismatches = [];
+        const disabledRows = new Set();
+
+        const pairEntries = (apiEntry, domEntry, matchedBy) => {
+            apiEntry.assigned = true;
+            domEntry.assigned = true;
+            pairs.push({
+                tpkd: apiEntry.value,
+                row: domEntry.value,
+                apiIndex: apiEntry.index,
+                domIndex: domEntry.index,
+                matchedBy,
+            });
+        };
+
+        const recordMismatch = (signature, apiGroup, domGroup) => {
+            apiGroup.forEach(entry => { entry.blocked = true; });
+            domGroup.forEach(entry => { entry.blocked = true; });
+            mismatches.push({
+                signature,
+                tpkds: apiGroup.map(entry => entry.value),
+                rows: domGroup.map(entry => entry.value),
+            });
+        };
+
+        const nativeApiGroups = groupUnassignedDownloadEntries(apiEntries, 'tupleSignature');
+        const nativeDomGroups = groupUnassignedDownloadEntries(domEntries, 'tupleSignature');
+        const sharedNativeSignatures = [...nativeApiGroups.keys()]
+            .filter(signature => nativeDomGroups.has(signature));
+        for (const signature of sharedNativeSignatures) {
+            const apiGroup = nativeApiGroups.get(signature);
+            const domGroup = nativeDomGroups.get(signature);
+            if (apiGroup.length === 1 && domGroup.length === 1) {
+                pairEntries(apiGroup[0], domGroup[0], 'native');
+            } else if (apiGroup.length !== domGroup.length) {
+                recordMismatch(signature, apiGroup, domGroup);
+            }
+        }
+        for (const [signatureKey, matchedBy] of [
+            ['displayedKey', 'displayed-key'],
+            ['compositeSignature', 'composite'],
+        ]) {
+            const apiGroups = groupUnassignedDownloadEntries(apiEntries, signatureKey);
+            const domGroups = groupUnassignedDownloadEntries(domEntries, signatureKey);
+            const signatures = new Set([...apiGroups.keys(), ...domGroups.keys()]);
+            for (const signature of signatures) {
+                const apiGroup = apiGroups.get(signature) || [];
+                const domGroup = domGroups.get(signature) || [];
+                if (apiGroup.length > 0 && apiGroup.length === domGroup.length) {
+                    apiGroup.forEach((apiEntry, index) => {
+                        pairEntries(apiEntry, domGroup[index], matchedBy);
+                    });
+                } else {
+                    recordMismatch(signature, apiGroup, domGroup);
+                }
+            }
+        }
+
+        const unmatchedApiEntries = apiEntries.filter(entry =>
+            !entry.assigned && !entry.blocked
+        );
+        const unmatchedDomEntries = domEntries.filter(entry =>
+            !entry.assigned && !entry.blocked
+        );
+        if (unmatchedApiEntries.some(entry => !entry.compositeSignature)
+            || unmatchedDomEntries.some(entry => !entry.compositeSignature)) {
+            recordMismatch(
+                null,
+                unmatchedApiEntries.filter(entry => !entry.compositeSignature),
+                unmatchedDomEntries.filter(entry => !entry.compositeSignature)
+            );
+        }
+        for (const mismatch of mismatches) {
+            mismatch.rows.forEach(row => disabledRows.add(row));
+            markDownloadMappingMismatch(mismatch.rows);
+        }
+        const duplicateTupleSignatures = new Set(
+            [...nativeApiGroups.entries()]
+                .filter(([, group]) => group.length > 1)
+                .map(([signature]) => signature)
+        );
+        const duplicateIdRows = new Set();
+        for (const pair of pairs) {
+            const tupleSignature = getDownloadTupleSignature(
+                getValidDownloadTuple(pair.tpkd)
+            );
+            if (!duplicateTupleSignatures.has(tupleSignature)) continue;
+            duplicateIdRows.add(pair.row);
+            disabledRows.add(pair.row);
+            markDownloadMappingMismatch([pair.row]);
+        }
+        return {
+            pairs: pairs.sort((left, right) => left.apiIndex - right.apiIndex),
+            mismatches,
+            disabledRows,
+            duplicateIdRows,
+            unmatchedTpks: apiEntries.filter(entry => !entry.assigned).map(entry => entry.value),
+            unmatchedRows: domEntries.filter(entry => !entry.assigned).map(entry => entry.value),
+        };
+    }
+
+    function upsertDownloadRegionWarnings(mapping) {
+        const staleRows = new Set([
+            ...(mapping?.unmatchedRows || []),
+            ...(mapping?.disabledRows || []),
+        ]);
+        for (const row of staleRows) {
+            row.querySelectorAll?.([
+                '.hb-helper-download-region-warning',
+                '.hb-helper-region-restrictions',
+            ].join(', ')).forEach(panel => panel.remove());
+        }
+        for (const {tpkd, row} of mapping?.pairs || []) {
+            row.querySelectorAll?.([
+                '.hb-helper-download-region-warning',
+                '.hb-helper-region-restrictions',
+            ].join(', ')).forEach(panel => panel.remove());
+            const panel = createRegionRestrictionPanel(
+                tpkd,
+                steamSessionState.account?.countryCode || null
+            );
+            if (!panel) continue;
+            const container = row.querySelector?.('.disclaimer') || row;
+            container.appendChild(panel);
+        }
+    }
+
     function extractUniqueSteamKeyFromScope(scope) {
         const keys = new Set();
         for (const input of scope.querySelectorAll('input, textarea')) {
@@ -2095,6 +3163,10 @@
             findSteamKeysInText(normalizedText(keyField)).forEach(key => keys.add(key));
         }
         return keys.size === 1 ? keys.values().next().value : null;
+    }
+
+    function extractSteamKeyFromScope(scope) {
+        return extractUniqueSteamKeyFromScope(scope);
     }
 
     function isVisibleElement(element) {
@@ -2192,7 +3264,10 @@
         return outcomes;
     }
 
-    async function revealChoiceSteamKeys(tile, {skipIndexes = new Set()} = {}) {
+    async function revealChoiceSteamKeys(
+        tile,
+        {skipIndexes = new Set(), isContextCurrent = () => true} = {}
+    ) {
         const requestedSkipIndexes = Array.from(skipIndexes);
         const invalidSkipIndex = requestedSkipIndexes.some(
             keyIndex => !Number.isSafeInteger(keyIndex) || keyIndex < 0
@@ -2201,6 +3276,7 @@
             keyIndex => Number.isSafeInteger(keyIndex) && keyIndex >= 0
         ));
         const firstNonSkippedIndex = getSmallestNonSkippedChoiceKeyIndex(skipped);
+        if (!isContextCurrent()) return [createChoiceKeyFailure(firstNonSkippedIndex)];
         const activeModalBeforeClick = getActiveChoiceModal();
         if (activeModalBeforeClick && !await closeChoiceModal(activeModalBeforeClick)) {
             throw createChoiceModalCloseError(tile, firstNonSkippedIndex);
@@ -2208,11 +3284,14 @@
         if (getActiveChoiceModal()) {
             throw createChoiceModalCloseError(tile, firstNonSkippedIndex);
         }
+        if (!isContextCurrent()) return [createChoiceKeyFailure(firstNonSkippedIndex)];
         tile.click();
         const modal = await waitForCondition(() => {
+            if (!isContextCurrent()) return {stale: true};
             const activeModal = getActiveChoiceModal();
             return activeModal && isChoiceModalForTile(activeModal, tile) ? activeModal : null;
         }, 8000);
+        if (modal?.stale) return [createChoiceKeyFailure(firstNonSkippedIndex)];
         if (!modal) {
             const unmatchedModal = getActiveChoiceModal();
             if (unmatchedModal && (!isChoiceModalForTile(unmatchedModal, tile)
@@ -2224,6 +3303,7 @@
 
         try {
             const baseline = await waitForCondition(() => {
+                if (!isContextCurrent()) return {stale: true};
                 const current = inspectLockedChoiceModal(modal, tile);
                 if (current.fatal) return current;
                 return current.rows.length > 0 ? current : null;
@@ -2231,6 +3311,7 @@
             if (!baseline) {
                 return [createChoiceKeyFailure(firstNonSkippedIndex)];
             }
+            if (baseline.stale) return [createChoiceKeyFailure(firstNonSkippedIndex)];
             if (baseline.fatal) {
                 return baseline.rows?.length
                     ? createChoiceFailClosedOutcomes(baseline.rows.length, skipped)
@@ -2245,6 +3326,10 @@
             const outcomes = [];
             for (let keyIndex = 0; keyIndex < rowCount; keyIndex++) {
                 if (skipped.has(keyIndex)) continue;
+                if (!isContextCurrent()) {
+                    appendChoiceKeyFailures(outcomes, keyIndex, rowCount, skipped);
+                    break;
+                }
                 const inspection = inspectLockedChoiceModal(modal, tile, initialRows);
                 if (inspection.fatal) {
                     appendChoiceKeyFailures(outcomes, keyIndex, rowCount, skipped);
@@ -2273,6 +3358,7 @@
                 revealControl.click();
 
                 const terminal = await waitForCondition(() => {
+                    if (!isContextCurrent()) return {stale: true};
                     const current = inspectLockedChoiceModal(modal, tile, initialRows);
                     if (current.fatal) return current;
                     const currentRow = current.rows[keyIndex];
@@ -2285,6 +3371,10 @@
                     }
                     return null;
                 }, 60000);
+                if (terminal?.stale) {
+                    appendChoiceKeyFailures(outcomes, keyIndex, rowCount, skipped);
+                    break;
+                }
                 if (!terminal || terminal.fatal) {
                     appendChoiceKeyFailures(outcomes, keyIndex, rowCount, skipped);
                     break;
@@ -2306,6 +3396,86 @@
                 throw createChoiceModalCloseError(tile, firstNonSkippedIndex);
             }
         }
+    }
+
+    function postHumbleDownloadKey(tpkd, orderKey) {
+        const tuple = getValidDownloadTuple(tpkd);
+        if (!tuple || !isNonEmptyString(orderKey)) {
+            return Promise.reject(new Error(t('downloadHumbleFailureReason')));
+        }
+        const data = new URLSearchParams({
+            keytype: tuple.machineName,
+            key: orderKey,
+            keyindex: String(tuple.keyindex),
+        }).toString();
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: `${location.origin}/humbler/redeemkey`,
+                data,
+                responseType: 'json',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                },
+                timeout: gmRequestTimeoutMs,
+                onload: ({status, response, responseText}) => {
+                    if (status < 200 || status >= 300) {
+                        reject(new Error(t('requestFailedHttp', {status})));
+                        return;
+                    }
+                    try {
+                        const parsed = response || JSON.parse(responseText || '{}');
+                        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                            throw new Error(t('downloadHumbleFailureReason'));
+                        }
+                        resolve(parsed);
+                    } catch (error) {
+                        reject(new Error(t('downloadHumbleFailureReason')));
+                    }
+                },
+                onerror: () => reject(new Error(t('networkRequestFailed'))),
+                ontimeout: () => reject(new Error(t('requestTimedOut'))),
+            });
+        });
+    }
+
+    async function revealDownloadSteamKey(
+        tpkd,
+        {
+            orderKey = getDownloadsOrderKey(),
+            postReveal = postHumbleDownloadKey,
+            reloadOrder = async () => {
+                invalidateDownloadOrder();
+                return loadDownloadOrder(orderKey);
+            },
+        } = {}
+    ) {
+        const existingKey = findSteamKeyInText(tpkd?.redeemed_key_val);
+        if (existingKey) return existingKey;
+        if (!isEligibleDownloadTpkd(tpkd) || !isNonEmptyString(orderKey)) {
+            throw new Error(t('downloadHumbleFailureReason'));
+        }
+
+        const response = await postReveal(tpkd, orderKey);
+        if (response?.success !== true) {
+            throw new Error(t('downloadHumbleFailureReason'));
+        }
+        const revealedKey = findSteamKeyInText(response.key);
+        if (revealedKey) return revealedKey;
+
+        const tuple = getValidDownloadTuple(tpkd);
+        const refreshedOrder = validateDownloadOrder(await reloadOrder(), orderKey);
+        const matches = refreshedOrder.tpkd_dict.all_tpks.filter(candidate => {
+            const candidateTuple = getValidDownloadTuple(candidate);
+            return candidateTuple
+                && candidateTuple.machineName === tuple.machineName
+                && candidateTuple.keyindex === tuple.keyindex;
+        });
+        const refreshedKey = matches.length === 1
+            ? findSteamKeyInText(matches[0].redeemed_key_val)
+            : null;
+        if (!refreshedKey) throw new Error(t('downloadHumbleFailureReason'));
+        return refreshedKey;
     }
 
     function getChoiceLockManager(lockManager) {
@@ -2342,7 +3512,9 @@
     }
 
     function createChoiceActivationBatch(owner = choiceRuntimeOwnerId, now = Date.now()) {
-        const randomId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        const randomId = typeof crypto !== 'undefined'
+            && crypto
+            && typeof crypto.randomUUID === 'function'
             ? crypto.randomUUID()
             : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
         return {
@@ -2514,6 +3686,7 @@
             || !batch.items.every(isValidChoiceActivationItem)) {
             return false;
         }
+        if (batch.items.length > 0 && !inferActivationBatchScope(batch)) return false;
 
         const decodedSlots = new Set();
         for (const item of batch.items) {
@@ -2686,17 +3859,58 @@
         return items;
     }
 
+    async function collectSingleKeyActivationBatch(
+        batch,
+        selectedItems,
+        revealKey,
+        saveBatch,
+        {isContextCurrent = () => true} = {}
+    ) {
+        const persist = requireLockScopedBatchPersistence(saveBatch);
+        if (typeof revealKey !== 'function') {
+            throw new TypeError('A single-key reveal callback is required.');
+        }
+        for (const selectedItem of selectedItems) {
+            if (!isContextCurrent()) return {stale: true};
+            batch.runner.leaseExpiresAt = Date.now() + choiceActivationRunnerLeaseMs;
+            if (persist(batch) === false) return false;
+            let key = null;
+            let error;
+            try {
+                key = await revealKey(selectedItem);
+            } catch (reason) {
+                error = reason?.message;
+            }
+            const contextStale = !isContextCurrent();
+            batch.items.push({
+                id: selectedItem.id,
+                title: selectedItem.title,
+                key: key || null,
+                status: key
+                    ? choiceActivationItemStates.pending
+                    : choiceActivationItemStates.humbleFailed,
+                ...(key ? {} : {error: error || t('choiceHumbleFailureReason')}),
+            });
+            batch.runner.leaseExpiresAt = Date.now() + choiceActivationRunnerLeaseMs;
+            if (persist(batch) === false) return false;
+            if (contextStale || !isContextCurrent()) return {stale: true};
+        }
+        return true;
+    }
+
     async function collectChoiceActivationBatch(
         batch,
         selectedItems,
         retryStates,
         revealKeys,
-        saveBatch
+        saveBatch,
+        {isContextCurrent = () => true} = {}
     ) {
         const persist = requireLockScopedBatchPersistence(saveBatch);
         for (const selectedItem of selectedItems) {
             const retryState = retryStates.get(selectedItem.id);
             if (retryState.knownComplete) continue;
+            if (!isContextCurrent()) return {stale: true};
             batch.runner.leaseExpiresAt = Date.now() + choiceActivationRunnerLeaseMs;
             if (persist(batch) === false) return false;
             let freshItems;
@@ -2704,6 +3918,7 @@
             try {
                 const outcomes = await revealKeys(selectedItem, {
                     skipIndexes: new Set(retryState.activatedIndexes),
+                    isContextCurrent,
                 });
                 freshItems = createChoiceCollectionItems(
                     selectedItem,
@@ -2723,9 +3938,11 @@
                     reason?.message
                 )];
             }
+            const contextStale = !isContextCurrent();
             batch.items.push(...freshItems);
             batch.runner.leaseExpiresAt = Date.now() + choiceActivationRunnerLeaseMs;
             if (persist(batch) === false) return false;
+            if (contextStale || !isContextCurrent()) return {stale: true};
             if (unsafeModal) break;
         }
         return true;
@@ -2763,49 +3980,135 @@
         selectedItems,
         {
             lockManager,
-            revealKeys = ({tile}, options) => revealChoiceSteamKeys(tile, options),
+            revealKey,
+            revealKeys,
             owner = choiceRuntimeOwnerId,
             onBatchStarted = () => {},
             onProgress = () => {},
+            isContextCurrent = () => true,
+            selectionScope,
         } = {}
     ) {
+        const candidates = Array.isArray(selectedItems)
+            ? selectedItems.map(item => ({...item}))
+            : selectedItems;
+        const initialPreflight = preflightActivationSelection(candidates);
+        if (!initialPreflight.valid
+            || (selectionScope
+                && !activationScopesMatch(selectionScope, initialPreflight.scope))) {
+            return {started: false, invalidSelection: true};
+        }
+        if (!isContextCurrent()) return {started: false, stale: true};
         const lockResult = await requestChoiceExclusiveLock(
             choiceCollectionLockName,
             async () => {
+                const lockedPreflight = preflightActivationSelection(candidates);
+                if (!lockedPreflight.valid
+                    || !activationScopesMatch(initialPreflight.scope, lockedPreflight.scope)
+                    || (selectionScope
+                        && !activationScopesMatch(selectionScope, lockedPreflight.scope))) {
+                    return {started: false, invalidSelection: true};
+                }
+                if (!isContextCurrent()) return {started: false, stale: true};
                 const current = getChoiceActivationBatch();
-                if (current?.state !== choiceActivationBatchStates.collecting
-                    && isChoiceActivationBatchActive(current)) {
+                if (current?.state === choiceActivationBatchStates.collecting) {
                     return {started: false, busy: true, batch: current};
+                } else if (isChoiceActivationBatchActive(current)) {
+                    return {started: false, busy: true, batch: current};
+                } else if (current) {
+                    const expectedBatchId = current.id;
+                    let reconciliation;
+                    try {
+                        reconciliation = await reconcileActivationSelectionStorageFromBatch(
+                            current,
+                            {lockManager}
+                        );
+                    } catch (error) {
+                        return {
+                            started: false,
+                            stopped: true,
+                            reconciliationFailed: true,
+                            batch: current,
+                        };
+                    }
+                    const latest = getChoiceActivationBatch();
+                    if (!reconciliation.reconciled
+                        || !latest
+                        || latest.id !== expectedBatchId) {
+                        return {
+                            started: false,
+                            stopped: true,
+                            reconciliationFailed: !reconciliation.reconciled,
+                            batch: latest,
+                        };
+                    }
                 }
                 const previousBatch = current?.state === choiceActivationBatchStates.complete
                     ? current
                     : null;
-                if (current?.state === choiceActivationBatchStates.collecting) {
-                    GM_deleteValue(steamActivationBatchKey);
+                const finalPreflight = preflightActivationSelection(candidates);
+                if (!finalPreflight.valid
+                    || !activationScopesMatch(initialPreflight.scope, finalPreflight.scope)
+                    || (selectionScope
+                        && !activationScopesMatch(selectionScope, finalPreflight.scope))) {
+                    return {started: false, invalidSelection: true};
                 }
-
-                const retryStates = getChoiceCollectionRetryStates(
-                    previousBatch,
-                    selectedItems
-                );
+                if (!isContextCurrent()) return {started: false, stale: true};
+                const useSingleKeyCollection = finalPreflight.scope.kind === 'download'
+                    || (typeof revealKey === 'function' && typeof revealKeys !== 'function');
+                const retryStates = useSingleKeyCollection
+                    ? null
+                    : getChoiceCollectionRetryStates(previousBatch, candidates);
                 const batch = createChoiceActivationBatch(owner);
-                appendChoiceActivatedMarkers(batch, selectedItems, retryStates);
+                if (retryStates) {
+                    appendChoiceActivatedMarkers(batch, candidates, retryStates);
+                }
                 GM_setValue(steamActivationBatchKey, batch);
                 const saveBatch = nextBatch => saveChoiceActivationBatchIfCurrent(
                     nextBatch,
                     {runnerOwner: owner}
                 );
                 onBatchStarted(batch);
-                const collected = await collectChoiceActivationBatch(
-                    batch,
-                    selectedItems,
-                    retryStates,
-                    async (item, options) => {
-                        onProgress(item);
-                        return revealKeys(item, options);
-                    },
-                    saveBatch
-                );
+                const collected = useSingleKeyCollection
+                    ? await collectSingleKeyActivationBatch(
+                        batch,
+                        candidates,
+                        async item => {
+                            onProgress(item);
+                            return revealKey(item);
+                        },
+                        saveBatch,
+                        {isContextCurrent}
+                    )
+                    : await collectChoiceActivationBatch(
+                        batch,
+                        candidates,
+                        retryStates,
+                        async (item, options) => {
+                            onProgress(item);
+                            const reveal = typeof revealKeys === 'function'
+                                ? revealKeys
+                                : ({tile}, revealOptions) =>
+                                    revealChoiceSteamKeys(tile, revealOptions);
+                            return reveal(item, options);
+                        },
+                        saveBatch,
+                        {isContextCurrent}
+                    );
+                if (collected?.stale) {
+                    if (batch.items.length === 0) {
+                        const stored = getChoiceActivationBatch();
+                        if (stored?.id === batch.id && stored.runner.owner === owner) {
+                            GM_deleteValue(steamActivationBatchKey);
+                        }
+                        return {started: false, stale: true, batch: null};
+                    }
+                    const pendingCount = finishChoiceActivationCollection(batch, saveBatch);
+                    if (pendingCount === null) {
+                        return {started: false, stopped: true, stale: true, batch};
+                    }
+                    return {started: true, stale: true, batch, pendingCount};
+                }
                 if (!collected) return {started: false, stopped: true, batch};
                 const pendingCount = finishChoiceActivationCollection(batch, saveBatch);
                 if (pendingCount === null) {
@@ -2846,15 +4149,25 @@
     function reconcileChoiceSelectionFromBatch(batch, selection = selectedChoiceGameIds) {
         if (batch?.state !== choiceActivationBatchStates.complete) return false;
         let changed = false;
+        const gameIds = new Set();
         const itemsByGame = new Map();
         for (const item of batch?.items || []) {
             const decoded = decodeChoiceActivationItemId(item.id);
             if (!decoded) continue;
+            gameIds.add(decoded.gameId);
             if (!itemsByGame.has(decoded.gameId)) itemsByGame.set(decoded.gameId, []);
             itemsByGame.get(decoded.gameId).push(item);
         }
-        for (const [gameId, items] of itemsByGame) {
-            if (items.every(item => item.status === choiceActivationItemStates.activated)
+        const retryStates = getChoiceCollectionRetryStates(
+            batch,
+            [...gameIds].map(id => ({id}))
+        );
+        for (const [gameId, state] of retryStates) {
+            const items = itemsByGame.get(gameId) || [];
+            const legacySingleKeyComplete = items.length === 1
+                && !items[0].id.startsWith(choiceActivationItemIdPrefix)
+                && items[0].status === choiceActivationItemStates.activated;
+            if ((state.knownComplete || legacySingleKeyComplete)
                 && selection.delete(gameId)) {
                 changed = true;
             }
@@ -2867,6 +4180,50 @@
             selection => reconcileChoiceSelectionFromBatch(batch, selection),
             options
         );
+    }
+
+    async function reconcileActivationSelectionStorageFromBatch(batch, options = {}) {
+        const batchScope = inferActivationBatchScope(batch);
+        if (!batchScope) {
+            if (batch?.state === choiceActivationBatchStates.collecting
+                && Array.isArray(batch.items)
+                && batch.items.length === 0) {
+                return {reconciled: true, generic: true};
+            }
+            return {reconciled: false, invalidScope: true};
+        }
+
+        const successfulIds = batch.items
+            .filter(item => item.status === choiceActivationItemStates.activated)
+            .map(item => item.id);
+        if (successfulIds.length === 0) return {reconciled: true, updated: false};
+
+        if (batchScope.kind === 'choice') {
+            const result = await reconcileChoiceSelectionStorageFromBatch(batch, options);
+            if (result.acquired === false || result.persisted === false) {
+                return {reconciled: false, ...result};
+            }
+            return {reconciled: true, ...result};
+        }
+
+        const successfulDownloadIds = successfulIds.filter(id =>
+            parseDownloadActivationItemId(id)?.scope === batchScope.scope
+        );
+        if (successfulDownloadIds.length !== successfulIds.length) {
+            return {reconciled: false, invalidScope: true};
+        }
+        const result = await updateDownloadSelection(
+            batchScope.scope,
+            selection => successfulDownloadIds.forEach(id => selection.delete(id)),
+            options
+        );
+        if (result.unsupported
+            || result.acquired === false
+            || result.invalidScope
+            || result.persisted === false) {
+            return {reconciled: false, ...result};
+        }
+        return {reconciled: true, ...result};
     }
 
     function getChoiceActivationCounts(batch) {
@@ -2991,14 +4348,112 @@
         });
     }
 
+    function getCurrentActivationScope() {
+        if (isChoicePage()) return {kind: 'choice'};
+        if (isDownloadsPage()
+            && downloadOrderRouteKey === getDownloadsOrderKey()
+            && /^[0-9a-f]{64}$/.test(downloadOrderScope || '')) {
+            return {kind: 'download', scope: downloadOrderScope};
+        }
+        return null;
+    }
+
+    function sortedActivationSelectionIds(selection) {
+        return [...selection].sort();
+    }
+
+    function activationSelectionIdsMatch(capturedIds, selection) {
+        const currentIds = sortedActivationSelectionIds(selection);
+        return capturedIds.length === currentIds.length
+            && capturedIds.every((id, index) => id === currentIds[index]);
+    }
+
+    function captureChoiceActivationUiContext() {
+        return {
+            scope: {kind: 'choice'},
+            routeFingerprint: getHelperRouteFingerprint(),
+            routeGeneration: helperRouteTransitionGeneration,
+            controls: document.getElementById('hb-helper-choice-activation-controls'),
+            selectionIds: sortedActivationSelectionIds(selectedChoiceGameIds),
+        };
+    }
+
+    function captureDownloadActivationUiContext() {
+        return {
+            scope: {kind: 'download', scope: downloadOrderScope},
+            routeFingerprint: getHelperRouteFingerprint(),
+            routeGeneration: helperRouteTransitionGeneration,
+            initializationGeneration: downloadOrderInitializationGeneration,
+            routeKey: downloadOrderRouteKey,
+            mapping: downloadOrderMapping,
+            controls: document.getElementById('hb-helper-choice-activation-controls'),
+            selectionIds: sortedActivationSelectionIds(selectedDownloadItemIds),
+        };
+    }
+
+    function isActivationUiContextCurrent(context) {
+        if (!context
+            || context.routeFingerprint !== getHelperRouteFingerprint()
+            || context.routeGeneration !== helperRouteTransitionGeneration
+            || context.controls !== document.getElementById(
+                'hb-helper-choice-activation-controls'
+            )
+            || !activationScopesMatch(context.scope, getCurrentActivationScope())) {
+            return false;
+        }
+        if (context.scope.kind === 'choice') {
+            return activationSelectionIdsMatch(
+                context.selectionIds,
+                selectedChoiceGameIds
+            );
+        }
+        return context.routeKey === downloadOrderRouteKey
+            && context.routeKey === getDownloadsOrderKey()
+            && context.scope.scope === downloadOrderScope
+            && context.initializationGeneration === downloadOrderInitializationGeneration
+            && context.mapping === downloadOrderMapping
+            && activationSelectionIdsMatch(
+                context.selectionIds,
+                selectedDownloadItemIds
+            );
+    }
+
+    function setActivationUiContextStatus(context, message) {
+        if (!isActivationUiContextCurrent(context)) return false;
+        setElementTextContent(
+            context.controls?.querySelector('.hb-helper-choice-status'),
+            message
+        );
+        return true;
+    }
+
+    function renderActivationUiContextResults(context, batch) {
+        if (!isActivationUiContextCurrent(context)) return false;
+        renderChoiceActivationResults(batch);
+        return true;
+    }
+
     function renderChoiceActivationResults(batch = getChoiceActivationBatch()) {
         const results = document.getElementById('hb-helper-choice-activation-results');
         if (!results) return;
-        const signature = getChoiceActivationResultsSignature(batch);
+        const presentation = getActivationBatchPresentation(
+            batch,
+            getCurrentActivationScope()
+        );
+        const signature = presentation.kind === 'details'
+            ? getChoiceActivationResultsSignature(batch)
+            : JSON.stringify({language: currentLanguage, presentation: presentation.kind});
         if (results.dataset.hbHelperChoiceResultsSignature === signature) return;
         results.replaceChildren();
         results.dataset.hbHelperChoiceResultsSignature = signature;
-        if (!batch) return;
+        if (presentation.kind === 'none') return;
+        if (presentation.kind === 'busy') {
+            const busy = document.createElement('div');
+            busy.className = 'hb-helper-choice-result-summary';
+            busy.textContent = t('activationBusy');
+            results.appendChild(busy);
+            return;
+        }
 
         const counts = getChoiceActivationCounts(batch);
         const summary = document.createElement('div');
@@ -3037,15 +4492,27 @@
             activationWork = runSteamActivationWork,
             collectionOptions = {},
             activationOptions = {},
+            isContextCurrent = () => true,
         } = {}
     ) {
+        const candidates = Array.isArray(selectedItems)
+            ? selectedItems.map(item => ({...item}))
+            : selectedItems;
+        const preflight = preflightActivationSelection(candidates);
+        if (!preflight.valid) return {started: false, invalidSelection: true};
+        if (!isContextCurrent()) return {started: false, stale: true};
         const sessionState = await syncSession({force: true});
+        if (!isContextCurrent()) return {started: false, stale: true};
         if (sessionState.status !== 'authenticated'
             || !isSteamAccountData(sessionState.account)) {
             return {started: false, authenticationRequired: true, sessionState};
         }
 
-        const collection = await collectWork(selectedItems, collectionOptions);
+        const collection = await collectWork(candidates, {
+            ...collectionOptions,
+            isContextCurrent,
+            selectionScope: preflight.scope,
+        });
         if (!collection?.started || collection.pendingCount === 0) return collection;
 
         const activation = await activationWork({
@@ -3057,14 +4524,15 @@
     }
 
     async function startChoiceActivation() {
-        if (choiceActivationInProgress) {
+        if (choiceActivationInProgress
+            && isActivationUiContextCurrent(choiceActivationContext)) {
             setChoiceStatus(t('choiceActivationBusy'));
-            return;
+            return {started: false, busy: true};
         }
         const tiles = getSelectedChoiceTiles();
         if (tiles.length === 0) {
             setChoiceStatus(t('choiceNoSelection'));
-            return;
+            return {started: false, noSelection: true};
         }
 
         const selectedItems = tiles.map((tile, index) => ({
@@ -3073,58 +4541,394 @@
             tile,
             index,
         }));
+        const context = captureChoiceActivationUiContext();
         choiceActivationInProgress = true;
+        choiceActivationContext = context;
         let completionStatus = '';
-        setChoiceStatus(t('choiceRevealStarting', {count: tiles.length}));
+        let result = {started: false};
+        setActivationUiContextStatus(
+            context,
+            t('choiceRevealStarting', {count: tiles.length})
+        );
         try {
-            const result = await runDirectChoiceActivation(selectedItems, {
+            result = await runDirectChoiceActivation(selectedItems, {
+                isContextCurrent: () => isActivationUiContextCurrent(context),
                 collectionOptions: {
                     onBatchStarted: batch => {
+                        if (!isActivationUiContextCurrent(context)) return;
                         setChoiceSelectionMode(false);
-                        renderChoiceActivationResults(batch);
+                        renderActivationUiContextResults(context, batch);
                     },
-                    onProgress: item => setChoiceStatus(t('choiceRevealProgress', {
-                        title: item.title,
-                        current: item.index + 1,
-                        total: selectedItems.length,
-                    })),
+                    onProgress: item => setActivationUiContextStatus(
+                        context,
+                        t('choiceRevealProgress', {
+                            title: item.title,
+                            current: item.index + 1,
+                            total: selectedItems.length,
+                        })
+                    ),
                     revealKeys: async (item, options) => {
+                        if (!isActivationUiContextCurrent(context)) {
+                            throw new Error(t('activationBusy'));
+                        }
                         const outcomes = await revealChoiceSteamKeys(item.tile, options);
                         if (outcomes.some(outcome => !outcome.key)) {
-                            setChoiceStatus(t('choiceRevealFailed', {title: item.title}));
+                            setActivationUiContextStatus(
+                                context,
+                                t('choiceRevealFailed', {title: item.title})
+                            );
                         }
                         return outcomes;
                     },
                 },
                 activationOptions: {
-                    showProgress: (item, index, total, displayLabel) => setChoiceStatus(
-                        t('steamActivationProgress', {
+                    showProgress: (item, index, total, displayLabel) =>
+                        setActivationUiContextStatus(context, t('steamActivationProgress', {
                             title: displayLabel,
                             current: index + 1,
                             total,
-                        })
-                    ),
+                        })),
                 },
             });
             if (result.authenticationRequired) {
                 completionStatus = t('loginSteamLoadAccountData');
             } else if (result.unsupported) {
                 completionStatus = result.message;
-            } else if (!result.started) {
+            } else if (result.invalidSelection) {
+                completionStatus = t('choiceNoSelection');
+            } else if (!result.started && !result.stale) {
                 completionStatus = t('choiceActivationBusy');
             }
-            await reconcileChoiceActivationBatch();
+            if (!result.invalidSelection) await reconcileChoiceActivationBatch();
         } finally {
-            choiceActivationInProgress = false;
-            renderChoiceSelectionState();
-            renderChoiceActivationResults();
-            if (completionStatus) setChoiceStatus(completionStatus);
+            if (choiceActivationContext === context) {
+                const contextCurrent = isActivationUiContextCurrent(context);
+                choiceActivationInProgress = false;
+                choiceActivationContext = undefined;
+                if (contextCurrent) {
+                    renderChoiceSelectionState();
+                    renderChoiceActivationResults();
+                    if (completionStatus) setChoiceStatus(completionStatus);
+                }
+            }
+        }
+        return result;
+    }
+
+    async function startDownloadActivation({
+        directActivationOptions = {},
+        reconcileBatch = reconcileChoiceActivationBatch,
+    } = {}) {
+        if (!isDownloadActivationUiAvailable()) {
+            refreshDownloadOrderPage();
+            return {started: false, unavailable: true};
+        }
+        if ((downloadActivationInProgress
+                && isActivationUiContextCurrent(downloadActivationContext))
+            || isChoiceActivationBatchActive()) {
+            setChoiceStatus(t('activationBusy'));
+            return {started: false, busy: true};
+        }
+        const selectedPairs = (downloadOrderMapping?.pairs || []).filter(pair => {
+            if (!isDownloadMappingPairEligible(pair)) return false;
+            const id = getDownloadActivationItemId(downloadOrderScope, pair.tpkd);
+            return selectedDownloadItemIds.has(id);
+        });
+        if (selectedPairs.length === 0) {
+            setChoiceStatus(t('downloadNoSelection'));
+            return {started: false, noSelection: true};
+        }
+
+        const orderKey = downloadOrderRouteKey;
+        const selectedItems = selectedPairs.map((pair, index) => ({
+            id: getDownloadActivationItemId(downloadOrderScope, pair.tpkd),
+            title: [pair.tpkd.human_name, pair.tpkd.machine_name]
+                .find(isNonEmptyString)?.trim() || '',
+            tpkd: pair.tpkd,
+            index,
+        }));
+        const context = captureDownloadActivationUiContext();
+        const {
+            collectionOptions: providedCollectionOptions = {},
+            activationOptions: providedActivationOptions = {},
+            ...providedDirectOptions
+        } = directActivationOptions || {};
+        downloadActivationInProgress = true;
+        downloadActivationContext = context;
+        let completionStatus = '';
+        let result = {started: false};
+        setActivationUiContextStatus(
+            context,
+            t('downloadRevealStarting', {count: selectedItems.length})
+        );
+        try {
+            result = await runDirectChoiceActivation(selectedItems, {
+                ...providedDirectOptions,
+                isContextCurrent: () => isActivationUiContextCurrent(context),
+                collectionOptions: {
+                    ...providedCollectionOptions,
+                    onBatchStarted: batch => {
+                        if (!isActivationUiContextCurrent(context)) return;
+                        setDownloadSelectionMode(false);
+                        renderActivationUiContextResults(context, batch);
+                        providedCollectionOptions.onBatchStarted?.(batch);
+                    },
+                    onProgress: item => {
+                        if (!isActivationUiContextCurrent(context)) return;
+                        setActivationUiContextStatus(
+                            context,
+                            t('downloadRevealProgress', {
+                                title: item.title,
+                                current: item.index + 1,
+                                total: selectedItems.length,
+                            })
+                        );
+                        providedCollectionOptions.onProgress?.(item);
+                    },
+                    revealKey: async item => {
+                        if (!isActivationUiContextCurrent(context)) {
+                            throw new Error(t('activationBusy'));
+                        }
+                        try {
+                            return providedCollectionOptions.revealKey
+                                ? await providedCollectionOptions.revealKey(item)
+                                : await revealDownloadSteamKey(item.tpkd, {orderKey});
+                        } catch (error) {
+                            setActivationUiContextStatus(
+                                context,
+                                t('downloadRevealFailed', {title: item.title})
+                            );
+                            throw error;
+                        }
+                    },
+                },
+                activationOptions: {
+                    ...providedActivationOptions,
+                    showProgress: (item, index, total) => {
+                        if (!isActivationUiContextCurrent(context)) return;
+                        setActivationUiContextStatus(context, t('steamActivationProgress', {
+                            title: item.title,
+                            current: index + 1,
+                            total,
+                        }));
+                        providedActivationOptions.showProgress?.(item, index, total);
+                    },
+                },
+            });
+            if (result.authenticationRequired) {
+                completionStatus = t('downloadLoginSteam');
+            } else if (result.unsupported) {
+                completionStatus = result.message;
+            } else if (result.invalidSelection) {
+                completionStatus = t('downloadNoSelection');
+            } else if (!result.started && !result.stale) {
+                completionStatus = t('activationBusy');
+            }
+            if (!result.invalidSelection) await reconcileBatch();
+        } finally {
+            if (downloadActivationContext === context) {
+                const contextCurrent = isActivationUiContextCurrent(context);
+                downloadActivationInProgress = false;
+                downloadActivationContext = undefined;
+                if (contextCurrent) {
+                    renderDownloadSelectionState();
+                    renderChoiceActivationResults();
+                    if (completionStatus) setChoiceStatus(completionStatus);
+                }
+            }
+        }
+        return result;
+    }
+
+    function mountDownloadActivationControls() {
+        if (!isDownloadsPage()) return null;
+        const mount = document.querySelector('.key-container.wrapper')
+            || document.querySelector('.inner-main-wrapper')
+            || document.querySelector('main')
+            || document.querySelector('#main-content')
+            || document.body;
+        if (!mount) return null;
+
+        let controls = document.getElementById('hb-helper-choice-activation-controls');
+        if (controls && !controls.classList.contains('hb-helper-downloads-controls')) {
+            controls.remove();
+            controls = null;
+        }
+        if (!controls) {
+            controls = document.createElement('div');
+            controls.id = 'hb-helper-choice-activation-controls';
+            controls.className = 'hb-helper-downloads-controls';
+
+            const activateButton = document.createElement('button');
+            activateButton.type = 'button';
+            activateButton.dataset.hbHelperChoiceAction = 'activate';
+            activateButton.addEventListener('click', () => startDownloadActivation());
+
+            const selectUnownedButton = document.createElement('button');
+            selectUnownedButton.type = 'button';
+            selectUnownedButton.dataset.hbHelperChoiceAction = 'select-unowned';
+            selectUnownedButton.addEventListener('click', () => {
+                selectUnownedDownloadRows().catch(error => {
+                    console.warn('[HB-Helper] Select unowned download keys failed:', error);
+                });
+            });
+
+            const selectButton = document.createElement('button');
+            selectButton.type = 'button';
+            selectButton.dataset.hbHelperChoiceAction = 'select';
+            selectButton.addEventListener('click', () => {
+                setDownloadSelectionMode(!downloadSelectionMode);
+            });
+
+            const clearButton = document.createElement('button');
+            clearButton.type = 'button';
+            clearButton.dataset.hbHelperChoiceAction = 'clear';
+            clearButton.addEventListener('click', () => {
+                clearDownloadSelection().catch(error => {
+                    console.warn('[HB-Helper] Clear download selection failed:', error);
+                });
+            });
+
+            const status = document.createElement('div');
+            status.className = 'hb-helper-choice-status';
+            const results = document.createElement('div');
+            results.id = 'hb-helper-choice-activation-results';
+            controls.append(
+                activateButton,
+                selectUnownedButton,
+                selectButton,
+                clearButton,
+                status,
+                results
+            );
+        }
+        setElementTextContent(
+            controls.querySelector('[data-hb-helper-choice-action="activate"]'),
+            t('choiceActivate')
+        );
+        setElementTextContent(
+            controls.querySelector('[data-hb-helper-choice-action="select-unowned"]'),
+            t('choiceSelectUnowned')
+        );
+        setElementTextContent(
+            controls.querySelector('[data-hb-helper-choice-action="clear"]'),
+            t('choiceClearSelection')
+        );
+        if (mount.firstElementChild !== controls) mount.insertBefore(controls, mount.firstChild);
+        renderDownloadSelectionState();
+        return controls;
+    }
+
+    function clearDownloadMappingUi(mapping = downloadOrderMapping) {
+        document.querySelector('.hb-helper-download-mapping-summary-warning')?.remove();
+        const rows = new Set([
+            ...(mapping?.pairs || []).map(pair => pair.row),
+            ...(mapping?.unmatchedRows || []),
+            ...(mapping?.disabledRows || []),
+        ]);
+        for (const row of rows) {
+            setDownloadRowSelectionInteraction(row, false);
+            row.classList.remove('hb-helper-download-selected');
+            clearDownloadMappingWarning(row);
+            row.querySelectorAll?.([
+                '.hb-helper-download-region-warning',
+                '.hb-helper-region-restrictions',
+            ].join(', ')).forEach(panel => panel.remove());
+        }
+    }
+
+    function resetDownloadOrderPage({removeControls = true} = {}) {
+        downloadOrderInitializationGeneration += 1;
+        clearDownloadMappingUi();
+        downloadOrderRouteKey = undefined;
+        downloadOrderScope = undefined;
+        downloadOrderData = undefined;
+        downloadOrderMapping = undefined;
+        downloadOrderLoadError = false;
+        downloadSelectionMode = false;
+        selectedDownloadItemIds.clear();
+        document.documentElement.classList.remove('hb-helper-download-select-mode');
+        invalidateDownloadOrder();
+        if (removeControls) {
+            const controls = document.getElementById('hb-helper-choice-activation-controls');
+            if (controls?.classList.contains('hb-helper-downloads-controls')) controls.remove();
+        }
+    }
+
+    function refreshDownloadOrderPage({loadOrder} = {}) {
+        const orderKey = getDownloadsOrderKey();
+        if (!orderKey) {
+            resetDownloadOrderPage();
+            return;
+        }
+        if (downloadOrderRouteKey !== orderKey) {
+            return initializeDownloadOrderPage({orderKey, loadOrder})
+                .catch(error => {
+                    if (getDownloadsOrderKey() === orderKey) {
+                        console.warn('[HB-Helper] Load download order failed.');
+                        setChoiceStatus(t('downloadOrderLoadFailed'));
+                    }
+                    return {error};
+                });
+        }
+
+        mountDownloadActivationControls();
+        if (downloadOrderData) {
+            clearDownloadMappingUi();
+            downloadOrderMapping = mapDownloadOrderRows(
+                downloadOrderData.tpkd_dict.all_tpks
+            );
+            upsertDownloadRegionWarnings(downloadOrderMapping);
+        }
+        renderDownloadSelectionState();
+    }
+
+    async function initializeDownloadOrderPage({
+        loadOrder = loadDownloadOrder,
+        orderKey = getDownloadsOrderKey(),
+    } = {}) {
+        if (!isNonEmptyString(orderKey) || getDownloadsOrderKey() !== orderKey) {
+            return {stale: true};
+        }
+        if (downloadOrderRouteKey !== orderKey) resetDownloadOrderPage({removeControls: false});
+        downloadOrderRouteKey = orderKey;
+        const generation = ++downloadOrderInitializationGeneration;
+        mountDownloadActivationControls();
+        const scope = await hashDownloadOrderKey(orderKey);
+        if (generation !== downloadOrderInitializationGeneration
+            || getDownloadsOrderKey() !== orderKey) {
+            return {stale: true};
+        }
+        downloadOrderScope = scope;
+        if (scope) observeDownloadSelection(scope);
+        try {
+            const order = validateDownloadOrder(await loadOrder(orderKey), orderKey);
+            if (generation !== downloadOrderInitializationGeneration
+                || getDownloadsOrderKey() !== orderKey) {
+                return {stale: true};
+            }
+            downloadOrderLoadError = false;
+            downloadOrderData = order;
+            refreshDownloadOrderPage();
+            return {scope, order, mapping: downloadOrderMapping};
+        } catch (error) {
+            if (generation !== downloadOrderInitializationGeneration
+                || getDownloadsOrderKey() !== orderKey) {
+                return {stale: true};
+            }
+            downloadOrderLoadError = true;
+            downloadOrderData = undefined;
+            renderDownloadSelectionState();
+            throw error;
         }
     }
 
     function ensureChoiceActivationControls(controls, summary) {
         let choiceControls = document.getElementById('hb-helper-choice-activation-controls');
-        if (!isChoicePage() || !isChoiceActivationUiAvailable()) {
+        const activationCurrent = choiceActivationInProgress
+            && isActivationUiContextCurrent(choiceActivationContext);
+        if (!isChoicePage()
+            || (!isChoiceActivationUiAvailable() && !activationCurrent)) {
             choiceControls?.remove();
             return;
         }
@@ -3225,11 +5029,13 @@
         steamGiftsLink.href = buildSteamGiftsSearchUrl();
 
         let summary = document.getElementById('hb-helper-price-summary');
-        if (!hasSteamAccountData()) {
+        const choiceActivationCurrent = choiceActivationInProgress
+            && isActivationUiContextCurrent(choiceActivationContext);
+        if (!hasSteamAccountData() && !choiceActivationCurrent) {
             summary?.remove();
             summary = null;
         }
-        if (hasSteamAccountData() && !summary) {
+        if ((hasSteamAccountData() || choiceActivationCurrent) && !summary) {
             summary = document.createElement('div');
             summary.id = 'hb-helper-price-summary';
             summary.textContent = t('loadingPriceTotals');
@@ -3241,7 +5047,9 @@
             controls.insertBefore(summary, steamGifts.nextSibling);
         }
         if (summary) ensureChoiceActivationControls(controls, summary);
-        else document.getElementById('hb-helper-choice-activation-controls')?.remove();
+        else if (!choiceActivationCurrent) {
+            document.getElementById('hb-helper-choice-activation-controls')?.remove();
+        }
         const {anchor, position} = insertionPoint;
         if (position === 'beforebegin' && anchor.previousElementSibling !== controls) {
             anchor.insertAdjacentElement('beforebegin', controls);
@@ -3519,6 +5327,14 @@
     }
 
     function refreshHelperPage(forcePriceReload = false) {
+        if (isDownloadsPage()) {
+            refreshDownloadOrderPage();
+            return;
+        }
+        if (downloadOrderRouteKey !== undefined || downloadOrderMapping) {
+            resetDownloadOrderPage();
+        }
+        if (!isPriceTotalsPage()) return;
         ensureChoiceRegionRestrictions();
         const controls = ensureHelperControls();
         ensureSteamStoreLinks();
@@ -3537,7 +5353,20 @@
 
     function schedulePageRefresh(forcePriceReload = false) {
         clearTimeout(pageRefreshTimer);
-        pageRefreshTimer = setTimeout(() => refreshHelperPage(forcePriceReload), 300);
+        pageRefreshTimer = setTimeout(() => {
+            if (helperRouteLifecycleInstalled
+                && getHelperRouteFingerprint() !== helperRouteFingerprint) {
+                scheduleHelperRouteSynchronization();
+                return;
+            }
+            if (isLandingSortPage()) {
+                refreshLandingSortPage();
+            } else if (isDownloadsPage()) {
+                refreshDownloadOrderPage();
+            } else {
+                refreshHelperPage(forcePriceReload);
+            }
+        }, 300);
     }
 
     function observeSteamSessionSynchronizationTriggers() {
@@ -3559,6 +5388,9 @@
             '.hb-helper-region-restrictions',
             '.hb-helper-steam-store-link',
             '.hb-helper-steam-store-row',
+            '.hb-helper-download-mapping-warning',
+            '.hb-helper-download-mapping-summary-warning',
+            '.hb-helper-download-region-warning',
         ].join(', ')));
     }
 
@@ -3571,14 +5403,20 @@
         return changedNodes.length > 0 && changedNodes.every(isInsideHelperUi);
     }
 
+    function shouldRefreshForPageMutations(mutations) {
+        return mutations.some(mutation => !isHelperUiMutation(mutation));
+    }
+
     function observePageChanges() {
+        if (pageChangesObserved) return;
+        pageChangesObserved = true;
         const observer = new MutationObserver(mutations => {
-            if (mutations.some(mutation => !isHelperUiMutation(mutation))) {
-                schedulePageRefresh();
-            }
+            if (shouldRefreshForPageMutations(mutations)) schedulePageRefresh();
         });
         observer.observe(document.body, {childList: true, subtree: true});
         document.addEventListener('click', handleChoiceSelectionClick, true);
+        document.addEventListener('click', handleDownloadSelectionEvent, true);
+        document.addEventListener('keydown', handleDownloadSelectionEvent, true);
         document.addEventListener('click', event => {
             if (!isInsideHelperUi(event.target)) schedulePageRefresh();
         }, true);
@@ -3828,12 +5666,24 @@
             clearTimeout(choiceCollectionRecoveryTimer);
             clearTimeout(choiceActivationRecoveryTimer);
             clearTimeout(choiceOwnershipRefreshTimer);
+            renderChoiceSelectionState();
+            renderDownloadSelectionState();
             renderChoiceActivationResults(null);
             return;
         }
 
-        await reconcileChoiceSelectionStorageFromBatch(batch);
+        const selectionReconciliation = await reconcileActivationSelectionStorageFromBatch(batch);
+        const reconciledBatch = getChoiceActivationBatch();
+        if (!reconciledBatch || reconciledBatch.id !== batch.id) {
+            renderChoiceSelectionState();
+            renderDownloadSelectionState();
+            renderChoiceActivationResults(reconciledBatch);
+            return {stale: true, batch: reconciledBatch};
+        }
+        if (!selectionReconciliation.reconciled) return selectionReconciliation;
+        batch = reconciledBatch;
         renderChoiceSelectionState();
+        renderDownloadSelectionState();
         renderChoiceActivationResults(batch);
 
         clearTimeout(choiceCollectionRecoveryTimer);
@@ -4243,24 +6093,91 @@
         return lockResult.value;
     }
 
-    async function run() {
-        if (isLandingSortPage()) {
+    function getHelperRouteFingerprint() {
+        return `${location.pathname}\n${location.search || ''}`;
+    }
+
+    function clearPriceHelperUi() {
+        priceTotalsRunId += 1;
+        lastPriceTitlesKey = '';
+        lastPriceResult = undefined;
+        document.getElementById('hb-helper-controls')?.remove();
+        document.getElementById('steamgifts-discussion')?.remove();
+        document.getElementById('hb-helper-price-summary')?.remove();
+        const activationControls = document.getElementById(
+            'hb-helper-choice-activation-controls'
+        );
+        if (activationControls
+            && !activationControls.classList.contains('hb-helper-downloads-controls')) {
+            activationControls.remove();
+        }
+    }
+
+    function leaveDownloadOrderPage() {
+        if (downloadOrderRouteKey !== undefined
+            || downloadOrderMapping
+            || document.getElementById('hb-helper-choice-activation-controls')
+                ?.classList.contains('hb-helper-downloads-controls')) {
+            resetDownloadOrderPage();
+        }
+    }
+
+    async function synchronizeHelperRoute(generation, routeFingerprint) {
+        const mode = getHelperPageMode();
+        const isCurrentRoute = () =>
+            generation === helperRouteTransitionGeneration
+            && routeFingerprint === getHelperRouteFingerprint();
+        const loadOrder = helperRouteDependencies.loadOrder || loadDownloadOrder;
+        const syncSession = helperRouteDependencies.syncSession || syncSteamSession;
+        const reconcileBatch = helperRouteDependencies.reconcileBatch
+            || reconcileChoiceActivationBatch;
+        const recoverCollection = helperRouteDependencies.recoverCollection
+            || recoverStaleChoiceCollection;
+
+        if (mode !== 'downloads') leaveDownloadOrderPage();
+
+        if (mode === 'landing') {
+            clearPriceHelperUi();
             observeLandingSortPageChanges();
             refreshLandingSortPage();
-            return;
+            return {mode};
         }
 
-        if (!isPriceTotalsPage()) return;
-        if (isChoicePage()) {
+        if (mode === 'unsupported') {
+            clearPriceHelperUi();
+            return {mode};
+        }
+
+        observeSteamSessionSynchronizationTriggers();
+        if (mode === 'downloads') {
+            clearPriceHelperUi();
+            observeChoiceActivationBatch();
+            try {
+                await initializeDownloadOrderPage({loadOrder});
+            } catch (error) {
+                if (isCurrentRoute()) {
+                    console.warn('[HB-Helper] Load download order failed.');
+                    setChoiceStatus(t('downloadOrderLoadFailed'));
+                }
+            }
+            if (!isCurrentRoute()) return {stale: true, mode};
+            await syncSession();
+            if (!isCurrentRoute()) return {stale: true, mode};
+            refreshDownloadOrderPage();
+            await reconcileBatch();
+            return {mode};
+        }
+
+        const choiceRoute = isChoicePage();
+        if (choiceRoute) {
             observeChoiceActivationBatch();
             observeChoiceSelection();
         }
-        observePageChanges();
-        observeSteamSessionSynchronizationTriggers();
         refreshHelperPage(true);
 
-        if (isChoicePage()) {
-            const recovery = await recoverStaleChoiceCollection();
+        if (choiceRoute) {
+            const recovery = await recoverCollection();
+            if (!isCurrentRoute()) return {stale: true, mode};
             if (recovery.recovered) {
                 renderChoiceSelectionState();
                 renderChoiceActivationResults(null);
@@ -4269,12 +6186,52 @@
             }
         }
 
-        await syncSteamSession();
-
+        await syncSession();
+        if (!isCurrentRoute()) return {stale: true, mode};
         if (hasSteamAccountData()) renderPriceTotals();
-
         refreshHelperPage();
-        if (isChoicePage()) await reconcileChoiceActivationBatch();
+        if (choiceRoute) await reconcileBatch();
+        return {mode};
+    }
+
+    function scheduleHelperRouteSynchronization({force = false} = {}) {
+        const routeFingerprint = getHelperRouteFingerprint();
+        if (!force && routeFingerprint === helperRouteFingerprint) {
+            return helperRouteTransitionPromise;
+        }
+        helperRouteFingerprint = routeFingerprint;
+        const generation = ++helperRouteTransitionGeneration;
+        const transition = synchronizeHelperRoute(generation, routeFingerprint);
+        helperRouteTransitionPromise = Promise.resolve(transition).catch(() => {
+            if (generation === helperRouteTransitionGeneration) {
+                console.warn('[HB-Helper] Route synchronization failed.');
+            }
+            return {error: true};
+        });
+        return helperRouteTransitionPromise;
+    }
+
+    function installHelperRouteLifecycle(options = {}) {
+        if (helperRouteLifecycleInstalled) return helperRouteTransitionPromise;
+        helperRouteLifecycleInstalled = true;
+        helperRouteDependencies = {...options};
+        observePageChanges();
+
+        for (const methodName of ['pushState', 'replaceState']) {
+            const original = window.history?.[methodName];
+            if (typeof original !== 'function') continue;
+            window.history[methodName] = function (...args) {
+                const result = original.apply(this, args);
+                scheduleHelperRouteSynchronization();
+                return result;
+            };
+        }
+        window.addEventListener('popstate', () => scheduleHelperRouteSynchronization());
+        return scheduleHelperRouteSynchronization({force: true});
+    }
+
+    function run() {
+        return installHelperRouteLifecycle();
     }
 
     function startHelper() {
@@ -4873,80 +6830,6 @@
         });
     }
 
-    let downloadRegionProducts = null;
-    let downloadRegionObserver = null;
-    let downloadRegionRenderTimer = null;
-
-    // Region Restriction Check
-    if (!globalThis.__HB_HELPER_TEST__) getRegionLockInfo();
-
-    // Region Restriction Check: Collect region-lock data embedded in the page and render it
-    function getRegionLockInfo() {
-        const splitedURL = location.href.split(/downloads\?key=([A-Za-z0-9]+)/);
-        if (splitedURL.length >= 2) {
-            const orderID = splitedURL[1];
-            const ApiURL = `https://www.humblebundle.com/api/v1/order/${orderID}?all_tpkds=true`;
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: ApiURL,
-                onload: (res) => {
-                    const {status, responseText} = res;
-                    if (status === 200) {
-                        let products;
-                        try {
-                            products = JSON.parse(responseText)?.tpkd_dict?.all_tpks;
-                        } catch (_) {
-                            return;
-                        }
-                        if (!Array.isArray(products)) return;
-                        startDownloadRegionRestrictionRendering(products);
-                    } else {
-                        console.error('Humble Key Restriction User Script::', `Request order metadata failed with ${status} HTTP status.`);
-                    }
-                },
-            });
-        }
-    }
-
-    function renderDownloadRegionRestrictions() {
-        if (!downloadRegionProducts) return;
-        const disclaimers = document.querySelectorAll('.disclaimer');
-        downloadRegionProducts.forEach((product, index) => insertRegionLockInfo(product, disclaimers[index]));
-    }
-
-    function scheduleDownloadRegionRestrictionRendering() {
-        clearTimeout(downloadRegionRenderTimer);
-        downloadRegionRenderTimer = setTimeout(() => {
-            downloadRegionRenderTimer = null;
-            renderDownloadRegionRestrictions();
-        }, 100);
-    }
-
-    function startDownloadRegionRestrictionRendering(products) {
-        downloadRegionProducts = products;
-        if (!document.body) {
-            document.addEventListener('DOMContentLoaded', () => {
-                startDownloadRegionRestrictionRendering(downloadRegionProducts);
-            }, {once: true});
-            return;
-        }
-        renderDownloadRegionRestrictions();
-        if (downloadRegionObserver) return;
-        downloadRegionObserver = new MutationObserver(mutations => {
-            if (mutations.some(mutation => !isHelperUiMutation(mutation))) {
-                scheduleDownloadRegionRestrictionRendering();
-            }
-        });
-        downloadRegionObserver.observe(document.body, {childList: true, subtree: true});
-    }
-
-    function insertRegionLockInfo(productInfo, container) {
-        if (!container) return;
-        container.querySelectorAll?.('.hb-helper-region-restrictions').forEach(panel => panel.remove());
-        const panel = createRegionRestrictionPanel(productInfo, steamSessionState.account?.countryCode || null);
-        if (panel) container.appendChild(panel);
-    }
-
     if (globalThis.__HB_HELPER_TEST__) {
         function setSteamDerivedStateForTest(account) {
             steamSessionState = {status: 'authenticated', account, error: null};
@@ -4981,7 +6864,54 @@
             GM_setValue(steamActivationBatchKey, batch);
         }
 
+        function setDownloadOrderStateForTest(scope, order, mapping) {
+            downloadOrderRouteKey = getDownloadsOrderKey();
+            downloadOrderScope = scope;
+            downloadOrderData = order;
+            downloadOrderMapping = mapping;
+        }
+
         globalThis.__HB_HELPER_TEST_API__ = {
+            getDownloadsOrderKey,
+            isDownloadsPage,
+            getHelperPageMode,
+            isPriceTotalsPageForTest: isPriceTotalsPage,
+            validateDownloadOrder,
+            loadDownloadOrder,
+            invalidateDownloadOrder,
+            hashDownloadOrderKey,
+            getDownloadActivationItemId,
+            parseDownloadActivationItemId,
+            isEligibleDownloadTpkd,
+            getDownloadSelectionStorageKeyForTest: getDownloadSelectionStorageKey,
+            getDownloadSelection,
+            observeDownloadSelection,
+            updateDownloadSelection,
+            mapDownloadOrderRows,
+            upsertDownloadRegionWarnings,
+            revealDownloadSteamKey,
+            postHumbleDownloadKey,
+            inferActivationBatchScope,
+            getActivationBatchPresentation,
+            reconcileActivationSelectionStorageFromBatch,
+            collectSingleKeyActivationBatchForTest: collectSingleKeyActivationBatch,
+            collectChoiceActivationBatchForTest: collectChoiceActivationBatch,
+            runChoiceCollectionWorkForTest: runChoiceCollectionWork,
+            mountDownloadActivationControlsForTest: mountDownloadActivationControls,
+            setDownloadOrderStateForTest,
+            renderDownloadSelectionStateForTest: renderDownloadSelectionState,
+            setDownloadSelectionModeForTest: setDownloadSelectionMode,
+            handleDownloadSelectionEventForTest: handleDownloadSelectionEvent,
+            selectUnownedDownloadRowsForTest: selectUnownedDownloadRows,
+            refreshDownloadOrderPageForTest: refreshDownloadOrderPage,
+            initializeDownloadOrderPageForTest: initializeDownloadOrderPage,
+            installHelperRouteLifecycleForTest: installHelperRouteLifecycle,
+            waitForHelperRouteForTest: () => helperRouteTransitionPromise,
+            getPriceTotalsRunIdForTest: () => priceTotalsRunId,
+            getSelectedChoiceGameIdsForTest: getSelectedChoiceGameIds,
+            renderChoiceActivationResultsForTest: renderChoiceActivationResults,
+            shouldRefreshForPageMutationsForTest: shouldRefreshForPageMutations,
+            getStyleTextForTest: () => style.textContent,
             getLandingSortMode,
             ensureLandingSortControls,
             parseSteamSession,
@@ -4989,18 +6919,7 @@
             getRegionRestrictionVerdict,
             createRegionRestrictionPanel,
             isHelperUiMutation,
-            getRegionLockInfoForTest: getRegionLockInfo,
             ensureChoiceRegionRestrictionsForTest: ensureChoiceRegionRestrictions,
-            renderDownloadRegionRestrictionsForTest(products, disclaimers, steamCountryCode) {
-                const previousState = steamSessionState;
-                steamSessionState = {
-                    status: steamCountryCode ? 'authenticated' : 'logged-out',
-                    account: steamCountryCode ? {countryCode: steamCountryCode} : null,
-                    error: null,
-                };
-                products.forEach((product, index) => insertRegionLockInfo(product, disclaimers[index]));
-                steamSessionState = previousState;
-            },
             createSteamSessionSynchronizer,
             createSteamSessionSyncTrigger,
             getLiveSteamAccount,
@@ -5023,6 +6942,8 @@
             renderChoiceSelectionStateForTest: renderChoiceSelectionState,
             getTestDocument: () => document,
             runDirectChoiceActivation,
+            startChoiceActivationForTest: startChoiceActivation,
+            startDownloadActivationForTest: startDownloadActivation,
             postSteamActivationKey,
             processSteamActivationBatch,
             runSteamActivationWork,

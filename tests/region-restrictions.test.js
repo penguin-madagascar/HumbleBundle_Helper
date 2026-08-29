@@ -355,112 +355,53 @@ test('cleans stale Choice panels when source identity, row count, fields, or anc
     assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
 });
 
-test('reuses the shared panel for Downloads in API order and never falls back to body', () => {
+test('reuses the shared restriction panel primitive for Downloads', () => {
     const {api, document} = loadApi();
     const firstDisclaimer = makeElement();
     const secondDisclaimer = makeElement();
-    api.renderDownloadRegionRestrictionsForTest([
+    firstDisclaimer.appendChild(api.createRegionRestrictionPanel(
         {exclusive_countries: ['US'], disallowed_countries: []},
+        'US'
+    ));
+    secondDisclaimer.appendChild(api.createRegionRestrictionPanel(
         {exclusive_countries: [], disallowed_countries: ['CA']},
-    ], [firstDisclaimer, secondDisclaimer], 'US');
+        'US'
+    ));
     assert.equal(hasClass(firstDisclaimer.children[0], 'hb-helper-region-restrictions'), true);
     assert.equal(hasClass(secondDisclaimer.children[0], 'hb-helper-region-restrictions'), true);
     assert.match(panelText(secondDisclaimer.children[0]), /can be activated/);
 
-    api.renderDownloadRegionRestrictionsForTest(
-        [{exclusive_countries: ['US'], disallowed_countries: []}],
-        [null],
-        'US'
-    );
     assert.equal(document.body.children.length, 0);
 });
 
-test('restores Downloads panels for late, partial, and replaced disclaimer rows', () => {
-    const scheduled = [];
-    let request;
-    const {api, document, context, mutationObservers} = loadApi({
-        setTimeoutImpl(callback) {
-            scheduled.push(callback);
-            return scheduled.length;
-        },
-        clearTimeoutImpl() {},
-        gmRequestImpl(options) { request = options; },
-    });
-    context.location.href = 'https://www.humblebundle.com/downloads?key=TESTORDER123';
-    api.getRegionLockInfoForTest();
-    request.onload({
-        status: 200,
-        responseText: JSON.stringify({
-            tpkd_dict: {
-                all_tpks: [
-                    {exclusive_countries: ['US'], disallowed_countries: []},
-                    {exclusive_countries: [], disallowed_countries: ['CA']},
-                ],
-            },
-        }),
-    });
+test('Downloads expose no separate restriction requester, renderer, or observer seam', () => {
+    const {api, mutationObservers} = loadApi();
 
-    assert.equal(mutationObservers.length, 1);
-    assert.equal(scheduled.length, 0);
-    const observer = mutationObservers[0];
-    observer.trigger([{
-        target: document.body,
-        addedNodes: [makeMutationNode(true)],
-        removedNodes: [],
-    }]);
-    assert.equal(scheduled.length, 0, 'helper-only mutations must not schedule a repaint');
-
-    const first = makeElement();
-    document.downloadDisclaimers = [first];
-    observer.trigger([{target: document.body, addedNodes: [first], removedNodes: []}]);
-    scheduled.shift()();
-    assert.equal(first.querySelectorAll('.hb-helper-region-restrictions').length, 1);
-
-    const second = makeElement();
-    document.downloadDisclaimers = [first, second];
-    observer.trigger([{target: document.body, addedNodes: [second], removedNodes: []}]);
-    scheduled.shift()();
-    assert.equal(first.querySelectorAll('.hb-helper-region-restrictions').length, 1);
-    assert.equal(second.querySelectorAll('.hb-helper-region-restrictions').length, 1);
-
-    const replacements = [makeElement(), makeElement()];
-    document.downloadDisclaimers = replacements;
-    observer.trigger([{
-        target: document.body,
-        addedNodes: replacements,
-        removedNodes: [first, second],
-    }]);
-    scheduled.shift()();
-    replacements.forEach(disclaimer => {
-        assert.equal(disclaimer.querySelectorAll('.hb-helper-region-restrictions').length, 1);
-    });
-
-    observer.trigger([{target: document.body, addedNodes: [makeMutationNode(false)], removedNodes: []}]);
-    scheduled.shift()();
-    replacements.forEach(disclaimer => {
-        assert.equal(disclaimer.querySelectorAll('.hb-helper-region-restrictions').length, 1);
-    });
+    assert.equal(api.getRegionLockInfoForTest, undefined);
+    assert.equal(api.renderDownloadRegionRestrictionsForTest, undefined);
+    assert.equal(mutationObservers.length, 0);
 });
 
-test('does not log Downloads order keys or API response bodies', () => {
+test('building a Downloads restriction panel neither requests nor logs order data', () => {
     const messages = [];
-    let request;
-    const {api, context} = loadApi({
-        gmRequestImpl(options) { request = options; },
+    let requests = 0;
+    const {api} = loadApi({
+        gmRequestImpl() { requests += 1; },
         consoleImpl: {
             log(...values) { messages.push(values.join(' ')); },
             warn(...values) { messages.push(values.join(' ')); },
             error(...values) { messages.push(values.join(' ')); },
         },
     });
-    context.location.href = 'https://www.humblebundle.com/downloads?key=SECRETORDER123';
-    api.getRegionLockInfoForTest();
-    assert.ok(request);
-    assert.match(request.url, /SECRETORDER123/);
-    assert.doesNotMatch(messages.join('\n'), /SECRETORDER123/);
 
-    request.onload({status: 503, responseText: 'SECRET_RESPONSE_BODY'});
-    assert.doesNotMatch(messages.join('\n'), /SECRET_RESPONSE_BODY/);
+    const panel = api.createRegionRestrictionPanel(
+        {exclusive_countries: ['US'], disallowed_countries: []},
+        'US'
+    );
+
+    assert.ok(panel);
+    assert.equal(requests, 0);
+    assert.equal(messages.length, 0);
 });
 
 test('renders only inside the active visible site modal, not a stale Choice modal', () => {
@@ -541,7 +482,7 @@ test('falls through a subscriber catalog miss to monthly data using the final ha
     assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
 });
 
-test('fails closed for invalid Choice metadata and skips only invalid Downloads metadata', () => {
+test('fails closed for invalid Choice metadata and invalid shared panel metadata', () => {
     const {api, document} = loadApi();
     const rows = [makeRow(), makeRow()];
     document.choiceModal = makeChoiceModal('display-alpha', rows);
@@ -560,14 +501,14 @@ test('fails closed for invalid Choice metadata and skips only invalid Downloads 
     api.ensureChoiceRegionRestrictionsForTest();
     assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
 
-    const invalidDisclaimer = makeElement();
-    const validDisclaimer = makeElement();
-    api.renderDownloadRegionRestrictionsForTest([
+    assert.equal(api.createRegionRestrictionPanel(
         {exclusive_countries: ['US', 5], disallowed_countries: []},
+        'US'
+    ), null);
+    assert.equal(hasClass(api.createRegionRestrictionPanel(
         {exclusive_countries: ['US'], disallowed_countries: []},
-    ], [invalidDisclaimer, validDisclaimer], 'US');
-    assert.equal(invalidDisclaimer.children.length, 0);
-    assert.equal(hasClass(validDisclaimer.children[0], 'hb-helper-region-restrictions'), true);
+        'US'
+    ), 'hb-helper-region-restrictions'), true);
 });
 
 test('does not match a Choice title machine name against a game-data entry key', () => {
