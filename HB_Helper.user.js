@@ -386,6 +386,42 @@
       margin: 2px 0 0 20px !important;
       padding: 0 !important;
     }
+    .hb-helper-region-restrictions {
+      box-sizing: border-box !important;
+      background: rgba(0, 0, 0, 0.5) !important;
+      border: 1px solid rgba(255, 209, 102, 0.85) !important;
+      border-radius: 4px !important;
+      color: #fff !important;
+      line-height: 1.5 !important;
+      margin: 8px 0 !important;
+      padding: 10px !important;
+    }
+    .hb-helper-region-restrictions--allowed,
+    .hb-helper-region-restrictions--unmarked {
+      border-color: rgba(93, 190, 117, 0.9) !important;
+    }
+    .hb-helper-region-restrictions--restricted {
+      border-color: rgba(255, 129, 130, 0.95) !important;
+    }
+    .hb-helper-region-restrictions__status {
+      display: block !important;
+      font-weight: 700 !important;
+    }
+    .hb-helper-region-restrictions__list {
+      margin-top: 4px !important;
+    }
+    .hb-helper-region-restrictions details {
+      margin-top: 4px !important;
+    }
+    .hb-helper-region-restrictions summary {
+      color: #fff !important;
+      cursor: pointer !important;
+      font-weight: 700 !important;
+    }
+    .hb-helper-region-restrictions__countries {
+      margin-top: 4px !important;
+      overflow-wrap: anywhere !important;
+    }
     #hb-helper-settings-dialog {
       box-sizing: border-box !important;
       border: 0 !important;
@@ -522,6 +558,14 @@
             noRegionRestrictions: 'No Region Restrictions',
             exclusiveCountries: 'Exclusive countries: {countries}',
             disallowedCountries: 'Disallowed countries: {countries}',
+            regionMetadataUnavailable: 'Humble activation metadata is unavailable for this key.',
+            regionUnmarked: 'Humble has not declared a region restriction for this key.',
+            regionAllowed: 'Humble metadata indicates this key can be activated in your Steam region ({country}).',
+            regionRestricted: 'Humble metadata indicates this key is restricted in your Steam region ({country}).',
+            regionCountryUnavailable: 'Humble activation metadata is available, but your Steam region is unavailable.',
+            regionExclusiveCountries: 'Humble allowlist: {countries}',
+            regionDisallowedCountries: 'Humble blocklist: {countries}',
+            regionCountryList: 'Show {count} country codes from Humble metadata',
         },
         'zh-CN': {
             settingsMenu: '设置',
@@ -607,6 +651,14 @@
             noRegionRestrictions: '无区域限制',
             exclusiveCountries: '仅限国家/地区：{countries}',
             disallowedCountries: '禁止激活国家/地区：{countries}',
+            regionMetadataUnavailable: '此 key 的 Humble 激活元数据不可用。',
+            regionUnmarked: 'Humble 未声明此 key 存在区域限制。',
+            regionAllowed: 'Humble 元数据表明此 key 可在你的 Steam 地区（{country}）激活。',
+            regionRestricted: 'Humble 元数据表明此 key 在你的 Steam 地区（{country}）受限。',
+            regionCountryUnavailable: 'Humble 激活元数据可用，但无法获取你的 Steam 地区。',
+            regionExclusiveCountries: 'Humble 允许列表：{countries}',
+            regionDisallowedCountries: 'Humble 禁止列表：{countries}',
+            regionCountryList: '显示 Humble 元数据中的 {count} 个国家/地区代码',
         },
     };
 
@@ -3126,6 +3178,7 @@
     }
 
     function refreshHelperPage(forcePriceReload = false) {
+        ensureChoiceRegionRestrictions();
         const controls = ensureHelperControls();
         ensureSteamStoreLinks();
         if (!controls) return;
@@ -3162,6 +3215,7 @@
             '#hb-helper-controls',
             '#hb-helper-choice-activation-controls',
             '#hb-helper-choice-activation-results',
+            '.hb-helper-region-restrictions',
             '.hb-helper-steam-store-link',
             '.hb-helper-steam-store-row',
         ].join(', ')));
@@ -4239,12 +4293,185 @@
         return markGame(viewEl, wishlistSet, 'wishlist');
     }
 
+    function getCountryListMetadata(tpkd, property) {
+        if (!Object.prototype.hasOwnProperty.call(tpkd, property)) {
+            return {kind: 'absent', countries: []};
+        }
+        const value = tpkd[property];
+        if (!Array.isArray(value)) return {kind: 'invalid', countries: []};
+        const countries = [];
+        for (const country of value) {
+            if (typeof country !== 'string' || !/^[A-Za-z]{2}$/.test(country)) {
+                return {kind: 'invalid', countries: []};
+            }
+            const normalized = country.toUpperCase();
+            if (!countries.includes(normalized)) countries.push(normalized);
+        }
+        return {kind: countries.length ? 'non-empty' : 'empty', countries};
+    }
+
+    function normalizeRegionRestrictions(tpkd) {
+        if (!tpkd || typeof tpkd !== 'object' || Array.isArray(tpkd)) {
+            return {status: 'unavailable', exclusiveCountries: [], disallowedCountries: []};
+        }
+        const exclusive = getCountryListMetadata(tpkd, 'exclusive_countries');
+        const disallowed = getCountryListMetadata(tpkd, 'disallowed_countries');
+        if (exclusive.kind === 'invalid' || disallowed.kind === 'invalid'
+            || (exclusive.kind === 'absent' && disallowed.kind === 'absent')
+            || (exclusive.kind === 'absent' && disallowed.kind === 'empty')
+            || (exclusive.kind === 'empty' && disallowed.kind === 'absent')) {
+            return {status: 'unavailable', exclusiveCountries: [], disallowedCountries: []};
+        }
+        if (exclusive.kind === 'empty' && disallowed.kind === 'empty') {
+            return {status: 'unmarked', exclusiveCountries: [], disallowedCountries: []};
+        }
+        return {
+            status: 'restricted-metadata',
+            exclusiveCountries: exclusive.countries,
+            disallowedCountries: disallowed.countries,
+        };
+    }
+
+    function getRegionRestrictionVerdict(restrictions, steamCountryCode) {
+        if (restrictions.status === 'unavailable') return {status: 'unavailable'};
+        if (restrictions.status === 'unmarked') return {status: 'unmarked'};
+        const country = typeof steamCountryCode === 'string'
+            && /^[A-Za-z]{2}$/.test(steamCountryCode)
+            ? steamCountryCode.toUpperCase()
+            : null;
+        if (!country) return {status: 'unknown-country'};
+        const restricted = restrictions.exclusiveCountries.length > 0
+            ? !restrictions.exclusiveCountries.includes(country)
+            : restrictions.disallowedCountries.includes(country);
+        return {status: restricted ? 'restricted' : 'allowed', country};
+    }
+
+    function appendRegionCountryList(panel, label, countries) {
+        if (!countries.length) return;
+        const list = document.createElement('div');
+        list.className = 'hb-helper-region-restrictions__list';
+        if (countries.length > 12) {
+            const details = document.createElement('details');
+            const summary = document.createElement('summary');
+            summary.textContent = t('regionCountryList', {count: countries.length});
+            const values = document.createElement('div');
+            values.className = 'hb-helper-region-restrictions__countries';
+            values.textContent = `${label} ${countries.join(', ')}`;
+            details.append(summary, values);
+            list.appendChild(details);
+        } else {
+            list.textContent = `${label} ${countries.join(', ')}`;
+        }
+        panel.appendChild(list);
+    }
+
+    function createRegionRestrictionPanel(tpkd, steamCountryCode) {
+        const restrictions = normalizeRegionRestrictions(tpkd);
+        const verdict = getRegionRestrictionVerdict(restrictions, steamCountryCode);
+        const panel = document.createElement('section');
+        panel.className = `hb-helper-region-restrictions hb-helper-region-restrictions--${verdict.status}`;
+        const status = document.createElement('span');
+        status.className = 'hb-helper-region-restrictions__status';
+        if (verdict.status === 'unavailable') status.textContent = t('regionMetadataUnavailable');
+        else if (verdict.status === 'unmarked') status.textContent = t('regionUnmarked');
+        else if (verdict.status === 'unknown-country') status.textContent = t('regionCountryUnavailable');
+        else if (verdict.status === 'restricted') status.textContent = t('regionRestricted', {country: verdict.country});
+        else status.textContent = t('regionAllowed', {country: verdict.country});
+        panel.appendChild(status);
+        appendRegionCountryList(panel, t('regionExclusiveCountries', {countries: ''}).trim(), restrictions.exclusiveCountries);
+        appendRegionCountryList(panel, t('regionDisallowedCountries', {countries: ''}).trim(), restrictions.disallowedCountries);
+        return panel;
+    }
+
+    const choiceRegionCatalogCache = new WeakMap();
+
+    function parseChoiceRegionCatalog(dataText) {
+        let parsed;
+        try {
+            parsed = JSON.parse(dataText);
+        } catch (_) {
+            return null;
+        }
+        const gameData = parsed?.contentChoiceOptions?.contentChoiceData?.game_data;
+        if (!gameData || typeof gameData !== 'object') return null;
+        const catalog = new Map();
+        const entries = Array.isArray(gameData)
+            ? gameData.map(entry => [null, entry])
+            : Array.isArray(gameData.tpkds)
+                ? [[null, gameData]]
+                : Object.entries(gameData);
+        for (const [key, game] of entries) {
+            if (!game || typeof game !== 'object' || Array.isArray(game) || !Array.isArray(game.tpkds)) continue;
+            [key, game.display_item_machine_name, game.machine_name, game.choice_machine_name, game.choice_id, game.id]
+                .filter(identifier => typeof identifier === 'string' && identifier.length > 0)
+                .forEach(identifier => {
+                    if (!catalog.has(identifier)) catalog.set(identifier, game);
+                });
+        }
+        return catalog;
+    }
+
+    function getChoiceRegionCatalog() {
+        const sources = [
+            document.getElementById('webpack-subscriber-hub-data'),
+            document.getElementById('webpack-monthly-product-data'),
+        ];
+        for (const source of sources) {
+            if (!source || typeof source.textContent !== 'string') continue;
+            const cached = choiceRegionCatalogCache.get(source);
+            if (cached?.text === source.textContent) return cached.catalog;
+            const catalog = parseChoiceRegionCatalog(source.textContent);
+            if (catalog) choiceRegionCatalogCache.set(source, {text: source.textContent, catalog});
+            if (catalog) return catalog;
+        }
+        return null;
+    }
+
+    function removeChoiceRegionRestrictionPanels(modal) {
+        modal?.querySelectorAll?.('.hb-helper-region-restrictions').forEach(panel => panel.remove());
+    }
+
+    function getChoiceModalIdentifier(modal) {
+        const title = modal?.querySelector?.('[data-machine-name]');
+        const machineName = title?.dataset?.machineName || title?.getAttribute?.('data-machine-name');
+        if (typeof machineName === 'string' && machineName.length > 0) return machineName;
+        return null;
+    }
+
+    function getChoiceHashIdentifier() {
+        const hash = typeof location.hash === 'string' ? location.hash.slice(1) : '';
+        try {
+            return hash ? decodeURIComponent(hash) : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function ensureChoiceRegionRestrictions() {
+        const modal = document.querySelector('.choice-modal');
+        if (!modal) return;
+        const catalog = getChoiceRegionCatalog();
+        const identifier = getChoiceModalIdentifier(modal);
+        const game = catalog?.get(identifier) || catalog?.get(getChoiceHashIdentifier());
+        const rows = Array.from(modal.querySelectorAll?.('.js-key-redeemer > .key-redeemer') || []);
+        const fields = rows.map(row => row.querySelector?.('.giftfield'));
+        if (!game || !Array.isArray(game.tpkds) || !rows.length
+            || game.tpkds.length !== rows.length || fields.some(field => !field)) {
+            removeChoiceRegionRestrictionPanels(modal);
+            return;
+        }
+        removeChoiceRegionRestrictionPanels(modal);
+        const steamCountryCode = steamSessionState.account?.countryCode || null;
+        game.tpkds.forEach((tpkd, index) => {
+            fields[index].insertAdjacentElement('afterend', createRegionRestrictionPanel(tpkd, steamCountryCode));
+        });
+    }
+
     // Region Restriction Check
     if (!globalThis.__HB_HELPER_TEST__) getRegionLockInfo();
 
     // Region Restriction Check: Collect region-lock data embedded in the page and render it
     function getRegionLockInfo() {
-        const productsInfo = {};
         const splitedURL = location.href.split(/downloads\?key=([A-Za-z0-9]+)/);
         if (splitedURL.length >= 2) {
             const orderID = splitedURL[1];
@@ -4256,23 +4483,17 @@
                 onload: (res) => {
                     const {status, responseText} = res;
                     if (status === 200) {
-                        if (responseText !== '') {
-                            const products = JSON.parse(responseText).tpkd_dict.all_tpks;
-                            for (let product of products) {
-                                const humanName = product.human_name;
-                                productsInfo[humanName] = {};
-                                productsInfo[humanName].exclusive_countries = product.exclusive_countries || [];
-                                productsInfo[humanName].disallowed_countries = product.disallowed_countries || [];
-                                productsInfo[humanName].machine_name = product.machine_name;
-                                if (product.steam_app_id && product.steam_app_id !== '') {
-                                    productsInfo[humanName].steam_app_id = product.steam_app_id;
-                                }
-                            }
-                            setTimeout(() => {
-                                const disclaimers = document.querySelectorAll('.disclaimer');
-                                Object.values(productsInfo).forEach((info, idx) => insertRegionLockInfo(info, disclaimers[idx]));
-                            }, 1000);
+                        let products;
+                        try {
+                            products = JSON.parse(responseText)?.tpkd_dict?.all_tpks;
+                        } catch (_) {
+                            return;
                         }
+                        if (!Array.isArray(products)) return;
+                        setTimeout(() => {
+                            const disclaimers = document.querySelectorAll('.disclaimer');
+                            products.forEach((product, index) => insertRegionLockInfo(product, disclaimers[index]));
+                        }, 1000);
                     } else {
                         console.error('Humble Key Restriction User Script::', `Request order failed with ${status} HTTP status and ${responseText} content.`);
                     }
@@ -4282,29 +4503,12 @@
     }
 
     function insertRegionLockInfo(productInfo, container) {
-        const insertElem = document.createElement('div');
-
-        // Region Restriction Check: Determine activation possibility for the current user
-        const restrictionInfo = document.createElement('span');
-        if (productInfo.exclusive_countries.length === 0 && productInfo.disallowed_countries.length === 0) {
-            restrictionInfo.textContent = t('noRegionRestrictions');
-            restrictionInfo.setAttribute('style', `color:green; font-weight: bold; word-wrap:break-word; overflow:hidden;`);
-        } else if (productInfo.exclusive_countries.length > 0) {
-            restrictionInfo.textContent = t('exclusiveCountries', {
-                countries: productInfo.exclusive_countries,
-            });
-            restrictionInfo.setAttribute('style', `color:red; font-weight: bold; word-wrap:break-word; overflow:hidden;`);
-        } else if (productInfo.disallowed_countries.length > 0) {
-            restrictionInfo.textContent = t('disallowedCountries', {
-                countries: productInfo.disallowed_countries,
-            });
-            restrictionInfo.setAttribute('style', `color:red; font-weight: bold; word-wrap:break-word; overflow:hidden;`);
-        }
-
-        insertElem.appendChild(document.createElement('br'));
-        insertElem.appendChild(restrictionInfo);
-        const target = container || document.querySelector('.disclaimer') || document.body;
-        if (target) target.appendChild(insertElem);
+        if (!container) return;
+        container.querySelectorAll?.('.hb-helper-region-restrictions').forEach(panel => panel.remove());
+        container.appendChild(createRegionRestrictionPanel(
+            productInfo,
+            steamSessionState.account?.countryCode || null
+        ));
     }
 
     if (globalThis.__HB_HELPER_TEST__) {
@@ -4345,6 +4549,20 @@
             getLandingSortMode,
             ensureLandingSortControls,
             parseSteamSession,
+            normalizeRegionRestrictions,
+            getRegionRestrictionVerdict,
+            createRegionRestrictionPanel,
+            ensureChoiceRegionRestrictionsForTest: ensureChoiceRegionRestrictions,
+            renderDownloadRegionRestrictionsForTest(products, disclaimers, steamCountryCode) {
+                const previousState = steamSessionState;
+                steamSessionState = {
+                    status: steamCountryCode ? 'authenticated' : 'logged-out',
+                    account: steamCountryCode ? {countryCode: steamCountryCode} : null,
+                    error: null,
+                };
+                products.forEach((product, index) => insertRegionLockInfo(product, disclaimers[index]));
+                steamSessionState = previousState;
+            },
             createSteamSessionSynchronizer,
             createSteamSessionSyncTrigger,
             getLiveSteamAccount,
