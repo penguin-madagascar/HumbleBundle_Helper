@@ -970,6 +970,7 @@
     let downloadOrderReloadConsumedMutationGeneration = 0;
     const observedUnknownDownloadSteamKeys = new Set();
     let downloadOrderInitialLoadContext;
+    let downloadRegionDisclosureState;
     let downloadSelectionMode = false;
     let downloadActivationInProgress = false;
     let downloadActivationContext;
@@ -3211,10 +3212,130 @@
         };
     }
 
+    function getDownloadRegionDisclosureContext(mapping) {
+        const tpkds = downloadOrderData?.tpkd_dict?.all_tpks;
+        if (!/^[0-9a-f]{64}$/.test(downloadOrderScope || '')
+            || !Array.isArray(tpkds)
+            || !mapping
+            || !Array.isArray(mapping.pairs)
+            || !Array.isArray(mapping.mismatches)
+            || !Array.isArray(mapping.unmatchedTpks)
+            || !Array.isArray(mapping.unmatchedRows)
+            || !(mapping.disabledRows instanceof Set)
+            || !(mapping.duplicateIdRows instanceof Set)
+            || mapping.pairs.length !== tpkds.length
+            || mapping.mismatches.length
+            || mapping.unmatchedTpks.length
+            || mapping.unmatchedRows.length
+            || mapping.disabledRows?.size
+            || mapping.duplicateIdRows?.size) {
+            return null;
+        }
+        const entries = [];
+        const identities = new Set();
+        const indexes = new Set();
+        const rows = new Set();
+        const fallbackEvidence = new Set();
+        for (const pair of mapping.pairs) {
+            const apiIndex = pair?.apiIndex;
+            const tuple = getValidDownloadTuple(pair?.tpkd);
+            const currentTuple = Number.isInteger(apiIndex)
+                ? getValidDownloadTuple(tpkds[apiIndex])
+                : null;
+            const apiDescriptor = getDownloadTpkdDescriptor(pair?.tpkd);
+            const rowDescriptor = pair?.row
+                ? getDownloadRowDescriptor(pair.row)
+                : null;
+            if (!tuple
+                || !currentTuple
+                || tuple.machineName !== currentTuple.machineName
+                || tuple.keyindex !== currentTuple.keyindex
+                || apiIndex < 0
+                || apiIndex >= tpkds.length
+                || !pair.row
+                || indexes.has(apiIndex)
+                || rows.has(pair.row)) {
+                return null;
+            }
+            let matchEvidence;
+            if (pair.matchedBy === 'native') {
+                if (!apiDescriptor.tupleSignature
+                    || apiDescriptor.tupleSignature !== rowDescriptor.tupleSignature) {
+                    return null;
+                }
+            } else if (pair.matchedBy === 'displayed-key') {
+                matchEvidence = apiDescriptor.displayedKey;
+                if (!matchEvidence || matchEvidence !== rowDescriptor.displayedKey) return null;
+            } else if (pair.matchedBy === 'composite') {
+                matchEvidence = apiDescriptor.compositeSignature;
+                if (!matchEvidence || matchEvidence !== rowDescriptor.compositeSignature) return null;
+            } else {
+                return null;
+            }
+            if (matchEvidence) {
+                const evidenceIdentity = JSON.stringify([pair.matchedBy, matchEvidence]);
+                if (fallbackEvidence.has(evidenceIdentity)) return null;
+                fallbackEvidence.add(evidenceIdentity);
+            }
+            const identity = JSON.stringify([
+                downloadOrderScope,
+                apiIndex,
+                tuple.machineName,
+                tuple.keyindex,
+            ]);
+            if (identities.has(identity)) return null;
+            identities.add(identity);
+            indexes.add(apiIndex);
+            rows.add(pair.row);
+            entries.push({identity, pair});
+        }
+        entries.sort((left, right) => left.pair.apiIndex - right.pair.apiIndex);
+        return {
+            scope: downloadOrderScope,
+            identities: entries.map(entry => entry.identity),
+            entries,
+        };
+    }
+
+    function hasSameDownloadRegionDisclosureContext(state, context) {
+        return Boolean(state)
+            && Boolean(context)
+            && state.scope === context.scope
+            && state.identities.length === context.identities.length
+            && state.identities.every((identity, index) =>
+                identity === context.identities[index]);
+    }
+
+    function captureDownloadRegionDisclosureState(mapping = downloadOrderMapping) {
+        const context = getDownloadRegionDisclosureContext(mapping);
+        if (!context) {
+            downloadRegionDisclosureState = undefined;
+            return null;
+        }
+        if (!hasSameDownloadRegionDisclosureContext(downloadRegionDisclosureState, context)) {
+            downloadRegionDisclosureState = undefined;
+            return context;
+        }
+        downloadRegionDisclosureState.openIdentities = new Set(
+            downloadRegionDisclosureState.identities.filter(identity =>
+                downloadRegionDisclosureState.disclosures.get(identity)?.open)
+        );
+        return context;
+    }
+
     function upsertDownloadRegionWarnings(mapping) {
+        const disclosureContext = captureDownloadRegionDisclosureState(mapping);
+        const openIdentities = hasSameDownloadRegionDisclosureContext(
+            downloadRegionDisclosureState,
+            disclosureContext
+        ) ? downloadRegionDisclosureState.openIdentities : new Set();
+        const disclosureIdentities = new Map(
+            disclosureContext?.entries.map(({identity, pair}) => [pair, identity]) || []
+        );
+        const disclosures = new Map();
         const staleRows = new Set([
-            ...(mapping?.unmatchedRows || []),
-            ...(mapping?.disabledRows || []),
+            ...(Array.isArray(mapping?.unmatchedRows) ? mapping.unmatchedRows : []),
+            ...(mapping?.disabledRows instanceof Set ? mapping.disabledRows : []),
         ]);
         for (const row of staleRows) {
             row.querySelectorAll?.([
@@ -3222,7 +3343,8 @@
                 '.hb-helper-region-restrictions',
             ].join(', ')).forEach(panel => panel.remove());
         }
-        for (const {tpkd, row} of mapping?.pairs || []) {
+        for (const pair of mapping?.pairs || []) {
+            const {tpkd, row} = pair;
             row.querySelectorAll?.([
                 '.hb-helper-download-region-warning',
                 '.hb-helper-region-restrictions',
@@ -3232,9 +3354,23 @@
                 steamSessionState.account?.countryCode || null
             );
             if (!panel) continue;
+            const identity = disclosureIdentities.get(pair);
+            const disclosure = panel.querySelector?.(
+                '.hb-helper-region-restrictions__details'
+            );
+            if (identity && disclosure) {
+                disclosure.open = openIdentities.has(identity);
+                disclosures.set(identity, disclosure);
+            }
             const container = row.querySelector?.('.disclaimer') || row;
             container.appendChild(panel);
         }
+        downloadRegionDisclosureState = disclosureContext ? {
+            scope: disclosureContext.scope,
+            identities: disclosureContext.identities,
+            openIdentities: new Set(openIdentities),
+            disclosures,
+        } : undefined;
     }
 
     function extractUniqueSteamKeyFromScope(scope) {
@@ -5093,6 +5229,7 @@
     }
 
     function clearDownloadMappingUi(mapping = downloadOrderMapping) {
+        captureDownloadRegionDisclosureState(mapping);
         document.querySelector('.hb-helper-download-mapping-summary-warning')?.remove();
         const rows = new Set([
             ...(mapping?.pairs || []).map(pair => pair.row),
@@ -5125,6 +5262,7 @@
         downloadOrderReloadConsumedMutationGeneration = 0;
         observedUnknownDownloadSteamKeys.clear();
         downloadOrderInitialLoadContext = undefined;
+        downloadRegionDisclosureState = undefined;
         downloadSelectionMode = false;
         selectedDownloadItemIds.clear();
         document.documentElement.classList.remove('hb-helper-download-select-mode');
@@ -5282,6 +5420,7 @@
 
     function failDownloadOrderLoad() {
         clearDownloadMappingUi();
+        downloadRegionDisclosureState = undefined;
         downloadOrderData = undefined;
         downloadOrderMapping = undefined;
         downloadOrderLoadError = true;
@@ -5805,8 +5944,26 @@
         }, 300);
     }
 
-    function scheduleChoiceRegionRestrictionRefresh() {
+    function hasChoiceHashChangeTransition(event) {
+        if (event?.type !== 'hashchange'
+            || typeof event.oldURL !== 'string'
+            || typeof event.newURL !== 'string') {
+            return false;
+        }
+        try {
+            return new URL(event.oldURL).hash !== new URL(event.newURL).hash;
+        } catch (_) {
+            return true;
+        }
+    }
+
+    function scheduleChoiceRegionRestrictionRefresh(event) {
         if (!isChoicePage()) return;
+        if (hasChoiceHashChangeTransition(event)) {
+            choiceRegionDisclosureState = undefined;
+        } else {
+            invalidateChoiceRegionDisclosureStateForCurrentView();
+        }
         clearTimeout(choiceRegionRefreshTimer);
         choiceRegionRefreshTimer = setTimeout(() => {
             if (!isChoicePage()) return;
@@ -5912,6 +6069,7 @@
         pageChangesObserved = true;
         const observer = new MutationObserver(mutations => {
             if (!shouldRefreshForPageMutations(mutations)) return;
+            if (isChoicePage()) invalidateChoiceRegionDisclosureStateForCurrentView();
             schedulePageRefresh(false, {
                 reloadDownloadOrder: shouldReloadDownloadOrderForPageMutations(mutations),
             });
@@ -6609,6 +6767,8 @@
     }
 
     function clearPriceHelperUi() {
+        clearChoiceRegionRestrictionPanels();
+        choiceRegionDisclosureState = undefined;
         priceTotalsRunId += 1;
         lastPriceTitlesKey = '';
         lastPriceResult = undefined;
@@ -6711,6 +6871,7 @@
         }
         helperRouteFingerprint = routeFingerprint;
         const generation = ++helperRouteTransitionGeneration;
+        choiceRegionDisclosureState = undefined;
         const transition = synchronizeHelperRoute(generation, routeFingerprint);
         helperRouteTransitionPromise = Promise.resolve(transition).catch(() => {
             if (generation === helperRouteTransitionGeneration) {
@@ -7287,6 +7448,7 @@
     ];
     let choiceRegionSourceState;
     let choiceRegionFallbackWarningShown = false;
+    let choiceRegionDisclosureState;
 
     function getChoiceRegionGameSignature(game) {
         const canonicalCountries = countries => [...countries].sort();
@@ -7541,21 +7703,36 @@
         return panel;
     }
 
-    function renderChoiceRegionRestrictions(catalogs) {
-        clearChoiceRegionRestrictionPanels();
+    function getChoiceRegionViewDescriptor() {
         const view = getActiveChoiceRegionView();
-        if (!view) return;
+        if (!view) return null;
         const titleIdentity = getChoiceModalIdentifier(view);
         const displayIdentity = getChoiceDisplayIdentity(view);
         if (titleIdentity.status === 'ambiguous'
             || displayIdentity.status === 'ambiguous'
             || (titleIdentity.status === 'found' && displayIdentity.status === 'found'
                 && titleIdentity.machineName !== displayIdentity.machineName)) {
-            return;
+            return null;
         }
         const identifier = displayIdentity.status === 'found'
             ? displayIdentity.machineName
             : titleIdentity.status === 'found' ? titleIdentity.machineName : null;
+        const rows = Array.from(view.querySelectorAll?.('.key-redeemer') || []);
+        const containers = rows.map(row => row.closest?.('.key-redeemer-container'));
+        if (!rows.length
+            || rows.some(row => !isVisibleChoiceRegionElement(row)
+                || !isChoiceRegionElementWithin(row, view))
+            || containers.some(container => !isVisibleChoiceRegionElement(container)
+                || !isChoiceRegionElementWithin(container, view))) {
+            return null;
+        }
+        return {view, identifier, rows, containers};
+    }
+
+    function resolveChoiceRegionRestrictionTarget(catalogs) {
+        const descriptor = getChoiceRegionViewDescriptor();
+        if (!descriptor) return null;
+        const {identifier, rows, containers} = descriptor;
         const hashIdentifier = getChoiceHashIdentifier();
         const titleMatch = identifier
             ? findChoiceRegionGame(catalogs, 'byDisplayMachineName', identifier)
@@ -7574,28 +7751,103 @@
         }
         match = validateChoiceRegionGameMatch(catalogs, match);
         const game = match.status === 'found' ? match.game : null;
-        const rows = Array.from(view.querySelectorAll?.('.key-redeemer') || []);
-        const containers = rows.map(row => row.closest?.('.key-redeemer-container'));
-        if (!game || !Array.isArray(game.tpkds) || !rows.length
+        if (!game || !Array.isArray(game.tpkds)
             || game.tpkds.length !== rows.length
-            || rows.some(row => !isVisibleChoiceRegionElement(row)
-                || !isChoiceRegionElementWithin(row, view))
-            || containers.some(container => !isVisibleChoiceRegionElement(container)
-                || !isChoiceRegionElementWithin(container, view))
             || game.tpkds.some(tpkd =>
                 normalizeRegionRestrictions(tpkd).status === 'unavailable')) {
+            return null;
+        }
+        const fullIdentity = isNonEmptyString(game.choiceIdentifier)
+            && isNonEmptyString(game.display_item_machine_name)
+            ? JSON.stringify([
+                game.choiceIdentifier,
+                game.display_item_machine_name,
+                game.tpkds.length,
+            ])
+            : null;
+        return {
+            game,
+            containers,
+            context: {
+                routeKey: getChoiceRegionSourceRouteKey(),
+                hashIdentifier,
+                viewMachineName: identifier,
+                fullIdentity,
+                tpkdCount: game.tpkds.length,
+            },
+        };
+    }
+
+    function captureChoiceRegionDisclosureState() {
+        if (!choiceRegionDisclosureState) return null;
+        return {
+            routeKey: choiceRegionDisclosureState.routeKey,
+            hashIdentifier: choiceRegionDisclosureState.hashIdentifier,
+            viewMachineName: choiceRegionDisclosureState.viewMachineName,
+            fullIdentity: choiceRegionDisclosureState.fullIdentity,
+            tpkdCount: choiceRegionDisclosureState.tpkdCount,
+            openIndexes: new Set(choiceRegionDisclosureState.disclosures
+                .flatMap((disclosure, index) => disclosure?.open ? [index] : [])),
+        };
+    }
+
+    function hasSameChoiceRegionDisclosureContext(previous, next) {
+        return Boolean(previous)
+            && Boolean(next.fullIdentity)
+            && previous.routeKey === next.routeKey
+            && previous.hashIdentifier === next.hashIdentifier
+            && previous.viewMachineName === next.viewMachineName
+            && previous.fullIdentity === next.fullIdentity
+            && previous.tpkdCount === next.tpkdCount;
+    }
+
+    function renderChoiceRegionRestrictions(catalogs = []) {
+        const previous = captureChoiceRegionDisclosureState();
+        const target = resolveChoiceRegionRestrictionTarget(catalogs);
+        clearChoiceRegionRestrictionPanels();
+        if (!target) {
+            choiceRegionDisclosureState = undefined;
             return;
         }
+        const {game, containers, context} = target;
         const steamCountryCode = steamSessionState.account?.countryCode || null;
-        game.tpkds.forEach((tpkd, index) => {
-            const panel = createChoiceRegionRestrictionPanel(
+        const panels = game.tpkds.map((tpkd, index) =>
+            createChoiceRegionRestrictionPanel(
                 tpkd,
                 steamCountryCode,
                 index + 1,
                 game.tpkds.length
+            )
+        );
+        if (panels.some(panel => !panel)) {
+            choiceRegionDisclosureState = undefined;
+            return;
+        }
+        const restore = hasSameChoiceRegionDisclosureContext(previous, context);
+        const disclosures = panels.map((panel, index) => {
+            const disclosure = panel.querySelector?.(
+                '.hb-helper-region-restrictions__details'
             );
-            if (panel) containers[index].appendChild(panel);
+            if (disclosure) disclosure.open = restore && previous.openIndexes.has(index);
+            containers[index].appendChild(panel);
+            return disclosure || null;
         });
+        choiceRegionDisclosureState = context.fullIdentity ? {
+            ...context,
+            disclosures,
+        } : undefined;
+    }
+
+    function invalidateChoiceRegionDisclosureStateForCurrentView() {
+        if (!choiceRegionDisclosureState) return;
+        const descriptor = getChoiceRegionViewDescriptor();
+        if (!descriptor
+            || choiceRegionDisclosureState.routeKey !== getChoiceRegionSourceRouteKey()
+            || choiceRegionDisclosureState.hashIdentifier !== getChoiceHashIdentifier()
+            || choiceRegionDisclosureState.viewMachineName !== descriptor.identifier
+            || choiceRegionDisclosureState.tpkdCount !== descriptor.rows.length) {
+            choiceRegionDisclosureState = undefined;
+        }
     }
 
     function isCurrentChoiceRegionSourceState(state) {
@@ -7651,6 +7903,7 @@
             if (!isCurrentChoiceRegionSourceState(state)) return;
             state.status = 'failed';
             state.catalogs = [];
+            renderChoiceRegionRestrictions(getLiveChoiceRegionCatalogs());
             if (!choiceRegionFallbackWarningShown) {
                 choiceRegionFallbackWarningShown = true;
                 console.warn('[HB-Helper] Choice restriction metadata unavailable.');
@@ -7659,9 +7912,14 @@
     }
 
     function ensureChoiceRegionRestrictions() {
-        if (!isChoicePage()) return undefined;
-        clearChoiceRegionRestrictionPanels();
-        if (!getActiveChoiceRegionView()) return undefined;
+        if (!isChoicePage()) {
+            renderChoiceRegionRestrictions();
+            return undefined;
+        }
+        if (!getActiveChoiceRegionView()) {
+            renderChoiceRegionRestrictions();
+            return undefined;
+        }
 
         const routeKey = getChoiceRegionSourceRouteKey();
         const liveCatalogs = getLiveChoiceRegionCatalogs();
@@ -7673,10 +7931,13 @@
         if (choiceRegionSourceState?.routeKey === routeKey) {
             if (choiceRegionSourceState.status === 'ready') {
                 renderChoiceRegionRestrictions(choiceRegionSourceState.catalogs);
+            } else {
+                renderChoiceRegionRestrictions();
             }
             return choiceRegionSourceState.promise;
         }
 
+        renderChoiceRegionRestrictions();
         const state = {routeKey, status: 'pending', catalogs: [], promise: null};
         choiceRegionSourceState = state;
         state.promise = loadChoiceRegionCatalogs(state);

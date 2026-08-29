@@ -468,6 +468,13 @@ function tpk(overrides = {}) {
     };
 }
 
+function longCountryList(offset = 0) {
+    return Array.from({length: 13}, (_, index) => {
+        const value = offset + index;
+        return String.fromCharCode(65 + Math.floor(value / 26), 65 + value % 26);
+    });
+}
+
 function addTextChild(document, row, className, textContent) {
     const child = document.createElement('span');
     child.className = className;
@@ -2159,28 +2166,174 @@ test('unified restriction panels reuse the canonical download map idempotently',
     assert.equal(row.querySelector('.hb-helper-download-region-warning'), null);
 });
 
-test('Downloads restrictions expose no legacy raw-order request or positional renderer', () => {
-    const {api} = loadApi();
+test('direct Downloads redraw preserves independent disclosure state only for one exact mapping', async () => {
+    const {api, document, orderSecret} = loadApi();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const products = [
+        tpk({
+            human_name: 'First long-region item',
+            machine_name: 'first-long-region-item',
+            keyindex: 0,
+            exclusive_countries: longCountryList(),
+            disallowed_countries: [],
+        }),
+        tpk({
+            human_name: 'Second long-region item',
+            machine_name: 'second-long-region-item',
+            keyindex: 1,
+            exclusive_countries: longCountryList(13),
+            disallowed_countries: [],
+        }),
+    ];
+    const rows = products.map(product => downloadRow(document, {
+        title: product.human_name,
+        machineName: product.machine_name,
+        keyindex: product.keyindex,
+    }));
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.append(...rows);
+    document.body.appendChild(container);
+    const mapping = api.mapDownloadOrderRows(products, rows);
+    api.setDownloadOrderStateForTest(
+        scope,
+        {gamekey: orderSecret, tpkd_dict: {all_tpks: products}},
+        mapping
+    );
 
-    assert.equal(api.getRegionLockInfoForTest, undefined);
-    assert.equal(api.renderDownloadRegionRestrictionsForTest, undefined);
-    assert.doesNotMatch(source, /function getRegionLockInfo\s*\(/);
-    assert.doesNotMatch(source, /downloadRegionProducts/);
+    api.upsertDownloadRegionWarnings(mapping);
+    rows[0].querySelector('details').open = true;
+    api.upsertDownloadRegionWarnings(mapping);
+
+    assert.equal(rows[0].querySelector('details').open, true);
+    assert.equal(rows[1].querySelector('details').open, false);
+
+    const reducedMapping = api.mapDownloadOrderRows([products[0]], [rows[0]]);
+    api.setDownloadOrderStateForTest(
+        scope,
+        {gamekey: orderSecret, tpkd_dict: {all_tpks: [products[0]]}},
+        reducedMapping
+    );
+    api.upsertDownloadRegionWarnings(reducedMapping);
+    const restoredMapping = api.mapDownloadOrderRows(products, rows);
+    api.setDownloadOrderStateForTest(
+        scope,
+        {gamekey: orderSecret, tpkd_dict: {all_tpks: products}},
+        restoredMapping
+    );
+    api.upsertDownloadRegionWarnings(restoredMapping);
+    assert.equal(rows[0].querySelector('details').open, false);
+    assert.equal(rows[1].querySelector('details').open, false);
+
+    rows[0].querySelector('details').open = true;
+    const duplicateProducts = [
+        products[0],
+        {...products[0], human_name: 'Duplicate identity'},
+    ];
+    const duplicateRows = duplicateProducts.map((product, index) => downloadRow(document, {
+        title: product.human_name,
+        machineName: index === 0 ? product.machine_name : undefined,
+        keyindex: index === 0 ? product.keyindex : undefined,
+    }));
+    const duplicateMapping = api.mapDownloadOrderRows(duplicateProducts, duplicateRows);
+    api.setDownloadOrderStateForTest(
+        scope,
+        {gamekey: orderSecret, tpkd_dict: {all_tpks: duplicateProducts}},
+        duplicateMapping
+    );
+    api.upsertDownloadRegionWarnings(duplicateMapping);
+    api.setDownloadOrderStateForTest(
+        scope,
+        {gamekey: orderSecret, tpkd_dict: {all_tpks: products}},
+        restoredMapping
+    );
+    api.upsertDownloadRegionWarnings(restoredMapping);
+    assert.equal(rows[0].querySelector('details').open, false);
 });
 
-test('download restriction details do not toggle the mapped key selection', async () => {
+test('ambiguous Downloads fallback mapping invalidates the whole disclosure state', async () => {
+    const {api, document, orderSecret} = loadApi();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const products = [
+        tpk({
+            machine_name: 'ambiguous-fallback-a',
+            keyindex: 0,
+            exclusive_countries: longCountryList(),
+            disallowed_countries: [],
+        }),
+        tpk({
+            machine_name: 'ambiguous-fallback-b',
+            keyindex: 1,
+            exclusive_countries: longCountryList(13),
+            disallowed_countries: [],
+        }),
+    ];
+    const rows = [downloadRow(document), downloadRow(document)];
+    const mapping = api.mapDownloadOrderRows(products, rows);
+    assert.deepEqual(
+        clone(mapping.pairs.map(pair => pair.matchedBy)),
+        ['composite', 'composite']
+    );
+    api.setDownloadOrderStateForTest(
+        scope,
+        {gamekey: orderSecret, tpkd_dict: {all_tpks: products}},
+        mapping
+    );
+
+    api.upsertDownloadRegionWarnings(mapping);
+    rows[0].querySelector('details').open = true;
+    api.upsertDownloadRegionWarnings(mapping);
+
+    assert.equal(rows[0].querySelector('details').open, false);
+    assert.equal(rows[1].querySelector('details').open, false);
+});
+
+test('size-shaped Downloads mapping collections cannot authorize disclosure state reuse', async () => {
     const {api, document, orderSecret} = loadApi();
     const scope = await api.hashDownloadOrderKey(orderSecret);
     const product = tpk({
-        exclusive_countries: Array.from({length: 13}, (_, index) =>
-            String.fromCharCode(65 + Math.floor(index / 26), 65 + index % 26)
-        ),
+        exclusive_countries: longCountryList(),
         disallowed_countries: [],
     });
     const row = downloadRow(document, {
         machineName: product.machine_name,
         keyindex: product.keyindex,
     });
+    const mapping = api.mapDownloadOrderRows([product], [row]);
+    api.setDownloadOrderStateForTest(
+        scope,
+        {gamekey: orderSecret, tpkd_dict: {all_tpks: [product]}},
+        mapping
+    );
+    const sizeShapedEmpty = {
+        size: 0,
+        *[Symbol.iterator]() {},
+    };
+
+    for (const field of ['disabledRows', 'duplicateIdRows']) {
+        api.upsertDownloadRegionWarnings(mapping);
+        row.querySelector('details').open = true;
+        api.upsertDownloadRegionWarnings({...mapping, [field]: sizeShapedEmpty});
+        assert.equal(row.querySelector('details').open, false, field);
+    }
+});
+
+test('ordinary Downloads remaps preserve disclosure state across equivalent row replacement', async () => {
+    const {api, document, orderSecret} = loadApi();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const product = tpk({
+        human_name: 'Replaceable long-region item',
+        machine_name: 'replaceable-long-region-item',
+        keyindex: 4,
+        exclusive_countries: longCountryList(),
+        disallowed_countries: [],
+    });
+    const makeProductRow = () => downloadRow(document, {
+        title: product.human_name,
+        machineName: product.machine_name,
+        keyindex: product.keyindex,
+    });
+    let row = makeProductRow();
     const container = document.createElement('div');
     container.className = 'key-container wrapper';
     container.appendChild(row);
@@ -2191,29 +2344,179 @@ test('download restriction details do not toggle the mapped key selection', asyn
         {gamekey: orderSecret, tpkd_dict: {all_tpks: [product]}},
         mapping
     );
-    api.setSteamDerivedStateForTest({
+    api.upsertDownloadRegionWarnings(mapping);
+    row.querySelector('details').open = true;
+
+    api.refreshDownloadOrderPageForTest();
+    assert.equal(row.querySelector('details').open, true);
+
+    row.remove();
+    row = makeProductRow();
+    container.appendChild(row);
+    api.refreshDownloadOrderPageForTest();
+    assert.equal(row.querySelector('details').open, true);
+});
+
+test('observer-driven Downloads remaps retain disclosure state without another order load', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const product = tpk({
+        human_name: 'Observer long-region item',
+        machine_name: 'observer-long-region-item',
+        exclusive_countries: longCountryList(),
+        disallowed_countries: [],
+    });
+    const row = downloadRow(document, {
+        title: product.human_name,
+        machineName: product.machine_name,
+        keyindex: product.keyindex,
+    });
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA', ownedApps: [], wishlistApps: [], sessionId: 'session',
+    };
+    let loadCalls = 0;
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            return {gamekey: key, tpkd_dict: {all_tpks: [product]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+    row.querySelector('details').open = true;
+
+    const nativeStatus = addTextChild(document, row, 'native-status', 'Unrelated update');
+    scheduler.notify([{target: row, addedNodes: [nativeStatus], removedNodes: []}]);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+
+    assert.equal(row.querySelector('details').open, true);
+    assert.equal(loadCalls, 1);
+});
+
+test('Downloads order switches and resets cannot revive an earlier disclosure state', async () => {
+    const {api, context, document, orderSecret: firstSecret} = loadApi();
+    const secondSecret = ephemeralOrderSecret();
+    const first = tpk({
+        machine_name: 'first-order-long-region-item',
+        exclusive_countries: longCountryList(),
+        disallowed_countries: [],
+    });
+    const second = tpk({
+        machine_name: 'second-order-long-region-item',
+        exclusive_countries: longCountryList(13),
+        disallowed_countries: [],
+    });
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    document.body.appendChild(container);
+    const mountOrder = async (secret, product) => {
+        container.replaceChildren(downloadRow(document, {
+            machineName: product.machine_name,
+            keyindex: product.keyindex,
+        }));
+        context.setLocationForTest(`/downloads?key=${encodeURIComponent(secret)}`);
+        await api.initializeDownloadOrderPageForTest({
+            loadOrder: async key => ({gamekey: key, tpkd_dict: {all_tpks: [product]}}),
+        });
+        return container.querySelector('details');
+    };
+
+    let disclosure = await mountOrder(firstSecret, first);
+    disclosure.open = true;
+    disclosure = await mountOrder(secondSecret, second);
+    assert.equal(disclosure.open, false);
+    disclosure = await mountOrder(firstSecret, first);
+    assert.equal(disclosure.open, false);
+
+    disclosure.open = true;
+    context.setLocationForTest('/downloads');
+    api.refreshDownloadOrderPageForTest();
+    disclosure = await mountOrder(firstSecret, first);
+    assert.equal(disclosure.open, false);
+});
+
+test('Downloads restrictions expose no legacy raw-order request or positional renderer', () => {
+    const {api} = loadApi();
+
+    assert.equal(api.getRegionLockInfoForTest, undefined);
+    assert.equal(api.renderDownloadRegionRestrictionsForTest, undefined);
+    assert.doesNotMatch(source, /function getRegionLockInfo\s*\(/);
+    assert.doesNotMatch(source, /downloadRegionProducts/);
+});
+
+test('native download disclosure input neither selects a key nor schedules an order refresh', async () => {
+    const scheduler = createControlledObserverScheduler();
+    let orderRequests = 0;
+    const {api, document, orderSecret} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+        onRequest() { orderRequests += 1; },
+    });
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const product = tpk({
+        exclusive_countries: longCountryList(),
+        disallowed_countries: [],
+    });
+    const row = downloadRow(document, {
+        machineName: product.machine_name,
+        keyindex: product.keyindex,
+    });
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
         countryCode: 'CA',
         ownedApps: [],
         wishlistApps: [],
         sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let orderLoads = 0;
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            orderLoads += 1;
+            return {gamekey: key, tpkd_dict: {all_tpks: [product]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
     });
-    api.mountDownloadActivationControlsForTest();
+    await api.waitForHelperRouteForTest();
     api.setDownloadSelectionModeForTest(true);
-    api.upsertDownloadRegionWarnings(mapping);
     const summary = row.querySelector('.hb-helper-region-restrictions summary');
-    let prevented = false;
-
-    const result = api.handleDownloadSelectionEventForTest({
-        type: 'click',
-        target: summary,
-        preventDefault() { prevented = true; },
-        stopPropagation() {},
-        stopImmediatePropagation() {},
-    });
-    await result;
-
-    assert.equal(prevented, false);
-    assert.equal(api.getDownloadSelection(scope).size, 0);
+    for (const [type, key] of [
+        ['click', undefined],
+        ['keydown', 'Enter'],
+        ['keydown', ' '],
+    ]) {
+        let prevented = false;
+        const event = {
+            type,
+            key,
+            target: summary,
+            preventDefault() { prevented = true; },
+            stopPropagation() {},
+            stopImmediatePropagation() {},
+        };
+        await api.handleDownloadSelectionEventForTest(event);
+        document.dispatchEvent(event);
+        assert.equal(prevented, false);
+        assert.equal(api.getDownloadSelection(scope).size, 0);
+    }
+    assert.equal(scheduler.pageRefreshCount, 0);
+    assert.equal(orderLoads, 1);
+    assert.equal(orderRequests, 0);
 });
 
 test('revealed keys skip Humble POST and hidden keys require a successful valid response', async () => {
@@ -4658,8 +4961,14 @@ test('native reveal reload failure clears usable mapping but retains Downloads s
     const product = tpk({
         human_name: 'Reveal reload failure',
         machine_name: 'reveal-reload-failure',
+        exclusive_countries: longCountryList(),
+        disallowed_countries: [],
     });
-    const row = downloadRow(document, {title: product.human_name});
+    const row = downloadRow(document, {
+        title: product.human_name,
+        machineName: product.machine_name,
+        keyindex: product.keyindex,
+    });
     const container = document.createElement('div');
     container.className = 'key-container wrapper';
     container.appendChild(row);
@@ -4684,6 +4993,7 @@ test('native reveal reload failure clears usable mapping but retains Downloads s
         reconcileBatch: async () => ({reconciled: true}),
     });
     await api.waitForHelperRouteForTest();
+    row.querySelector('details').open = true;
     const scope = await api.hashDownloadOrderKey(orderSecret);
     const selectedId = api.getDownloadActivationItemId(scope, product);
     await api.updateDownloadSelection(scope, selection => selection.add(selectedId));
@@ -4706,6 +5016,12 @@ test('native reveal reload failure clears usable mapping but retains Downloads s
     assert.match(treeText(controls), /Could not load this Humble order/);
     assert.equal(row.classList.contains('hb-helper-download-selected'), false);
     assert.equal(row.getAttribute('role'), null);
+    assert.equal(row.querySelector('details'), null);
+
+    await api.initializeDownloadOrderPageForTest({
+        loadOrder: async key => ({gamekey: key, tpkd_dict: {all_tpks: [product]}}),
+    });
+    assert.equal(row.querySelector('details').open, false);
 });
 
 test('observer ignores helper, unrelated, invalid, and already-authoritative key mutations', async () => {
@@ -5600,6 +5916,14 @@ test('helper text mutations do not schedule observer refresh loops', () => {
     assert.equal(api.shouldRefreshForPageMutationsForTest([{
         target: document.body,
         addedNodes: [warning],
+        removedNodes: [],
+    }]), false);
+
+    const disclosure = document.createElement('details');
+    warning.appendChild(disclosure);
+    assert.equal(api.shouldRefreshForPageMutationsForTest([{
+        target: disclosure,
+        addedNodes: [{nodeType: 3, parentElement: disclosure}],
         removedNodes: [],
     }]), false);
 

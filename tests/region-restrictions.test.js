@@ -214,8 +214,8 @@ function loadApi({
         document,
         context,
         mutationObservers,
-        dispatchWindowEvent(type) {
-            (windowListeners.get(type) || []).forEach(listener => listener({type}));
+        dispatchWindowEvent(type, details = {}) {
+            (windowListeners.get(type) || []).forEach(listener => listener({type, ...details}));
         },
     };
 }
@@ -334,6 +334,13 @@ function makeMutationNode(isHelperUi = false) {
 
 function choicePayload(gameData) {
     return JSON.stringify({contentChoiceOptions: {contentChoiceData: {game_data: gameData}}});
+}
+
+function longCountryList(offset = 0) {
+    return Array.from({length: 13}, (_, index) => {
+        const value = offset + index;
+        return String.fromCharCode(65 + Math.floor(value / 26), 65 + value % 26);
+    });
 }
 
 function makeChoiceSource(payload = '', {tagName = 'script', type = 'application/json'} = {}) {
@@ -558,6 +565,238 @@ test('renders redeemed restrictions at each of multiple key container ends', () 
     assert.equal(second.container.children.at(-1), choicePanel(second));
     assert.match(panelText(choicePanel(first)), /Key 1\/2/);
     assert.match(panelText(choicePanel(second)), /Key 2\/2/);
+});
+
+test('Choice redraws preserve each key disclosure for the same fully validated game', () => {
+    const {api, document, context} = loadApi();
+    const source = makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [
+                {exclusive_countries: longCountryList(), disallowed_countries: []},
+                {exclusive_countries: longCountryList(13), disallowed_countries: []},
+            ],
+        },
+    }));
+    document.elements.set('webpack-subscriber-hub-data', source);
+    context.location.hash = '#alpha';
+    api.setSteamSessionStateForTest({
+        status: 'authenticated', account: {countryCode: 'US'}, error: null,
+    });
+    let rows = [makeRow(), makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('display-alpha', rows));
+    api.ensureChoiceRegionRestrictionsForTest();
+    choicePanel(rows[0]).querySelector('details').open = true;
+
+    rows = [makeRow(), makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('display-alpha', rows));
+    api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(choicePanel(rows[0]).querySelector('details').open, true);
+    assert.equal(choicePanel(rows[1]).querySelector('details').open, false);
+
+    choicePanel(rows[0]).querySelector('details').open = false;
+    choicePanel(rows[1]).querySelector('details').open = true;
+    api.setSteamSessionStateForTest({
+        status: 'authenticated', account: {countryCode: 'CA'}, error: null,
+    });
+    source.textContent = choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [
+                {exclusive_countries: longCountryList(26), disallowed_countries: []},
+                {exclusive_countries: longCountryList(39), disallowed_countries: []},
+            ],
+        },
+    });
+    api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(choicePanel(rows[0]).querySelector('details').open, false);
+    assert.equal(choicePanel(rows[1]).querySelector('details').open, true);
+});
+
+test('Choice game switches and slot-count changes discard earlier disclosure state', () => {
+    const {api, document, context} = loadApi();
+    const source = makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [
+                {exclusive_countries: longCountryList(), disallowed_countries: []},
+                {exclusive_countries: longCountryList(13), disallowed_countries: []},
+            ],
+        },
+        beta: {
+            display_item_machine_name: 'display-beta',
+            tpkds: [{exclusive_countries: longCountryList(26), disallowed_countries: []}],
+        },
+    }));
+    document.elements.set('webpack-subscriber-hub-data', source);
+    const showGame = (choiceIdentifier, displayMachineName, count) => {
+        const rows = Array.from({length: count}, () => makeRow());
+        context.location.hash = `#${choiceIdentifier}`;
+        setActiveChoiceModal(document, makeChoiceModal(displayMachineName, rows));
+        api.ensureChoiceRegionRestrictionsForTest();
+        return rows;
+    };
+
+    let rows = showGame('alpha', 'display-alpha', 2);
+    choicePanel(rows[0]).querySelector('details').open = true;
+    rows = showGame('beta', 'display-beta', 1);
+    assert.equal(choicePanel(rows[0]).querySelector('details').open, false);
+    rows = showGame('alpha', 'display-alpha', 2);
+    assert.ok(rows.every(row => choicePanel(row).querySelector('details').open === false));
+
+    choicePanel(rows[0]).querySelector('details').open = true;
+    source.textContent = choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: longCountryList(), disallowed_countries: []}],
+        },
+    });
+    rows = showGame('alpha', 'display-alpha', 1);
+    assert.equal(choicePanel(rows[0]).querySelector('details').open, false);
+    source.textContent = choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [
+                {exclusive_countries: longCountryList(), disallowed_countries: []},
+                {exclusive_countries: longCountryList(13), disallowed_countries: []},
+            ],
+        },
+    });
+    rows = showGame('alpha', 'display-alpha', 2);
+    assert.ok(rows.every(row => choicePanel(row).querySelector('details').open === false));
+});
+
+test('invalid Choice identity, view, and container contexts erase reusable disclosure state', () => {
+    const scenarios = [
+        {
+            label: 'ambiguous catalog identity',
+            invalidate({source}) {
+                source.textContent = choicePayload([
+                    {
+                        display_item_machine_name: 'display-alpha',
+                        tpkds: [{exclusive_countries: longCountryList(), disallowed_countries: []}],
+                    },
+                    {
+                        display_item_machine_name: 'display-alpha',
+                        tpkds: [{exclusive_countries: longCountryList(13), disallowed_countries: []}],
+                    },
+                ]);
+            },
+        },
+        {
+            label: 'multiple active views',
+            invalidate({document, modal}) {
+                const other = makeChoiceModal('display-alpha', [makeRow()]);
+                const siteModal = document.elements.get('site-modal');
+                siteModal.querySelectorAll = selector => selector === '.choice-modal'
+                    ? [modal, other]
+                    : [];
+                document.choiceModals = [modal, other];
+            },
+        },
+        {
+            label: 'hidden active view',
+            invalidate({modal}) { modal.getClientRects = () => []; },
+        },
+        {
+            label: 'missing key container',
+            invalidate({rows}) { rows[0].container.className = 'unsupported-container'; },
+        },
+    ];
+    for (const scenario of scenarios) {
+        const {api, document, context} = loadApi();
+        const source = makeChoiceSource(choicePayload({
+            alpha: {
+                display_item_machine_name: 'display-alpha',
+                tpkds: [{exclusive_countries: longCountryList(), disallowed_countries: []}],
+            },
+        }));
+        document.elements.set('webpack-subscriber-hub-data', source);
+        context.location.hash = '#alpha';
+        let rows = [makeRow()];
+        let modal = makeChoiceModal('display-alpha', rows);
+        setActiveChoiceModal(document, modal);
+        api.ensureChoiceRegionRestrictionsForTest();
+        choicePanel(rows[0]).querySelector('details').open = true;
+
+        scenario.invalidate({document, modal, rows, source});
+        api.ensureChoiceRegionRestrictionsForTest();
+        assert.equal(modal.querySelectorAll('.hb-helper-region-restrictions').length, 0, scenario.label);
+
+        source.textContent = choicePayload({
+            alpha: {
+                display_item_machine_name: 'display-alpha',
+                tpkds: [{exclusive_countries: longCountryList(), disallowed_countries: []}],
+            },
+        });
+        rows = [makeRow()];
+        modal = makeChoiceModal('display-alpha', rows);
+        setActiveChoiceModal(document, modal);
+        api.ensureChoiceRegionRestrictionsForTest();
+        assert.equal(choicePanel(rows[0]).querySelector('details').open, false, scenario.label);
+    }
+});
+
+test('obsolete Choice fallback responses neither restore nor leave stale disclosure panels', async () => {
+    const responses = [];
+    const {api, document, context} = loadApi({
+        DOMParserImpl: createChoiceHtmlParser(),
+        fetchImpl() {
+            return new Promise(resolve => responses.push(resolve));
+        },
+    });
+    const source = makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: longCountryList(), disallowed_countries: []}],
+        },
+    }));
+    document.elements.set('webpack-subscriber-hub-data', source);
+    context.location.hash = '#alpha';
+    let rows = [makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('display-alpha', rows));
+    api.ensureChoiceRegionRestrictionsForTest();
+    choicePanel(rows[0]).querySelector('details').open = true;
+
+    document.elements.delete('webpack-subscriber-hub-data');
+    const oldRefresh = api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(choicePanel(rows[0]), null);
+    context.location.pathname = '/membership/home';
+    context.location.search = '?view=beta';
+    context.location.hash = '#beta';
+    const betaRows = [makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('display-beta', betaRows));
+    const currentRefresh = api.ensureChoiceRegionRestrictionsForTest();
+
+    responses[0](htmlResponse(choiceHtml({subscriber: choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: longCountryList(), disallowed_countries: []}],
+        },
+    })})));
+    await oldRefresh;
+    assert.equal(choicePanel(betaRows[0]), null);
+
+    context.location.pathname = '/membership';
+    context.location.search = '';
+    context.location.hash = '#alpha';
+    document.elements.set('webpack-subscriber-hub-data', source);
+    rows = [makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('display-alpha', rows));
+    api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(choicePanel(rows[0]).querySelector('details').open, false);
+
+    responses[1](htmlResponse(
+        choiceHtml({subscriber: choicePayload({
+            beta: {
+                display_item_machine_name: 'display-beta',
+                tpkds: [{exclusive_countries: longCountryList(13), disallowed_countries: []}],
+            },
+        })}),
+        {url: 'https://www.humblebundle.com/membership/home?view=beta'}
+    ));
+    await currentRefresh;
+    assert.equal(choicePanel(rows[0]).querySelector('details').open, false);
 });
 
 test('cleans redeemed containers on refresh and when a reused view becomes unreliable', () => {
@@ -1640,6 +1879,39 @@ test('prefers live Choice data that appears while the route fallback is pending'
     assert.equal(api.getChoiceRegionSourceStateForTest().status, 'ready');
 });
 
+test('pending Choice fallback rejection re-evaluates live metadata and later fails closed without it', async () => {
+    let rejectRequest;
+    const {api, document} = loadApi({
+        DOMParserImpl: createChoiceHtmlParser(),
+        fetchImpl() {
+            return new Promise((resolve, reject) => { rejectRequest = reject; });
+        },
+    });
+    const rows = [makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('display-alpha', rows));
+    const pending = api.ensureChoiceRegionRestrictionsForTest();
+    document.elements.set('webpack-subscriber-hub-data', makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: longCountryList(), disallowed_countries: []}],
+        },
+    })));
+    api.ensureChoiceRegionRestrictionsForTest();
+    choicePanel(rows[0]).querySelector('details').open = true;
+
+    rejectRequest(new Error('fallback unavailable'));
+    await pending;
+
+    const livePanel = choicePanel(rows[0]);
+    assert.ok(livePanel, 'terminal fallback must not clear newer live metadata');
+    assert.equal(livePanel.querySelector('details').open, true);
+    assert.equal(api.getChoiceRegionSourceStateForTest().status, 'failed');
+
+    document.elements.delete('webpack-subscriber-hub-data');
+    api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(choicePanel(rows[0]), null);
+});
+
 test('invalid live Choice element or MIME falls through to HTML while normalized JSON MIME is usable', async () => {
     const payload = choicePayload({
         alpha: {
@@ -2147,6 +2419,53 @@ test('refreshes Choice restrictions on hashchange without refetching the same so
 
     assert.match(panelText(choicePanel(secondRows[0])), /restricted/);
     assert.equal(requests, 0);
+});
+
+test('queued Choice hash redraws cannot revive A after an immediate A to B to A switch', async () => {
+    const timers = [];
+    const {api, document, context, dispatchWindowEvent} = loadApi({
+        setTimeoutImpl(callback) {
+            timers.push(callback);
+            return timers.length;
+        },
+        clearTimeoutImpl() {},
+    });
+    document.elements.set('webpack-subscriber-hub-data', makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: longCountryList(), disallowed_countries: []}],
+        },
+        beta: {
+            display_item_machine_name: 'display-beta',
+            tpkds: [{exclusive_countries: longCountryList(13), disallowed_countries: []}],
+        },
+    })));
+    let rows = [makeRow()];
+    context.location.hash = '#alpha';
+    setActiveChoiceModal(document, makeChoiceModal('display-alpha', rows));
+    await api.installHelperRouteLifecycleForTest({
+        syncSession: async () => {},
+        reconcileBatch: async () => {},
+        recoverCollection: async () => ({recovered: false}),
+    });
+    choicePanel(rows[0]).querySelector('details').open = true;
+
+    context.location.hash = '#beta';
+    setActiveChoiceModal(document, makeChoiceModal('display-beta', [makeRow()]));
+    context.location.hash = '#alpha';
+    rows = [makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('display-alpha', rows));
+    dispatchWindowEvent('hashchange', {
+        oldURL: 'https://www.humblebundle.com/membership#alpha',
+        newURL: 'https://www.humblebundle.com/membership#beta',
+    });
+    dispatchWindowEvent('hashchange', {
+        oldURL: 'https://www.humblebundle.com/membership#beta',
+        newURL: 'https://www.humblebundle.com/membership#alpha',
+    });
+    timers.at(-1)();
+
+    assert.equal(choicePanel(rows[0]).querySelector('details').open, false);
 });
 
 test('does not schedule a Choice restriction refresh for hash changes off Choice pages', async () => {
