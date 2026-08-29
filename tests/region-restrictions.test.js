@@ -152,17 +152,30 @@ function makeRow() {
 
 function makeChoiceModal(machineName, rows) {
     const modal = makeElement();
-    const title = makeElement();
+    const title = makeElement('h2');
+    title.className = 'title';
     title.dataset.machineName = machineName;
     modal.appendChild(title);
     rows.forEach(({row}) => modal.appendChild(row));
-    modal.querySelector = selector => selector === '[data-machine-name]' ? title : null;
+    modal.querySelector = selector => {
+        if (selector === 'h2.title [data-machine-name]') return title;
+        if (selector === '[data-machine-name]') return modal.unrelatedMachineName || title;
+        return null;
+    };
     modal.querySelectorAll = selector => {
         if (selector === '.js-key-redeemer > .key-redeemer') return rows.map(({row}) => row);
         return modal.children.flatMap(child => [child, ...child.querySelectorAll('.hb-helper-region-restrictions')])
             .filter(child => child.className.split(/\s+/).includes('hb-helper-region-restrictions'));
     };
     return modal;
+}
+
+function setActiveChoiceModal(document, modal) {
+    const siteModal = makeElement();
+    siteModal.textContent = 'Choice details';
+    siteModal.getClientRects = () => [{}];
+    siteModal.querySelector = selector => selector === '.choice-modal' ? modal : null;
+    document.elements.set('site-modal', siteModal);
 }
 
 function choicePayload(gameData) {
@@ -227,6 +240,7 @@ test('maps Choice rows by exact machine name and TPKD order, immediately after G
     const {api, document} = loadApi();
     const rows = [makeRow(), makeRow()];
     document.choiceModal = makeChoiceModal('display-alpha', rows);
+    setActiveChoiceModal(document, document.choiceModal);
     const source = makeElement('script');
     source.textContent = choicePayload({
         'choice-alpha': {
@@ -253,6 +267,7 @@ test('falls back to monthly data and an exact hash identifier, then restores rep
     const {api, document, context} = loadApi();
     const rows = [makeRow()];
     document.choiceModal = makeChoiceModal('not-a-match', rows);
+    setActiveChoiceModal(document, document.choiceModal);
     context.location.hash = '#choice-beta';
     const source = makeElement('script');
     source.textContent = choicePayload({
@@ -276,6 +291,7 @@ test('cleans stale Choice panels when source identity, row count, fields, or anc
     const {api, document} = loadApi();
     const rows = [makeRow()];
     document.choiceModal = makeChoiceModal('display-missing', rows);
+    setActiveChoiceModal(document, document.choiceModal);
     const stale = makeElement();
     stale.className = 'hb-helper-region-restrictions';
     rows[0].row.appendChild(stale);
@@ -306,4 +322,111 @@ test('reuses the shared panel for Downloads in API order and never falls back to
         'US'
     );
     assert.equal(document.body.children.length, 0);
+});
+
+test('renders only inside the active visible site modal, not a stale Choice modal', () => {
+    const {api, document} = loadApi();
+    const staleRows = [makeRow()];
+    const activeRows = [makeRow()];
+    const staleModal = makeChoiceModal('display-stale', staleRows);
+    const stalePanel = makeElement();
+    stalePanel.className = 'hb-helper-region-restrictions';
+    staleRows[0].row.appendChild(stalePanel);
+    const activeModal = makeChoiceModal('display-active', activeRows);
+    document.choiceModal = staleModal;
+    setActiveChoiceModal(document, activeModal);
+    const source = makeElement('script');
+    source.textContent = choicePayload({
+        active: {
+            display_item_machine_name: 'display-active',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(hasClass(activeRows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+    assert.equal(staleRows[0].row.children.includes(stalePanel), true);
+});
+
+test('does not use unrelated data-machine-name attributes outside the Choice title', () => {
+    const {api, document} = loadApi();
+    const rows = [makeRow()];
+    const modal = makeChoiceModal('display-missing', rows);
+    const unrelated = makeElement();
+    unrelated.dataset.machineName = 'display-alpha';
+    modal.unrelatedMachineName = unrelated;
+    modal.appendChild(unrelated);
+    document.choiceModal = modal;
+    setActiveChoiceModal(document, modal);
+    const source = makeElement('script');
+    source.textContent = choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(modal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
+});
+
+test('falls through a subscriber catalog miss to monthly data using the final hash path segment', () => {
+    const {api, document, context} = loadApi();
+    const rows = [makeRow()];
+    document.choiceModal = makeChoiceModal('display-missing', rows);
+    setActiveChoiceModal(document, document.choiceModal);
+    context.location.hash = '#/membership/choices/choice-beta';
+    const subscriber = makeElement('script');
+    subscriber.textContent = choicePayload({
+        other: {
+            display_item_machine_name: 'display-other',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    const monthly = makeElement('script');
+    monthly.textContent = choicePayload({
+        'choice-beta': {
+            display_item_machine_name: 'display-beta',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', subscriber);
+    document.elements.set('webpack-monthly-product-data', monthly);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+});
+
+test('fails closed for invalid Choice metadata and skips only invalid Downloads metadata', () => {
+    const {api, document} = loadApi();
+    const rows = [makeRow(), makeRow()];
+    document.choiceModal = makeChoiceModal('display-alpha', rows);
+    setActiveChoiceModal(document, document.choiceModal);
+    const source = makeElement('script');
+    source.textContent = choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [
+                {exclusive_countries: ['US'], disallowed_countries: []},
+                {exclusive_countries: ['US', 5], disallowed_countries: []},
+            ],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+    api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
+
+    const invalidDisclaimer = makeElement();
+    const validDisclaimer = makeElement();
+    api.renderDownloadRegionRestrictionsForTest([
+        {exclusive_countries: ['US', 5], disallowed_countries: []},
+        {exclusive_countries: ['US'], disallowed_countries: []},
+    ], [invalidDisclaimer, validDisclaimer], 'US');
+    assert.equal(invalidDisclaimer.children.length, 0);
+    assert.equal(hasClass(validDisclaimer.children[0], 'hb-helper-region-restrictions'), true);
 });

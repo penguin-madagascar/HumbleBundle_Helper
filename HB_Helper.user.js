@@ -558,7 +558,6 @@
             noRegionRestrictions: 'No Region Restrictions',
             exclusiveCountries: 'Exclusive countries: {countries}',
             disallowedCountries: 'Disallowed countries: {countries}',
-            regionMetadataUnavailable: 'Humble activation metadata is unavailable for this key.',
             regionUnmarked: 'Humble has not declared a region restriction for this key.',
             regionAllowed: 'Humble metadata indicates this key can be activated in your Steam region ({country}).',
             regionRestricted: 'Humble metadata indicates this key is restricted in your Steam region ({country}).',
@@ -651,7 +650,6 @@
             noRegionRestrictions: '无区域限制',
             exclusiveCountries: '仅限国家/地区：{countries}',
             disallowedCountries: '禁止激活国家/地区：{countries}',
-            regionMetadataUnavailable: '此 key 的 Humble 激活元数据不可用。',
             regionUnmarked: 'Humble 未声明此 key 存在区域限制。',
             regionAllowed: 'Humble 元数据表明此 key 可在你的 Steam 地区（{country}）激活。',
             regionRestricted: 'Humble 元数据表明此 key 在你的 Steam 地区（{country}）受限。',
@@ -4367,13 +4365,13 @@
 
     function createRegionRestrictionPanel(tpkd, steamCountryCode) {
         const restrictions = normalizeRegionRestrictions(tpkd);
+        if (restrictions.status === 'unavailable') return null;
         const verdict = getRegionRestrictionVerdict(restrictions, steamCountryCode);
         const panel = document.createElement('section');
         panel.className = `hb-helper-region-restrictions hb-helper-region-restrictions--${verdict.status}`;
         const status = document.createElement('span');
         status.className = 'hb-helper-region-restrictions__status';
-        if (verdict.status === 'unavailable') status.textContent = t('regionMetadataUnavailable');
-        else if (verdict.status === 'unmarked') status.textContent = t('regionUnmarked');
+        if (verdict.status === 'unmarked') status.textContent = t('regionUnmarked');
         else if (verdict.status === 'unknown-country') status.textContent = t('regionCountryUnavailable');
         else if (verdict.status === 'restricted') status.textContent = t('regionRestricted', {country: verdict.country});
         else status.textContent = t('regionAllowed', {country: verdict.country});
@@ -4411,18 +4409,27 @@
         return catalog;
     }
 
-    function getChoiceRegionCatalog() {
+    function getChoiceRegionCatalog(source) {
+        if (!source || typeof source.textContent !== 'string') return null;
+        const cached = choiceRegionCatalogCache.get(source);
+        if (cached?.text === source.textContent) return cached.catalog;
+        const catalog = parseChoiceRegionCatalog(source.textContent);
+        if (catalog) choiceRegionCatalogCache.set(source, {text: source.textContent, catalog});
+        return catalog;
+    }
+
+    function findChoiceRegionGame(...identifiers) {
+        const exactIdentifiers = identifiers.filter(identifier =>
+            typeof identifier === 'string' && identifier.length > 0
+        );
         const sources = [
             document.getElementById('webpack-subscriber-hub-data'),
             document.getElementById('webpack-monthly-product-data'),
         ];
         for (const source of sources) {
-            if (!source || typeof source.textContent !== 'string') continue;
-            const cached = choiceRegionCatalogCache.get(source);
-            if (cached?.text === source.textContent) return cached.catalog;
-            const catalog = parseChoiceRegionCatalog(source.textContent);
-            if (catalog) choiceRegionCatalogCache.set(source, {text: source.textContent, catalog});
-            if (catalog) return catalog;
+            const catalog = getChoiceRegionCatalog(source);
+            const game = exactIdentifiers.map(identifier => catalog?.get(identifier)).find(Boolean);
+            if (game) return game;
         }
         return null;
     }
@@ -4432,7 +4439,7 @@
     }
 
     function getChoiceModalIdentifier(modal) {
-        const title = modal?.querySelector?.('[data-machine-name]');
+        const title = modal?.querySelector?.('h2.title [data-machine-name]');
         const machineName = title?.dataset?.machineName || title?.getAttribute?.('data-machine-name');
         if (typeof machineName === 'string' && machineName.length > 0) return machineName;
         return null;
@@ -4441,22 +4448,23 @@
     function getChoiceHashIdentifier() {
         const hash = typeof location.hash === 'string' ? location.hash.slice(1) : '';
         try {
-            return hash ? decodeURIComponent(hash) : null;
+            const segments = decodeURIComponent(hash).split('?')[0].split('/').filter(Boolean);
+            return segments.at(-1) || null;
         } catch (_) {
             return null;
         }
     }
 
     function ensureChoiceRegionRestrictions() {
-        const modal = document.querySelector('.choice-modal');
+        const modal = getActiveChoiceModal()?.querySelector?.('.choice-modal');
         if (!modal) return;
-        const catalog = getChoiceRegionCatalog();
         const identifier = getChoiceModalIdentifier(modal);
-        const game = catalog?.get(identifier) || catalog?.get(getChoiceHashIdentifier());
+        const game = findChoiceRegionGame(identifier) || findChoiceRegionGame(getChoiceHashIdentifier());
         const rows = Array.from(modal.querySelectorAll?.('.js-key-redeemer > .key-redeemer') || []);
         const fields = rows.map(row => row.querySelector?.('.giftfield'));
         if (!game || !Array.isArray(game.tpkds) || !rows.length
-            || game.tpkds.length !== rows.length || fields.some(field => !field)) {
+            || game.tpkds.length !== rows.length || fields.some(field => !field)
+            || game.tpkds.some(tpkd => normalizeRegionRestrictions(tpkd).status === 'unavailable')) {
             removeChoiceRegionRestrictionPanels(modal);
             return;
         }
@@ -4505,10 +4513,8 @@
     function insertRegionLockInfo(productInfo, container) {
         if (!container) return;
         container.querySelectorAll?.('.hb-helper-region-restrictions').forEach(panel => panel.remove());
-        container.appendChild(createRegionRestrictionPanel(
-            productInfo,
-            steamSessionState.account?.countryCode || null
-        ));
+        const panel = createRegionRestrictionPanel(productInfo, steamSessionState.account?.countryCode || null);
+        if (panel) container.appendChild(panel);
     }
 
     if (globalThis.__HB_HELPER_TEST__) {
