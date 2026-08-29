@@ -786,6 +786,7 @@
     const choiceSelectionCacheKey = 'hb-helper-choice-selected-games-v1';
     const landingSortModeStorageKey = 'hb-helper-landing-sort-mode';
     const steamActivationBatchKey = 'hb-helper-steam-activation-batch-v2';
+    const choiceActivationItemIdPrefix = 'hb-helper-key-v1:';
     const legacySteamActivationQueueKey = 'hb-helper-steam-activation-queue-v1';
     const choiceActivationBatchStates = Object.freeze({
         collecting: 'collecting',
@@ -2076,34 +2077,28 @@
         return normalizedText(modal) ? modal : null;
     }
 
-    function findSteamKeyInText(text) {
-        const match = String(text || '').match(/\b[A-Z0-9]{5}(?:-[A-Z0-9]{5}){2,4}\b/i);
-        return match ? match[0].toUpperCase() : null;
+    function findSteamKeysInText(text) {
+        return Array.from(
+            String(text || '').matchAll(/\b[A-Z0-9]{5}(?:-[A-Z0-9]{5}){2,4}\b/gi),
+            match => match[0].toUpperCase()
+        );
     }
 
-    function extractSteamKeyFromScope(scope) {
+    function extractUniqueSteamKeyFromScope(scope) {
+        const keys = new Set();
         for (const input of scope.querySelectorAll('input, textarea')) {
             if (!isVisibleElement(input)) continue;
-            const key = findSteamKeyInText(input.value);
-            if (key) return key;
+            findSteamKeysInText(input.value).forEach(key => keys.add(key));
         }
         for (const keyField of scope.querySelectorAll('.keyfield-value')) {
             if (!isVisibleElement(keyField)) continue;
-            const key = findSteamKeyInText(normalizedText(keyField));
-            if (key) return key;
+            findSteamKeysInText(normalizedText(keyField)).forEach(key => keys.add(key));
         }
-        return null;
+        return keys.size === 1 ? keys.values().next().value : null;
     }
 
     function isVisibleElement(element) {
         return !element.disabled && element.getClientRects().length > 0;
-    }
-
-    function findChoiceSteamControl(scope) {
-        return Array.from(scope.querySelectorAll('.keyfield-value')).find(element =>
-            isVisibleElement(element)
-            && normalizedText(element).toLowerCase() === 'get game on steam'
-        ) || null;
     }
 
     async function closeChoiceModal(modal = getActiveChoiceModal()) {
@@ -2132,16 +2127,60 @@
         return Boolean(modalTitle && tileTitle && modalTitle === tileTitle);
     }
 
-    function createChoiceModalCloseError(tile) {
-        return new Error(t('choiceModalCloseFailed', {title: getChoiceTileTitle(tile)}));
+    function getSmallestNonSkippedChoiceKeyIndex(skipIndexes) {
+        let keyIndex = 0;
+        while (skipIndexes.has(keyIndex)) keyIndex += 1;
+        return keyIndex;
     }
 
-    async function revealChoiceSteamKey(tile) {
+    function createChoiceModalCloseError(tile, keyIndex = 0) {
+        const error = new Error(t('choiceModalCloseFailed', {title: getChoiceTileTitle(tile)}));
+        error.choiceModalUnsafe = true;
+        error.keyIndex = keyIndex;
+        return error;
+    }
+
+    function createChoiceKeyFailure(keyIndex) {
+        return {
+            keyIndex,
+            key: null,
+            error: t('choiceHumbleFailureReason'),
+        };
+    }
+
+    function inspectLockedChoiceModal(modal, tile, rowCount) {
+        const activeModal = getActiveChoiceModal();
+        if (activeModal !== modal || !isChoiceModalForTile(modal, tile)) {
+            return {fatal: true};
+        }
+        const rows = Array.from(modal.querySelectorAll('.key-redeemer'));
+        if (rows.length !== rowCount
+            || modal.querySelector('.js-select-choice-container.error')) {
+            return {fatal: true};
+        }
+        return {fatal: false, rows};
+    }
+
+    function appendChoiceKeyFailures(outcomes, startIndex, rowCount, skipIndexes) {
+        for (let keyIndex = startIndex; keyIndex < rowCount; keyIndex++) {
+            if (!skipIndexes.has(keyIndex)) {
+                outcomes.push(createChoiceKeyFailure(keyIndex));
+            }
+        }
+    }
+
+    async function revealChoiceSteamKeys(tile, {skipIndexes = new Set()} = {}) {
+        const skipped = new Set(Array.from(skipIndexes).filter(
+            keyIndex => Number.isSafeInteger(keyIndex) && keyIndex >= 0
+        ));
+        const firstNonSkippedIndex = getSmallestNonSkippedChoiceKeyIndex(skipped);
         const activeModalBeforeClick = getActiveChoiceModal();
         if (activeModalBeforeClick && !await closeChoiceModal(activeModalBeforeClick)) {
-            throw createChoiceModalCloseError(tile);
+            throw createChoiceModalCloseError(tile, firstNonSkippedIndex);
         }
-        if (getActiveChoiceModal()) throw createChoiceModalCloseError(tile);
+        if (getActiveChoiceModal()) {
+            throw createChoiceModalCloseError(tile, firstNonSkippedIndex);
+        }
         tile.click();
         const modal = await waitForCondition(() => {
             const activeModal = getActiveChoiceModal();
@@ -2150,26 +2189,74 @@
         if (!modal) {
             const unmatchedModal = getActiveChoiceModal();
             if (unmatchedModal && !await closeChoiceModal(unmatchedModal)) {
-                throw createChoiceModalCloseError(tile);
+                throw createChoiceModalCloseError(tile, firstNonSkippedIndex);
             }
-            return null;
+            return [createChoiceKeyFailure(firstNonSkippedIndex)];
         }
 
+        let rowCount = 0;
         try {
-            const ready = await waitForCondition(
-                () => extractSteamKeyFromScope(modal) || findChoiceSteamControl(modal),
-                8000
-            );
-            if (!ready) return null;
+            rowCount = Array.from(modal.querySelectorAll('.key-redeemer')).length;
+            if (rowCount === 0) return [createChoiceKeyFailure(firstNonSkippedIndex)];
 
-            const key = extractSteamKeyFromScope(modal);
-            if (key) return key;
+            const outcomes = [];
+            for (let keyIndex = 0; keyIndex < rowCount; keyIndex++) {
+                if (skipped.has(keyIndex)) continue;
+                const inspection = inspectLockedChoiceModal(modal, tile, rowCount);
+                if (inspection.fatal) {
+                    appendChoiceKeyFailures(outcomes, keyIndex, rowCount, skipped);
+                    break;
+                }
 
-            ready.click();
-            return await waitForCondition(() => extractSteamKeyFromScope(modal), 5000);
+                const row = inspection.rows[keyIndex];
+                if (row.classList.contains('redeemed')) {
+                    const key = extractUniqueSteamKeyFromScope(row);
+                    outcomes.push(key
+                        ? {keyIndex, key}
+                        : createChoiceKeyFailure(keyIndex));
+                    continue;
+                }
+                if (row.classList.contains('error')) {
+                    outcomes.push(createChoiceKeyFailure(keyIndex));
+                    continue;
+                }
+
+                const revealControl = row.querySelector('.js-keyfield.keyfield.enabled');
+                if (!revealControl || !isVisibleElement(revealControl)) {
+                    outcomes.push(createChoiceKeyFailure(keyIndex));
+                    continue;
+                }
+                revealControl.click();
+
+                const terminal = await waitForCondition(() => {
+                    const current = inspectLockedChoiceModal(modal, tile, rowCount);
+                    if (current.fatal) return current;
+                    const currentRow = current.rows[keyIndex];
+                    if (currentRow.classList.contains('redeemed')) {
+                        return {fatal: false, state: 'redeemed', row: currentRow};
+                    }
+                    if (currentRow.classList.contains('error')) {
+                        return {fatal: false, state: 'error', row: currentRow};
+                    }
+                    return null;
+                }, 60000);
+                if (!terminal || terminal.fatal) {
+                    appendChoiceKeyFailures(outcomes, keyIndex, rowCount, skipped);
+                    break;
+                }
+                if (terminal.state === 'error') {
+                    outcomes.push(createChoiceKeyFailure(keyIndex));
+                    continue;
+                }
+                const key = extractUniqueSteamKeyFromScope(terminal.row);
+                outcomes.push(key
+                    ? {keyIndex, key}
+                    : createChoiceKeyFailure(keyIndex));
+            }
+            return outcomes;
         } finally {
             if (!await closeChoiceModal(modal)) {
-                throw createChoiceModalCloseError(tile);
+                throw createChoiceModalCloseError(tile, firstNonSkippedIndex);
             }
         }
     }
@@ -2241,9 +2328,46 @@
         return typeof value === 'string' && value.trim().length > 0;
     }
 
+    function encodeChoiceActivationItemId(gameId, keyIndex) {
+        if (!isNonEmptyString(gameId)
+            || !Number.isSafeInteger(keyIndex)
+            || keyIndex < 0) {
+            throw new TypeError('Choice key IDs require a game ID and non-negative safe index.');
+        }
+        return `${choiceActivationItemIdPrefix}${keyIndex}:${encodeURIComponent(gameId)}`;
+    }
+
+    function decodeChoiceActivationItemId(rawId) {
+        if (!isNonEmptyString(rawId)) return null;
+        if (!rawId.startsWith(choiceActivationItemIdPrefix)) {
+            return {gameId: rawId, keyIndex: 0};
+        }
+
+        const encodedSlot = rawId.slice(choiceActivationItemIdPrefix.length);
+        const separatorIndex = encodedSlot.indexOf(':');
+        if (separatorIndex <= 0) return null;
+        const indexText = encodedSlot.slice(0, separatorIndex);
+        const encodedGameId = encodedSlot.slice(separatorIndex + 1);
+        if (!/^(?:0|[1-9]\d*)$/.test(indexText) || !encodedGameId) return null;
+        const keyIndex = Number(indexText);
+        if (!Number.isSafeInteger(keyIndex)) return null;
+
+        try {
+            const gameId = decodeURIComponent(encodedGameId);
+            if (!isNonEmptyString(gameId)
+                || encodeURIComponent(gameId) !== encodedGameId) {
+                return null;
+            }
+            return {gameId, keyIndex};
+        } catch (_) {
+            return null;
+        }
+    }
+
     function isValidChoiceActivationItem(item) {
         if (!hasOnlyKeys(item, ['id', 'title', 'key', 'status', 'error', 'code'])
             || !isNonEmptyString(item.id)
+            || !decodeChoiceActivationItemId(item.id)
             || !isNonEmptyString(item.title)
             || !Object.values(choiceActivationItemStates).includes(item.status)
             || (item.key !== null && !isNonEmptyString(item.key))
@@ -2340,14 +2464,22 @@
             || !Array.isArray(batch.items)
             || !isValidChoiceActivationRunner(batch.runner, batch.state)
             || !isValidChoiceOwnershipRefresh(batch.ownershipRefresh, batch.state)
-            || !batch.items.every(isValidChoiceActivationItem)
-            || new Set(batch.items.map(item => item.id)).size !== batch.items.length) {
+            || !batch.items.every(isValidChoiceActivationItem)) {
             return false;
+        }
+
+        const decodedSlots = new Set();
+        for (const item of batch.items) {
+            const decoded = decodeChoiceActivationItemId(item.id);
+            const slot = JSON.stringify([decoded.gameId, decoded.keyIndex]);
+            if (decodedSlots.has(slot)) return false;
+            decodedSlots.add(slot);
         }
 
         const statuses = new Set(batch.items.map(item => item.status));
         if (batch.state === choiceActivationBatchStates.collecting) {
             return [...statuses].every(status => [
+                choiceActivationItemStates.activated,
                 choiceActivationItemStates.humbleFailed,
                 choiceActivationItemStates.pending,
             ].includes(status));
@@ -2410,34 +2542,144 @@
         return saveBatch;
     }
 
+    function getChoiceCollectionRetryStates(previousBatch, selectedItems) {
+        const states = new Map(selectedItems.map(item => [item.id, {
+            activatedIndexes: new Set(),
+            knownComplete: false,
+        }]));
+        if (previousBatch?.state !== choiceActivationBatchStates.complete) return states;
+
+        const previousGroups = new Map();
+        for (const item of previousBatch.items) {
+            const decoded = decodeChoiceActivationItemId(item.id);
+            if (!decoded || !states.has(decoded.gameId)) continue;
+            if (!previousGroups.has(decoded.gameId)) previousGroups.set(decoded.gameId, []);
+            previousGroups.get(decoded.gameId).push({
+                item,
+                keyIndex: decoded.keyIndex,
+                composite: item.id.startsWith(choiceActivationItemIdPrefix),
+            });
+        }
+
+        for (const [gameId, entries] of previousGroups) {
+            const state = states.get(gameId);
+            entries.forEach(entry => {
+                if (entry.item.status === choiceActivationItemStates.activated) {
+                    state.activatedIndexes.add(entry.keyIndex);
+                }
+            });
+            const representedIndexes = entries
+                .map(entry => entry.keyIndex)
+                .sort((left, right) => left - right);
+            const highestIndex = representedIndexes.at(-1);
+            state.knownComplete = entries.length > 0
+                && entries.every(entry => entry.composite)
+                && entries.every(entry =>
+                    entry.item.status === choiceActivationItemStates.activated
+                )
+                && entries.length === highestIndex + 1
+                && representedIndexes.every((keyIndex, index) => keyIndex === index);
+        }
+        return states;
+    }
+
+    function appendChoiceActivatedMarkers(batch, selectedItems, retryStates) {
+        for (const selectedItem of selectedItems) {
+            const state = retryStates.get(selectedItem.id);
+            for (const keyIndex of [...state.activatedIndexes].sort((left, right) => left - right)) {
+                batch.items.push({
+                    id: encodeChoiceActivationItemId(selectedItem.id, keyIndex),
+                    title: selectedItem.title,
+                    key: null,
+                    status: choiceActivationItemStates.activated,
+                });
+            }
+        }
+    }
+
+    function createChoiceCollectionFailureItem(selectedItem, keyIndex, error) {
+        return {
+            id: encodeChoiceActivationItemId(selectedItem.id, keyIndex),
+            title: selectedItem.title,
+            key: null,
+            status: choiceActivationItemStates.humbleFailed,
+            error: error || t('choiceHumbleFailureReason'),
+        };
+    }
+
+    function createChoiceCollectionItems(selectedItem, outcomes, skipIndexes) {
+        if (!Array.isArray(outcomes)) throw new TypeError('Choice reveal outcomes must be an array.');
+        const items = [];
+        let previousIndex = -1;
+        for (const outcome of outcomes) {
+            if (!hasOnlyKeys(outcome, ['keyIndex', 'key', 'error'])
+                || !Number.isSafeInteger(outcome.keyIndex)
+                || outcome.keyIndex < 0
+                || outcome.keyIndex <= previousIndex
+                || skipIndexes.has(outcome.keyIndex)
+                || (outcome.key !== null && !isNonEmptyString(outcome.key))
+                || (outcome.key === null && !isNonEmptyString(outcome.error))
+                || (outcome.key !== null && outcome.error !== undefined)) {
+                throw new TypeError('Choice reveal outcomes must contain unique row-ordered slots.');
+            }
+            previousIndex = outcome.keyIndex;
+            items.push(outcome.key
+                ? {
+                    id: encodeChoiceActivationItemId(selectedItem.id, outcome.keyIndex),
+                    title: selectedItem.title,
+                    key: outcome.key,
+                    status: choiceActivationItemStates.pending,
+                }
+                : createChoiceCollectionFailureItem(
+                    selectedItem,
+                    outcome.keyIndex,
+                    outcome.error
+                ));
+        }
+        return items;
+    }
+
     async function collectChoiceActivationBatch(
         batch,
         selectedItems,
-        revealKey,
+        retryStates,
+        revealKeys,
         saveBatch
     ) {
         const persist = requireLockScopedBatchPersistence(saveBatch);
         for (const selectedItem of selectedItems) {
+            const retryState = retryStates.get(selectedItem.id);
+            if (retryState.knownComplete) continue;
             batch.runner.leaseExpiresAt = Date.now() + choiceActivationRunnerLeaseMs;
             if (persist(batch) === false) return false;
-            let key = null;
-            let error;
+            let freshItems;
+            let unsafeModal = false;
             try {
-                key = await revealKey(selectedItem);
+                const outcomes = await revealKeys(selectedItem, {
+                    skipIndexes: new Set(retryState.activatedIndexes),
+                });
+                freshItems = createChoiceCollectionItems(
+                    selectedItem,
+                    outcomes,
+                    retryState.activatedIndexes
+                );
             } catch (reason) {
-                error = reason?.message;
+                unsafeModal = reason?.choiceModalUnsafe === true;
+                const keyIndex = Number.isSafeInteger(reason?.keyIndex)
+                    && reason.keyIndex >= 0
+                    && !retryState.activatedIndexes.has(reason.keyIndex)
+                    ? reason.keyIndex
+                    : getSmallestNonSkippedChoiceKeyIndex(retryState.activatedIndexes);
+                freshItems = [createChoiceCollectionFailureItem(
+                    selectedItem,
+                    keyIndex,
+                    reason?.message
+                )];
             }
-            batch.items.push({
-                id: selectedItem.id,
-                title: selectedItem.title,
-                key: key || null,
-                status: key
-                    ? choiceActivationItemStates.pending
-                    : choiceActivationItemStates.humbleFailed,
-                ...(key ? {} : {error: error || t('choiceHumbleFailureReason')}),
-            });
+            batch.items.push(...freshItems);
             batch.runner.leaseExpiresAt = Date.now() + choiceActivationRunnerLeaseMs;
             if (persist(batch) === false) return false;
+            if (unsafeModal) break;
         }
         return true;
     }
@@ -2474,7 +2716,7 @@
         selectedItems,
         {
             lockManager,
-            revealKey = ({tile}) => revealChoiceSteamKey(tile),
+            revealKeys = ({tile}, options) => revealChoiceSteamKeys(tile, options),
             owner = choiceRuntimeOwnerId,
             onBatchStarted = () => {},
             onProgress = () => {},
@@ -2484,13 +2726,22 @@
             choiceCollectionLockName,
             async () => {
                 const current = getChoiceActivationBatch();
+                const previousBatch = current?.state === choiceActivationBatchStates.complete
+                    ? current
+                    : null;
                 if (current?.state === choiceActivationBatchStates.collecting) {
                     GM_deleteValue(steamActivationBatchKey);
-                } else if (isChoiceActivationBatchActive(current)) {
+                } else if (current?.state !== choiceActivationBatchStates.complete
+                    && isChoiceActivationBatchActive(current)) {
                     return {started: false, busy: true, batch: current};
                 }
 
+                const retryStates = getChoiceCollectionRetryStates(
+                    previousBatch,
+                    selectedItems
+                );
                 const batch = createChoiceActivationBatch(owner);
+                appendChoiceActivatedMarkers(batch, selectedItems, retryStates);
                 GM_setValue(steamActivationBatchKey, batch);
                 const saveBatch = nextBatch => saveChoiceActivationBatchIfCurrent(
                     nextBatch,
@@ -2500,9 +2751,10 @@
                 const collected = await collectChoiceActivationBatch(
                     batch,
                     selectedItems,
-                    async item => {
+                    retryStates,
+                    async (item, options) => {
                         onProgress(item);
-                        return revealKey(item);
+                        return revealKeys(item, options);
                     },
                     saveBatch
                 );
@@ -2545,9 +2797,16 @@
 
     function reconcileChoiceSelectionFromBatch(batch, selection = selectedChoiceGameIds) {
         let changed = false;
+        const itemsByGame = new Map();
         for (const item of batch?.items || []) {
-            if (item.status === choiceActivationItemStates.activated
-                && selection.delete(item.id)) {
+            const decoded = decodeChoiceActivationItemId(item.id);
+            if (!decoded) continue;
+            if (!itemsByGame.has(decoded.gameId)) itemsByGame.set(decoded.gameId, []);
+            itemsByGame.get(decoded.gameId).push(item);
+        }
+        for (const [gameId, items] of itemsByGame) {
+            if (items.every(item => item.status === choiceActivationItemStates.activated)
+                && selection.delete(gameId)) {
                 changed = true;
             }
         }
@@ -2575,12 +2834,41 @@
         };
     }
 
-    function copySteamFailedKey(item, feedback, setClipboard = GM_setClipboard) {
-        setClipboard(item.key, 'text');
-        feedback.textContent = t('choiceCopiedFailedKey', {title: item.title});
+    function getChoiceActivationDisplayLabel(batch, item) {
+        const decoded = decodeChoiceActivationItemId(item.id);
+        if (!decoded) return item.title;
+        let highestIndex = decoded.keyIndex;
+        for (const candidate of batch?.items || []) {
+            const candidateId = decodeChoiceActivationItemId(candidate.id);
+            if (candidateId?.gameId === decoded.gameId) {
+                highestIndex = Math.max(highestIndex, candidateId.keyIndex);
+            }
+        }
+        const keyCount = highestIndex + 1;
+        return keyCount === 1
+            ? item.title
+            : `${item.title} (key ${decoded.keyIndex + 1}/${keyCount})`;
     }
 
-    function appendChoiceFailureGroup(results, titleText, items, includeKeys = false) {
+    function copySteamFailedKey(
+        batch,
+        item,
+        feedback,
+        setClipboard = GM_setClipboard
+    ) {
+        setClipboard(item.key, 'text');
+        feedback.textContent = t('choiceCopiedFailedKey', {
+            title: getChoiceActivationDisplayLabel(batch, item),
+        });
+    }
+
+    function appendChoiceFailureGroup(
+        results,
+        titleText,
+        batch,
+        items,
+        includeKeys = false
+    ) {
         if (items.length === 0) return;
         const group = document.createElement('section');
         group.className = 'hb-helper-choice-result-group';
@@ -2598,11 +2886,12 @@
         }
 
         items.forEach(item => {
+            const displayLabel = getChoiceActivationDisplayLabel(batch, item);
             const row = document.createElement('div');
             row.className = 'hb-helper-choice-result-row';
             const detail = document.createElement('div');
             detail.textContent = t('choiceFailureRow', {
-                title: item.title,
+                title: displayLabel,
                 reason: item.error || t('steamActivationUnknownCode', {
                     code: item.code ?? 'unknown',
                 }),
@@ -2615,10 +2904,10 @@
                 keyButton.className = 'hb-helper-choice-failed-key';
                 keyButton.textContent = item.key;
                 keyButton.setAttribute('aria-label', t('choiceCopyFailedKey', {
-                    title: item.title,
+                    title: displayLabel,
                 }));
                 keyButton.addEventListener('click', () =>
-                    copySteamFailedKey(item, feedback)
+                    copySteamFailedKey(batch, item, feedback)
                 );
                 row.appendChild(keyButton);
             }
@@ -2644,7 +2933,7 @@
                 ].includes(item.status))
                 .map(item => ({
                     status: item.status,
-                    title: item.title,
+                    title: getChoiceActivationDisplayLabel(batch, item),
                     key: item.status === choiceActivationItemStates.steamFailed ? item.key : null,
                     error: item.error || null,
                     code: item.code ?? null,
@@ -2678,11 +2967,13 @@
         appendChoiceFailureGroup(
             results,
             t('choiceHumbleFailureGroup'),
+            batch,
             batch.items.filter(item => item.status === choiceActivationItemStates.humbleFailed)
         );
         appendChoiceFailureGroup(
             results,
             t('choiceSteamFailureGroup'),
+            batch,
             batch.items.filter(item => item.status === choiceActivationItemStates.steamFailed),
             true
         );
@@ -2747,16 +3038,18 @@
                         current: item.index + 1,
                         total: selectedItems.length,
                     })),
-                    revealKey: async item => {
-                        const key = await revealChoiceSteamKey(item.tile);
-                        if (!key) setChoiceStatus(t('choiceRevealFailed', {title: item.title}));
-                        return key;
+                    revealKeys: async (item, options) => {
+                        const outcomes = await revealChoiceSteamKeys(item.tile, options);
+                        if (outcomes.some(outcome => !outcome.key)) {
+                            setChoiceStatus(t('choiceRevealFailed', {title: item.title}));
+                        }
+                        return outcomes;
                     },
                 },
                 activationOptions: {
-                    showProgress: (item, index, total) => setChoiceStatus(
+                    showProgress: (item, index, total, displayLabel) => setChoiceStatus(
                         t('steamActivationProgress', {
-                            title: item.title,
+                            title: displayLabel,
                             current: index + 1,
                             total,
                         })
@@ -3753,7 +4046,12 @@
 
         for (let index = 0; index < pendingItems.length; index++) {
             const item = pendingItems[index];
-            showProgress(item, index, pendingItems.length);
+            showProgress(
+                item,
+                index,
+                pendingItems.length,
+                getChoiceActivationDisplayLabel(batch, item)
+            );
             item.status = choiceActivationItemStates.activating;
             if (isNonEmptyString(owner)) {
                 batch.runner.leaseExpiresAt = now() + leaseMs;
@@ -4627,6 +4925,15 @@
             setSteamDerivedStateForTest,
             setSteamSessionStateForTest,
             isChoiceActivationUiAvailable,
+            encodeChoiceActivationItemId,
+            decodeChoiceActivationItemId,
+            revealChoiceSteamKeys,
+            runChoiceCollectionWork,
+            getChoiceActivationDisplayLabelForTest: getChoiceActivationDisplayLabel,
+            renderChoiceActivationResultsForTest: renderChoiceActivationResults,
+            getChoiceActivationResultsSignatureForTest: getChoiceActivationResultsSignature,
+            copySteamFailedKeyForTest: copySteamFailedKey,
+            reconcileChoiceSelectionFromBatchForTest: reconcileChoiceSelectionFromBatch,
             renderChoiceSelectionStateForTest: renderChoiceSelectionState,
             getTestDocument: () => document,
             runDirectChoiceActivation,

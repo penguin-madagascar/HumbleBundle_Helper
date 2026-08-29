@@ -17,7 +17,13 @@ function createTestClassList() {
     };
 }
 
-function loadApi({onRequest = () => {}, lockManager} = {}) {
+function loadApi({
+    onRequest = () => {},
+    lockManager,
+    DateImplementation = Date,
+    setIntervalImplementation = setInterval,
+    clearIntervalImplementation = clearInterval,
+} = {}) {
     const values = new Map();
     let document;
     const element = () => {
@@ -181,13 +187,13 @@ function loadApi({onRequest = () => {}, lockManager} = {}) {
         GM_xmlhttpRequest: onRequest,
         setTimeout,
         clearTimeout,
-        setInterval,
-        clearInterval,
+        setInterval: setIntervalImplementation,
+        clearInterval: clearIntervalImplementation,
         URLSearchParams,
         Map,
         Set,
         Promise,
-        Date,
+        Date: DateImplementation,
         Math,
         JSON,
         Array,
@@ -247,6 +253,944 @@ const successResponse = {
     purchase_result_details: 0,
     purchase_receipt_info: {line_items: [{packageid: 1}]},
 };
+
+function createFastPolling() {
+    let now = 0;
+    class FastDate extends Date {
+        static now() {
+            now += 1000;
+            return now;
+        }
+    }
+    return {
+        DateImplementation: FastDate,
+        setIntervalImplementation(callback) {
+            const handle = {active: true};
+            const tick = () => queueMicrotask(() => {
+                if (!handle.active) return;
+                callback();
+                if (handle.active) tick();
+            });
+            tick();
+            return handle;
+        },
+        clearIntervalImplementation(handle) {
+            handle.active = false;
+        },
+    };
+}
+
+const immediateLockManager = {
+    request(name, options, callback) {
+        return callback({name});
+    },
+};
+
+function createChoiceModalHarness(api, {
+    title = 'Choice game',
+    rowDefinitions,
+    unsafeClose = false,
+} = {}) {
+    const document = api.getTestDocument();
+    const definitions = rowDefinitions || [];
+    const events = [];
+    const clicks = definitions.map(() => 0);
+    const reads = definitions.map(() => 0);
+    let rowQueries = 0;
+    let modalChecks = 0;
+    let globalError = false;
+    let opened = 0;
+
+    const titleElement = {textContent: title};
+    const closeButton = {
+        className: 'close',
+        disabled: false,
+        textContent: 'Close',
+        getAttribute() { return null; },
+        getClientRects() { return [{}]; },
+        click() {
+            events.push('close');
+            if (!unsafeClose) document.elements.delete('site-modal');
+        },
+    };
+
+    const createField = value => ({
+        disabled: false,
+        textContent: value,
+        value,
+        getClientRects() { return [{}]; },
+    });
+    const createRow = (definition, index) => {
+        const state = definition.state;
+        const keys = [...(definition.keys || [])];
+        const control = definition.hasControl === false ? null : {
+            disabled: definition.controlDisabled === true,
+            getClientRects() { return [{}]; },
+            click() {
+                clicks[index] += 1;
+                events.push(`click:${index}`);
+                definition.state = 'loading';
+                definition.onClick?.({
+                    definition,
+                    definitions,
+                    document,
+                    events,
+                    setGlobalError(value = true) { globalError = value; },
+                });
+            },
+        };
+        return {
+            classList: {
+                contains(name) { return state === name; },
+            },
+            querySelector(selector) {
+                return selector === '.js-keyfield.keyfield.enabled' ? control : null;
+            },
+            querySelectorAll(selector) {
+                reads[index] += 1;
+                if (selector === 'input, textarea') return [];
+                if (selector === '.keyfield-value') return keys.map(createField);
+                return [];
+            },
+        };
+    };
+    const modal = {
+        textContent: title,
+        getClientRects() {
+            modalChecks += 1;
+            return [{}];
+        },
+        querySelector(selector) {
+            if (selector === '.js-select-choice-container.error') {
+                return globalError ? {textContent: 'claim failed'} : null;
+            }
+            return null;
+        },
+        querySelectorAll(selector) {
+            if (selector === '.key-redeemer') {
+                rowQueries += 1;
+                definitions.forEach(definition => definition.onRowsQueried?.({
+                    definition,
+                    definitions,
+                    document,
+                    rowQueries,
+                    setGlobalError(value = true) { globalError = value; },
+                }));
+                return definitions.map(createRow);
+            }
+            if (selector === 'button, a, [role="button"]') return [closeButton];
+            if (selector.includes('.human-name-title') && selector.includes('h1')) {
+                return [titleElement];
+            }
+            return [];
+        },
+    };
+    const tile = {
+        textContent: title,
+        querySelector() { return null; },
+        click() {
+            opened += 1;
+            events.push('open');
+            document.elements.set('site-modal', modal);
+        },
+    };
+
+    return {
+        clicks,
+        definitions,
+        events,
+        modal,
+        reads,
+        tile,
+        get opened() { return opened; },
+        get rowQueries() { return rowQueries; },
+        get modalChecks() { return modalChecks; },
+        setGlobalError(value = true) { globalError = value; },
+    };
+}
+
+function completedBatch(items, id = 'completed-batch') {
+    return {
+        version: 2,
+        id,
+        state: 'complete',
+        runner: {phase: null, owner: null, leaseExpiresAt: null},
+        ownershipRefresh: {
+            state: 'complete',
+            owner: null,
+            leaseExpiresAt: null,
+            error: null,
+        },
+        items,
+    };
+}
+
+test('Choice key item IDs round-trip canonical indexes and URI-encoded game IDs', () => {
+    const {api} = loadApi();
+    const gameId = 'machine:name / 游戏?';
+    const encoded = api.encodeChoiceActivationItemId(gameId, 12);
+
+    assert.equal(
+        encoded,
+        'hb-helper-key-v1:12:machine%3Aname%20%2F%20%E6%B8%B8%E6%88%8F%3F'
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(api.decodeChoiceActivationItemId(encoded))),
+        {gameId, keyIndex: 12}
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(api.decodeChoiceActivationItemId('legacy-game'))),
+        {gameId: 'legacy-game', keyIndex: 0}
+    );
+});
+
+test('Choice key item IDs reject malformed reserved prefixes and decoded slot collisions', () => {
+    const {api} = loadApi();
+    assert.throws(() => api.encodeChoiceActivationItemId('game', -1), {name: 'TypeError'});
+    assert.throws(() => api.encodeChoiceActivationItemId('game', 1.5), {name: 'TypeError'});
+    assert.throws(() => api.encodeChoiceActivationItemId('', 0), {name: 'TypeError'});
+    for (const id of [
+        'hb-helper-key-v1:',
+        'hb-helper-key-v1:01:game',
+        'hb-helper-key-v1:-1:game',
+        'hb-helper-key-v1:9007199254740992:game',
+        'hb-helper-key-v1:0:',
+        'hb-helper-key-v1:0:%41',
+        'hb-helper-key-v1:0:%E0%A4%A',
+    ]) {
+        assert.equal(api.decodeChoiceActivationItemId(id), null, id);
+    }
+
+    const collision = completedBatch([
+        {id: 'same-game', title: 'Same game', key: null, status: 'activated'},
+        {
+            id: 'hb-helper-key-v1:0:same-game',
+            title: 'Same game',
+            key: null,
+            status: 'activated',
+        },
+    ]);
+    assert.equal(api.getChoiceActivationBatchForTest(collision), null);
+});
+
+test('already-redeemed Choice rows yield exactly one unique key without clicks', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowDefinitions: [
+            {state: 'redeemed', keys: ['AAAAA-BBBBB-CCCCC']},
+            {state: 'redeemed', keys: []},
+            {state: 'redeemed', keys: ['DDDDD-EEEEE-FFFFF', 'GGGGG-HHHHH-IIIII']},
+            {state: 'redeemed', keys: ['JJJJJ-KKKKK-LLLLL', 'JJJJJ-KKKKK-LLLLL']},
+        ],
+    });
+
+    const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+        skipIndexes: new Set(),
+    });
+
+    assert.deepEqual(JSON.parse(JSON.stringify(outcomes)), [
+        {keyIndex: 0, key: 'AAAAA-BBBBB-CCCCC'},
+        {keyIndex: 1, key: null, error: 'Humble did not provide a Steam key for this game.'},
+        {keyIndex: 2, key: null, error: 'Humble did not provide a Steam key for this game.'},
+        {keyIndex: 3, key: 'JJJJJ-KKKKK-LLLLL'},
+    ]);
+    assert.deepEqual(harness.clicks, [0, 0, 0, 0]);
+});
+
+test('Choice Get rows reveal once each and wait for the current replacement row before the next click', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowDefinitions: [
+            {
+                state: 'ready',
+                onClick({definition, events}) {
+                    queueMicrotask(() => {
+                        definition.state = 'redeemed';
+                        definition.keys = ['AAAAA-BBBBB-CCCCC'];
+                        events.push('settle:0');
+                    });
+                },
+            },
+            {
+                state: 'ready',
+                onClick({definition, events}) {
+                    queueMicrotask(() => {
+                        definition.state = 'redeemed';
+                        definition.keys = ['DDDDD-EEEEE-FFFFF'];
+                        events.push('settle:1');
+                    });
+                },
+            },
+        ],
+    });
+
+    const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+        skipIndexes: new Set(),
+    });
+
+    assert.deepEqual(JSON.parse(JSON.stringify(outcomes)), [
+        {keyIndex: 0, key: 'AAAAA-BBBBB-CCCCC'},
+        {keyIndex: 1, key: 'DDDDD-EEEEE-FFFFF'},
+    ]);
+    assert.deepEqual(harness.clicks, [1, 1]);
+    assert.deepEqual(harness.events, [
+        'open',
+        'click:0',
+        'settle:0',
+        'click:1',
+        'settle:1',
+        'close',
+    ]);
+    assert.ok(harness.rowQueries >= 5, 'replacement rows must be re-queried');
+});
+
+test('a terminal Choice row error is recorded and does not block a later sibling row', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowDefinitions: [
+            {
+                state: 'ready',
+                onClick({definition}) {
+                    queueMicrotask(() => { definition.state = 'error'; });
+                },
+            },
+            {
+                state: 'ready',
+                onClick({definition}) {
+                    queueMicrotask(() => {
+                        definition.state = 'redeemed';
+                        definition.keys = ['DDDDD-EEEEE-FFFFF'];
+                    });
+                },
+            },
+        ],
+    });
+
+    const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+        skipIndexes: new Set(),
+    });
+
+    assert.equal(outcomes[0].keyIndex, 0);
+    assert.equal(outcomes[0].key, null);
+    assert.match(outcomes[0].error, /Humble/);
+    assert.deepEqual(JSON.parse(JSON.stringify(outcomes[1])), {
+        keyIndex: 1,
+        key: 'DDDDD-EEEEE-FFFFF',
+    });
+    assert.deepEqual(harness.clicks, [1, 1]);
+});
+
+test('prior-success Choice slots are neither read nor clicked and return no outcome', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowDefinitions: [
+            {state: 'redeemed', keys: ['AAAAA-BBBBB-CCCCC']},
+            {state: 'redeemed', keys: ['DDDDD-EEEEE-FFFFF']},
+        ],
+    });
+
+    const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+        skipIndexes: new Set([0]),
+    });
+
+    assert.deepEqual(JSON.parse(JSON.stringify(outcomes)), [
+        {keyIndex: 1, key: 'DDDDD-EEEEE-FFFFF'},
+    ]);
+    assert.equal(harness.reads[0], 0);
+    assert.equal(harness.clicks[0], 0);
+});
+
+test('missing or disabled Choice reveal controls fail locally without clicking siblings early', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowDefinitions: [
+            {state: 'ready', hasControl: false},
+            {state: 'ready', controlDisabled: true},
+            {
+                state: 'ready',
+                onClick({definition}) {
+                    queueMicrotask(() => {
+                        definition.state = 'redeemed';
+                        definition.keys = ['AAAAA-BBBBB-CCCCC'];
+                    });
+                },
+            },
+        ],
+    });
+
+    const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+        skipIndexes: new Set(),
+    });
+
+    assert.equal(outcomes[0].key, null);
+    assert.equal(outcomes[1].key, null);
+    assert.equal(outcomes[2].key, 'AAAAA-BBBBB-CCCCC');
+    assert.deepEqual(harness.clicks, [0, 0, 1]);
+});
+
+test('a pre-existing global Choice claim error fails every row without a reveal click', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowDefinitions: [
+            {state: 'ready'},
+            {state: 'ready'},
+        ],
+    });
+    harness.setGlobalError();
+
+    const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+        skipIndexes: new Set(),
+    });
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(outcomes.map(outcome => outcome.keyIndex))),
+        [0, 1]
+    );
+    assert.deepEqual(harness.clicks, [0, 0]);
+});
+
+test('global, timeout, modal-identity, and row-count failures stop clicks and fail every remaining slot', async t => {
+    const cases = [
+        {
+            name: 'global error',
+            onClick({setGlobalError}) {
+                queueMicrotask(() => setGlobalError());
+            },
+        },
+        {name: 'sustained timeout', onClick() {}},
+        {
+            name: 'modal identity change',
+            onClick({document}) {
+                queueMicrotask(() => document.elements.delete('site-modal'));
+            },
+        },
+        {
+            name: 'row-count change',
+            onClick({definitions}) {
+                queueMicrotask(() => definitions.pop());
+            },
+        },
+    ];
+
+    for (const scenario of cases) {
+        await t.test(scenario.name, async () => {
+            const {api} = loadApi(createFastPolling());
+            const harness = createChoiceModalHarness(api, {
+                rowDefinitions: [
+                    {state: 'ready', onClick: scenario.onClick},
+                    {state: 'ready'},
+                    {state: 'ready'},
+                ],
+            });
+
+            const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+                skipIndexes: new Set([1]),
+            });
+
+            assert.deepEqual(
+                JSON.parse(JSON.stringify(outcomes.map(outcome => outcome.keyIndex))),
+                [0, 2]
+            );
+            assert.ok(outcomes.every(outcome => outcome.key === null && outcome.error));
+            assert.equal(harness.clicks[0], 1);
+            assert.equal(harness.clicks[1], 0);
+            assert.equal(harness.clicks[2] || 0, 0);
+            assert.ok(harness.rowQueries >= 2, 'row count must be polled');
+            assert.ok(harness.modalChecks >= 2, 'modal identity must be polled');
+            if (scenario.name === 'sustained timeout') {
+                assert.ok(harness.rowQueries > 10, 'timeout must require sustained polling');
+            }
+        });
+    }
+});
+
+test('one Choice tile with three row outcomes creates three unique flat v2 items', async () => {
+    const {api} = loadApi();
+    const result = await api.runChoiceCollectionWork(
+        [{id: 'game/one', title: 'Game one'}],
+        {
+            lockManager: immediateLockManager,
+            owner: 'collector',
+            revealKeys: async () => [
+                {keyIndex: 0, key: 'AAAAA-BBBBB-CCCCC'},
+                {
+                    keyIndex: 1,
+                    key: null,
+                    error: 'Humble did not provide a Steam key for this game.',
+                },
+                {keyIndex: 2, key: 'DDDDD-EEEEE-FFFFF'},
+            ],
+        }
+    );
+
+    assert.equal(result.started, true);
+    assert.equal(result.pendingCount, 2);
+    assert.equal(result.batch.version, 2);
+    assert.equal(result.batch.items.length, 3);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(result.batch.items.map(item => item.id))),
+        [
+            'hb-helper-key-v1:0:game%2Fone',
+            'hb-helper-key-v1:1:game%2Fone',
+            'hb-helper-key-v1:2:game%2Fone',
+        ]
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(
+            result.batch.items.map(item => Object.keys(item).sort().join(','))
+        )),
+        ['id,key,status,title', 'error,id,key,status,title', 'id,key,status,title']
+    );
+    assert.equal(api.getChoiceActivationBatchForTest(result.batch)?.items.length, 3);
+});
+
+test('retry carries only activated composite slots and reveals only prior failed indexes', async () => {
+    const {api} = loadApi();
+    api.setChoiceActivationBatchForTest(completedBatch([
+        {
+            id: 'hb-helper-key-v1:0:retry-game',
+            title: 'Old title',
+            key: null,
+            status: 'activated',
+        },
+        {
+            id: 'hb-helper-key-v1:1:retry-game',
+            title: 'Old title',
+            key: 'OLDFA-ILEDK-EY000',
+            status: 'steam-activation-failed',
+            error: 'old failure',
+            code: 9,
+        },
+        {
+            id: 'hb-helper-key-v1:2:retry-game',
+            title: 'Old title',
+            key: null,
+            status: 'activated',
+        },
+    ]));
+    let observedSkipIndexes;
+    let collectingMarkers;
+
+    const result = await api.runChoiceCollectionWork(
+        [{id: 'retry-game', title: 'Current title'}],
+        {
+            lockManager: immediateLockManager,
+            owner: 'collector',
+            revealKeys: async (item, {skipIndexes}) => {
+                observedSkipIndexes = [...skipIndexes];
+                collectingMarkers = api.getChoiceActivationBatchForTest();
+                return [{keyIndex: 1, key: 'NEWKE-Y0000-11111'}];
+            },
+        }
+    );
+
+    assert.deepEqual(observedSkipIndexes, [0, 2]);
+    assert.equal(collectingMarkers.state, 'collecting');
+    assert.deepEqual(
+        collectingMarkers.items.map(item => ({
+            id: item.id,
+            title: item.title,
+            key: item.key,
+            status: item.status,
+        })),
+        [
+            {
+                id: 'hb-helper-key-v1:0:retry-game',
+                title: 'Current title',
+                key: null,
+                status: 'activated',
+            },
+            {
+                id: 'hb-helper-key-v1:2:retry-game',
+                title: 'Current title',
+                key: null,
+                status: 'activated',
+            },
+        ]
+    );
+    assert.equal(
+        result.batch.items.some(item => item.key === 'OLDFA-ILEDK-EY000'),
+        false
+    );
+    assert.equal(result.batch.items.find(item => item.id.includes(':1:')).key, 'NEWKE-Y0000-11111');
+});
+
+test('two partial retries preserve cumulative success markers', async () => {
+    const {api} = loadApi();
+    api.setChoiceActivationBatchForTest(completedBatch([
+        {
+            id: 'hb-helper-key-v1:0:cumulative-game',
+            title: 'Cumulative game',
+            key: null,
+            status: 'activated',
+        },
+        {
+            id: 'hb-helper-key-v1:1:cumulative-game',
+            title: 'Cumulative game',
+            key: null,
+            status: 'humble-key-retrieval-failed',
+            error: 'first failure',
+        },
+        {
+            id: 'hb-helper-key-v1:2:cumulative-game',
+            title: 'Cumulative game',
+            key: null,
+            status: 'humble-key-retrieval-failed',
+            error: 'second failure',
+        },
+    ], 'retry-zero'));
+    let firstSkips;
+    const first = await api.runChoiceCollectionWork(
+        [{id: 'cumulative-game', title: 'Cumulative game'}],
+        {
+            lockManager: immediateLockManager,
+            owner: 'first-retry',
+            revealKeys: async (item, {skipIndexes}) => {
+                firstSkips = [...skipIndexes];
+                return [
+                    {keyIndex: 1, key: 'AAAAA-BBBBB-CCCCC'},
+                    {keyIndex: 2, key: null, error: 'still failed'},
+                ];
+            },
+        }
+    );
+    assert.deepEqual(firstSkips, [0]);
+
+    const afterFirst = JSON.parse(JSON.stringify(first.batch));
+    afterFirst.id = 'retry-one-complete';
+    afterFirst.state = 'complete';
+    afterFirst.runner = {phase: null, owner: null, leaseExpiresAt: null};
+    afterFirst.ownershipRefresh = {
+        state: 'complete',
+        owner: null,
+        leaseExpiresAt: null,
+        error: null,
+    };
+    const newlyActivated = afterFirst.items.find(item => item.id.includes(':1:'));
+    newlyActivated.status = 'activated';
+    newlyActivated.key = null;
+    api.setChoiceActivationBatchForTest(afterFirst);
+
+    let secondSkips;
+    const second = await api.runChoiceCollectionWork(
+        [{id: 'cumulative-game', title: 'Cumulative game'}],
+        {
+            lockManager: immediateLockManager,
+            owner: 'second-retry',
+            revealKeys: async (item, {skipIndexes}) => {
+                secondSkips = [...skipIndexes];
+                return [{keyIndex: 2, key: 'DDDDD-EEEEE-FFFFF'}];
+            },
+        }
+    );
+
+    assert.deepEqual(secondSkips, [0, 1]);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(second.batch.items.map(item => ({
+            keyIndex: api.decodeChoiceActivationItemId(item.id).keyIndex,
+            status: item.status,
+            key: item.key,
+        })).sort((left, right) => left.keyIndex - right.keyIndex))),
+        [
+            {keyIndex: 0, status: 'activated', key: null},
+            {keyIndex: 1, status: 'activated', key: null},
+            {keyIndex: 2, status: 'pending-steam-activation', key: 'DDDDD-EEEEE-FFFFF'},
+        ]
+    );
+});
+
+test('an all-activated composite group completes without opening its modal', async () => {
+    const {api} = loadApi();
+    api.setChoiceActivationBatchForTest(completedBatch([
+        {
+            id: 'hb-helper-key-v1:1:complete-game',
+            title: 'Complete game',
+            key: null,
+            status: 'activated',
+        },
+        {
+            id: 'hb-helper-key-v1:0:complete-game',
+            title: 'Complete game',
+            key: null,
+            status: 'activated',
+        },
+    ]));
+    let revealCalls = 0;
+    let activationCalls = 0;
+    const tile = {click() { assert.fail('known-complete modal must not open'); }};
+
+    const result = await api.runDirectChoiceActivation(
+        [{id: 'complete-game', title: 'Complete game', tile}],
+        {
+            syncSession: async () => authenticatedState('live-session'),
+            collectionOptions: {
+                lockManager: immediateLockManager,
+                owner: 'collector',
+                revealKeys: async () => { revealCalls += 1; },
+            },
+            activationWork: async () => { activationCalls += 1; },
+        }
+    );
+
+    assert.equal(revealCalls, 0);
+    assert.equal(activationCalls, 0);
+    assert.equal(result.started, true);
+    assert.equal(result.pendingCount, 0);
+    assert.equal(result.batch.state, 'complete');
+    assert.equal(result.batch.items.length, 2);
+    assert.ok(result.batch.items.every(item => item.status === 'activated' && item.key === null));
+    assert.ok(api.getChoiceActivationBatchForTest(result.batch));
+});
+
+test('a legacy activated ID skips slot zero but still opens the modal to discover siblings', async () => {
+    const {api} = loadApi();
+    api.setChoiceActivationBatchForTest(completedBatch([
+        {id: 'legacy-game', title: 'Legacy game', key: null, status: 'activated'},
+    ]));
+    let revealCalls = 0;
+    let observedSkips;
+
+    const result = await api.runChoiceCollectionWork(
+        [{id: 'legacy-game', title: 'Legacy current title'}],
+        {
+            lockManager: immediateLockManager,
+            owner: 'collector',
+            revealKeys: async (item, {skipIndexes}) => {
+                revealCalls += 1;
+                observedSkips = [...skipIndexes];
+                return [{keyIndex: 1, key: 'AAAAA-BBBBB-CCCCC'}];
+            },
+        }
+    );
+
+    assert.equal(revealCalls, 1);
+    assert.deepEqual(observedSkips, [0]);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(result.batch.items.map(item => item.id))),
+        [
+            'hb-helper-key-v1:0:legacy-game',
+            'hb-helper-key-v1:1:legacy-game',
+        ]
+    );
+});
+
+test('an unsafe modal close discards buffered row outcomes and stops later tiles', async () => {
+    const {api} = loadApi(createFastPolling());
+    const persistedItemCounts = [];
+    const observePersistedBatch = () => {
+        persistedItemCounts.push(api.getChoiceActivationBatchForTest()?.items.length ?? -1);
+    };
+    const unsafe = createChoiceModalHarness(api, {
+        title: 'Unsafe game',
+        unsafeClose: true,
+        rowDefinitions: [
+            {
+                state: 'redeemed',
+                keys: ['AAAAA-BBBBB-CCCCC'],
+                onRowsQueried: observePersistedBatch,
+            },
+            {
+                state: 'redeemed',
+                keys: ['DDDDD-EEEEE-FFFFF'],
+                onRowsQueried: observePersistedBatch,
+            },
+        ],
+    });
+    const later = createChoiceModalHarness(api, {
+        title: 'Later game',
+        rowDefinitions: [{state: 'redeemed', keys: ['GGGGG-HHHHH-IIIII']}],
+    });
+
+    const result = await api.runChoiceCollectionWork(
+        [
+            {id: 'unsafe-game', title: 'Unsafe game', tile: unsafe.tile},
+            {id: 'later-game', title: 'Later game', tile: later.tile},
+        ],
+        {lockManager: immediateLockManager, owner: 'collector'}
+    );
+
+    assert.equal(later.opened, 0);
+    assert.equal(result.batch.items.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(result.batch.items[0])), {
+        id: 'hb-helper-key-v1:0:unsafe-game',
+        title: 'Unsafe game',
+        key: null,
+        status: 'humble-key-retrieval-failed',
+        error: 'Could not safely close the Humble details dialog for Unsafe game. The key was not queued.',
+    });
+    assert.equal(result.batch.items.some(item => item.key), false);
+    assert.ok(persistedItemCounts.length > 0);
+    assert.ok(persistedItemCounts.every(count => count === 0));
+});
+
+test('same-game row labels use the highest decoded slot in results, copy feedback, and signatures', () => {
+    const {api} = loadApi();
+    const document = api.getTestDocument();
+    const batch = completedBatch([
+        {
+            id: 'hb-helper-key-v1:0:label-game',
+            title: 'Label game',
+            key: null,
+            status: 'humble-key-retrieval-failed',
+            error: 'row failed',
+        },
+        {
+            id: 'hb-helper-key-v1:1:label-game',
+            title: 'Label game',
+            key: 'AAAAA-BBBBB-CCCCC',
+            status: 'steam-activation-failed',
+            error: 'Steam failed',
+            code: 9,
+        },
+        {
+            id: 'hb-helper-key-v1:2:label-game',
+            title: 'Label game',
+            key: null,
+            status: 'activated',
+        },
+    ]);
+    const results = document.createElement('div');
+    results.id = 'hb-helper-choice-activation-results';
+    document.body.appendChild(results);
+
+    assert.deepEqual(
+        batch.items.map(item => api.getChoiceActivationDisplayLabelForTest(batch, item)),
+        [
+            'Label game (key 1/3)',
+            'Label game (key 2/3)',
+            'Label game (key 3/3)',
+        ]
+    );
+    assert.equal(
+        api.getChoiceActivationDisplayLabelForTest(
+            completedBatch([{id: 'single', title: 'Single', key: null, status: 'activated'}]),
+            {id: 'single', title: 'Single'}
+        ),
+        'Single'
+    );
+
+    api.renderChoiceActivationResultsForTest(batch);
+    assert.match(results.children[0].textContent, /^3 processed:/);
+    assert.match(results.children[1].children[1].children[0].textContent, /Label game \(key 1\/3\)/);
+    const steamFailureRow = results.children[2].children[1];
+    assert.match(steamFailureRow.children[0].textContent, /Label game \(key 2\/3\)/);
+    assert.equal(
+        steamFailureRow.children[1].getAttribute('aria-label'),
+        'Copy the failed Steam key for Label game (key 2/3)'
+    );
+
+    const signature = JSON.parse(api.getChoiceActivationResultsSignatureForTest(batch));
+    assert.deepEqual(signature.failures.map(failure => failure.title), [
+        'Label game (key 1/3)',
+        'Label game (key 2/3)',
+    ]);
+    const feedback = {textContent: ''};
+    let copied;
+    api.copySteamFailedKeyForTest(
+        batch,
+        batch.items[1],
+        feedback,
+        (key, type) => { copied = {key, type}; }
+    );
+    assert.deepEqual(copied, {key: 'AAAAA-BBBBB-CCCCC', type: 'text'});
+    assert.equal(feedback.textContent, 'Copied the Steam key for Label game (key 2/3).');
+    assert.equal(batch.items[1].title, 'Label game');
+
+    const sparseBatch = completedBatch([
+        {
+            id: 'hb-helper-key-v1:0:sparse-game',
+            title: 'Sparse game',
+            key: null,
+            status: 'activated',
+        },
+        {
+            id: 'hb-helper-key-v1:2:sparse-game',
+            title: 'Sparse game',
+            key: null,
+            status: 'humble-key-retrieval-failed',
+            error: 'missing sibling',
+        },
+    ]);
+    assert.deepEqual(
+        sparseBatch.items.map(item =>
+            api.getChoiceActivationDisplayLabelForTest(sparseBatch, item)
+        ),
+        ['Sparse game (key 1/3)', 'Sparse game (key 3/3)']
+    );
+});
+
+test('Steam activation progress derives sibling labels without changing persisted titles', async () => {
+    const {api} = loadApi();
+    const batch = activationBatch([
+        {
+            id: 'hb-helper-key-v1:0:progress-game',
+            title: 'Progress game',
+            key: 'AAAAA-BBBBB-CCCCC',
+        },
+        {
+            id: 'hb-helper-key-v1:1:progress-game',
+            title: 'Progress game',
+            key: 'DDDDD-EEEEE-FFFFF',
+        },
+    ]);
+    const labels = [];
+
+    await api.processSteamActivationBatch(
+        batch,
+        'live-session',
+        async () => successResponse,
+        () => true,
+        (item, index, total, label) => labels.push(label)
+    );
+
+    assert.deepEqual(labels, [
+        'Progress game (key 1/2)',
+        'Progress game (key 2/2)',
+    ]);
+    assert.ok(batch.items.every(item => item.title === 'Progress game'));
+});
+
+test('Choice selection clears only when every decoded slot for that game activated', () => {
+    const {api} = loadApi();
+    const partialSelection = new Set(['same-game', 'other-game']);
+    const partialBatch = completedBatch([
+        {
+            id: 'hb-helper-key-v1:0:same-game',
+            title: 'Same game',
+            key: null,
+            status: 'activated',
+        },
+        {
+            id: 'hb-helper-key-v1:1:same-game',
+            title: 'Same game',
+            key: 'AAAAA-BBBBB-CCCCC',
+            status: 'steam-activation-failed',
+            error: 'failed',
+            code: 9,
+        },
+        {id: 'other-game', title: 'Other game', key: null, status: 'activated'},
+    ]);
+
+    api.reconcileChoiceSelectionFromBatchForTest(partialBatch, partialSelection);
+    assert.deepEqual([...partialSelection], ['same-game']);
+
+    const completedSelection = new Set(['same-game']);
+    api.reconcileChoiceSelectionFromBatchForTest(completedBatch([
+        {
+            id: 'hb-helper-key-v1:0:same-game',
+            title: 'Same game',
+            key: null,
+            status: 'activated',
+        },
+        {
+            id: 'hb-helper-key-v1:1:same-game',
+            title: 'Same game',
+            key: null,
+            status: 'activated',
+        },
+    ]), completedSelection);
+    assert.deepEqual([...completedSelection], []);
+});
 
 test('Choice activation UI is available only for an authenticated Steam snapshot', () => {
     const {api} = loadApi();
@@ -423,8 +1367,16 @@ test('submits Steam keys sequentially to ajaxregisterkey with the in-memory sess
         },
     });
     const batch = activationBatch([
-        {id: 'one', title: 'One', key: 'AAAAA-BBBBB-CCCCC'},
-        {id: 'two', title: 'Two', key: 'DDDDD-EEEEE-FFFFF'},
+        {
+            id: 'hb-helper-key-v1:0:serial-game',
+            title: 'Serial game',
+            key: 'AAAAA-BBBBB-CCCCC',
+        },
+        {
+            id: 'hb-helper-key-v1:1:serial-game',
+            title: 'Serial game',
+            key: 'DDDDD-EEEEE-FFFFF',
+        },
     ]);
     let activeRequests = 0;
     let maxActiveRequests = 0;
@@ -463,8 +1415,16 @@ test('continues after an item-local Steam product failure', async () => {
     const {api} = loadApi();
     const submitted = [];
     const batch = activationBatch([
-        {id: 'one', title: 'One', key: 'AAAAA-BBBBB-CCCCC'},
-        {id: 'two', title: 'Two', key: 'DDDDD-EEEEE-FFFFF'},
+        {
+            id: 'hb-helper-key-v1:0:sibling-game',
+            title: 'Sibling game',
+            key: 'AAAAA-BBBBB-CCCCC',
+        },
+        {
+            id: 'hb-helper-key-v1:1:sibling-game',
+            title: 'Sibling game',
+            key: 'DDDDD-EEEEE-FFFFF',
+        },
     ]);
 
     await api.processSteamActivationBatch(
@@ -573,12 +1533,16 @@ test('cancels an interrupted batch only after acquiring the activation Web Lock'
     const {api, values} = loadApi();
     const batch = activationBatch([
         {
-            id: 'one',
-            title: 'One',
+            id: 'hb-helper-key-v1:0:interrupted-game',
+            title: 'Interrupted game',
             key: 'AAAAA-BBBBB-CCCCC',
             status: 'activating',
         },
-        {id: 'two', title: 'Two', key: 'DDDDD-EEEEE-FFFFF'},
+        {
+            id: 'hb-helper-key-v1:1:interrupted-game',
+            title: 'Interrupted game',
+            key: 'DDDDD-EEEEE-FFFFF',
+        },
     ], 'previous-page');
     api.setChoiceActivationBatchForTest(batch);
     const originalSet = values.set.bind(values);
@@ -614,7 +1578,11 @@ test('cancels an interrupted batch only after acquiring the activation Web Lock'
 test('a foreign tab leaves an unexpired collection-to-activation handoff untouched', async () => {
     const {api} = loadApi();
     const batch = activationBatch([
-        {id: 'one', title: 'One', key: 'AAAAA-BBBBB-CCCCC'},
+        {
+            id: 'hb-helper-key-v1:0:handoff-game',
+            title: 'Handoff game',
+            key: 'AAAAA-BBBBB-CCCCC',
+        },
     ], 'originating-tab');
     batch.runner.leaseExpiresAt = 2000;
     const lockManager = {
@@ -683,7 +1651,11 @@ test('a foreign tab leaves an unexpired collection-to-activation handoff untouch
 test('a visible foreign tab retries at lease expiry and cancels abandoned activation without resuming it', async () => {
     const {api} = loadApi();
     const batch = activationBatch([
-        {id: 'one', title: 'One', key: 'AAAAA-BBBBB-CCCCC'},
+        {
+            id: 'hb-helper-key-v1:0:abandoned-game',
+            title: 'Abandoned game',
+            key: 'AAAAA-BBBBB-CCCCC',
+        },
     ], 'abandoned-tab');
     batch.runner.leaseExpiresAt = 2000;
     api.setChoiceActivationBatchForTest(batch);
@@ -733,7 +1705,11 @@ test('a visible foreign tab retries at lease expiry and cancels abandoned activa
 test('a queued second Humble tab rechecks the completed batch after the first runner releases the lock', async () => {
     const {api} = loadApi();
     const batch = activationBatch([
-        {id: 'one', title: 'One', key: 'AAAAA-BBBBB-CCCCC'},
+        {
+            id: 'hb-helper-key-v1:0:queued-game',
+            title: 'Queued game',
+            key: 'AAAAA-BBBBB-CCCCC',
+        },
     ], 'first-tab');
     api.setChoiceActivationBatchForTest(batch);
     const queue = [];
