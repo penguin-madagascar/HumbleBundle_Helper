@@ -132,18 +132,43 @@ function createDocument() {
     };
 }
 
-function loadPriceTotalsApi({language = 'en', account = {}} = {}) {
+function loadPriceTotalsApi({language = 'en', account = {}, pathname = '/membership'} = {}) {
     const document = createDocument();
+    const location = {
+        origin: 'https://www.humblebundle.com',
+        hostname: 'www.humblebundle.com',
+        pathname,
+        search: '',
+        href: `https://www.humblebundle.com${pathname}`,
+    };
+    const applyLocation = url => {
+        const next = new URL(url, location.href);
+        location.origin = next.origin;
+        location.hostname = next.hostname;
+        location.pathname = next.pathname;
+        location.search = next.search;
+        location.href = next.href;
+    };
+    const history = {
+        pushState(state, title, url) {
+            if (url !== undefined && url !== null) applyLocation(url);
+        },
+        replaceState(state, title, url) {
+            if (url !== undefined && url !== null) applyLocation(url);
+        },
+    };
     const context = {
         __HB_HELPER_TEST__: true,
         console: {log() {}, warn(...args) { warnings.push(args); }, error() {}},
         document,
         navigator: {language, languages: [language]},
-        location: {
-            hostname: 'www.humblebundle.com',
-            pathname: '/membership',
-            search: '',
-            href: 'https://www.humblebundle.com/membership',
+        location,
+        history,
+        addEventListener() {},
+        removeEventListener() {},
+        MutationObserver: class {
+            observe() {}
+            disconnect() {}
         },
         DOMParser: class {
             parseFromString() {
@@ -162,6 +187,7 @@ function loadPriceTotalsApi({language = 'en', account = {}} = {}) {
         setInterval,
         clearInterval,
         URLSearchParams,
+        URL,
         Map,
         Set,
         WeakMap,
@@ -338,6 +364,35 @@ test('title changes and query changes remain in the same price-result context', 
     secondApp.resolve({appid: 20, name: 'Game B'});
     await loading;
     assert.match(summary.textContent, /2\/2 Steam items identified/);
+});
+
+test('query-only route synchronization retains DOM until its latest refresh completes', async () => {
+    const {api, context, summary} = loadPriceTotalsApi({pathname: '/games/example-bundle'});
+    await api.loadPriceTotalsForTest(['Example Game'], priceDependencies());
+    const nextPrice = deferred();
+    let startQueryRefresh = false;
+    let queryRefresh;
+    const syncSession = async () => {
+        if (startQueryRefresh) {
+            queryRefresh = api.loadPriceTotalsForTest(['Example Game'], priceDependencies({
+                fetchPriceHistory: () => nextPrice.promise,
+            }));
+        }
+    };
+
+    api.installHelperRouteLifecycleForTest({syncSession});
+    await api.waitForHelperRouteForTest();
+    const oldHeader = summary.children[0];
+
+    startQueryRefresh = true;
+    context.history.pushState({}, '', '/games/example-bundle?view=tiles');
+    await api.waitForHelperRouteForTest();
+    assert.strictEqual(summary.children[0], oldHeader);
+
+    nextPrice.resolve({current: 220, original: 270, lowest: 200, currency: 'UAH'});
+    await queryRefresh;
+    assert.notStrictEqual(summary.children[0], oldHeader);
+    assert.match(summary.textContent, /220/);
 });
 
 test('a different valid price pathname does not temporarily show previous totals', async () => {

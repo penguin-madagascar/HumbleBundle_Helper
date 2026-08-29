@@ -6203,7 +6203,6 @@
 
         await syncSession();
         if (!isCurrentRoute()) return {stale: true, mode};
-        if (hasSteamAccountData()) renderPriceTotals();
         refreshHelperPage();
         if (choiceRoute) await reconcileBatch();
         return {mode};
