@@ -118,6 +118,17 @@
     #hb-helper-price-summary .hb-helper-price-title {
       font-weight: bold !important;
     }
+    #hb-helper-price-summary .hb-helper-price-stale {
+      color: #ffd166 !important;
+      flex: 1 1 auto !important;
+      visibility: hidden;
+    }
+    #hb-helper-price-summary .hb-helper-price-scope-controls {
+      display: inline-flex !important;
+      align-items: center !important;
+      flex: 0 0 auto !important;
+      gap: 8px !important;
+    }
     #hb-helper-price-summary .hb-helper-price-header {
       display: flex !important;
       align-items: center !important;
@@ -547,6 +558,7 @@
             steamSyncRetry: 'Retry synchronization',
             steamGiftsSearch: 'Search SteamGifts discussions (for potential region lock)',
             loadingPriceTotals: 'Loading Steam price totals...',
+            stalePriceTotals: 'Refresh failed; showing previous totals.',
             loginSteamCheckOwned: 'Log in to Steam to synchronize account features',
             viewOnSteam: 'View on Steam',
             requestFailedHttp: 'Request failed with HTTP {status}',
@@ -567,6 +579,7 @@
             loginFilterOwned: 'Login to Steam to filter out owned games',
             allItems: 'all items',
             unownedItems: 'unowned items',
+            showingPriceScope: 'Showing: {scope}',
             priceTotalsTitle: 'Steam price totals ({priceRegion})',
             currentPrice: 'Current',
             originalPrice: 'Original',
@@ -652,6 +665,7 @@
             steamSyncRetry: '重新同步',
             steamGiftsSearch: '搜索 SteamGifts 讨论（查看可能的区域限制）',
             loadingPriceTotals: '正在加载 Steam 价格汇总...',
+            stalePriceTotals: '刷新失败，正在显示上次成功的价格汇总。',
             loginSteamCheckOwned: '登录 Steam 以同步账号功能',
             viewOnSteam: '在 Steam 中查看',
             requestFailedHttp: '请求失败，HTTP 状态码 {status}',
@@ -671,6 +685,7 @@
             loginFilterOwned: '登录 Steam 后可过滤已拥有游戏',
             allItems: '全部项目',
             unownedItems: '未拥有项目',
+            showingPriceScope: '当前显示：{scope}',
             priceTotalsTitle: 'Steam 价格汇总（{priceRegion}）',
             currentPrice: '当前价格',
             originalPrice: '原价',
@@ -6418,14 +6433,12 @@
         summary.appendChild(details);
     }
 
-    function renderPriceTotals() {
-        if (!lastPriceResult) return;
-        const summary = document.getElementById('hb-helper-price-summary');
-        if (!summary) return;
+    function createPriceTotalsContent(result, detailsOpen, staleVisible) {
+        const content = document.createElement('div');
 
         const {
             region, currencyCode, humbleCurrencyCode, exchangeRate, games
-        } = lastPriceResult;
+        } = result;
         const canFilterOwned = ownedApps && hasSteamAccountData();
         if (!canFilterOwned) priceScope = 'all';
         const selectedGames = priceScope === 'unowned'
@@ -6455,20 +6468,30 @@
         const priceRegion = currencyCode ? `${region}, ${currencyCode}` : region;
         const scope = priceScope === 'all' ? t('allItems') : t('unownedItems');
 
-        summary.textContent = '';
         const header = document.createElement('div');
         header.className = 'hb-helper-price-header';
         const title = document.createElement('div');
         title.className = 'hb-helper-price-title';
         title.textContent = t('priceTotalsTitle', {priceRegion});
+        const staleMarker = document.createElement('span');
+        staleMarker.className = 'hb-helper-price-stale';
+        staleMarker.textContent = t('stalePriceTotals');
+        staleMarker.style.visibility = staleVisible ? 'visible' : 'hidden';
+        if (!staleVisible) staleMarker.setAttribute('aria-hidden', 'true');
+        const scopeControls = document.createElement('div');
+        scopeControls.className = 'hb-helper-price-scope-controls';
+        const currentScope = document.createElement('span');
+        currentScope.className = 'hb-helper-price-scope-label';
+        currentScope.textContent = t('showingPriceScope', {scope});
         const scopeButton = document.createElement('button');
         scopeButton.id = 'hb-helper-price-scope';
         scopeButton.type = 'button';
         scopeButton.title = scopeDescription;
         scopeButton.disabled = !canFilterOwned;
         scopeButton.textContent = scopeLabel;
-        header.append(title, scopeButton);
-        summary.appendChild(header);
+        scopeControls.append(currentScope, scopeButton);
+        header.append(title, staleMarker, scopeControls);
+        content.appendChild(header);
 
         const addPriceLine = (label, value) => {
             const row = document.createElement('div');
@@ -6476,7 +6499,7 @@
             price.className = 'hb-helper-price-value';
             price.textContent = value;
             row.append(`${label}: `, price);
-            summary.appendChild(row);
+            content.appendChild(row);
         };
         addPriceLine(t('currentPrice'), formatTotal(totals.current));
         addPriceLine(t('originalPrice'), formatTotal(totals.original));
@@ -6493,13 +6516,45 @@
             priced: pricedGames.length,
             matched: matchedGames.length,
         });
-        summary.append(matchedLine, pricedLine);
-        appendMatchDetails(summary, unmatchedGames, unpricedGames);
+        content.append(matchedLine, pricedLine);
+        appendMatchDetails(content, unmatchedGames, unpricedGames);
+        const details = content.querySelector('.hb-helper-match-details');
+        if (details) details.open = detailsOpen;
 
         scopeButton.addEventListener('click', () => {
             priceScope = priceScope === 'all' ? 'unowned' : 'all';
             renderPriceTotals();
         });
+        return content;
+    }
+
+    function renderPriceTotals(result = lastPriceResult, expectedRunId) {
+        if (!result) return;
+        const summary = document.getElementById('hb-helper-price-summary');
+        if (!summary) return;
+        const detailsOpen = Boolean(summary.querySelector('.hb-helper-match-details')?.open);
+        const staleVisible = expectedRunId === undefined
+            && summary.querySelector('.hb-helper-price-stale')?.style.visibility === 'visible';
+        const content = createPriceTotalsContent(result, detailsOpen, staleVisible);
+        if (expectedRunId !== undefined && expectedRunId !== priceTotalsRunId) return;
+        lastPriceResult = result;
+        summary.replaceChildren(...content.children);
+    }
+
+    function showStalePriceTotals(summary) {
+        const marker = summary?.querySelector('.hb-helper-price-stale');
+        if (!marker) return;
+        marker.style.visibility = 'visible';
+        marker.removeAttribute('aria-hidden');
+    }
+
+    function getPriceResultContextKey() {
+        const account = steamSessionState.account;
+        return JSON.stringify([
+            getCurrentPath(),
+            account?.countryCode || null,
+            account?.sessionId || null,
+        ]);
     }
 
     function schedulePriceTotalsReload(force = false) {
@@ -6517,17 +6572,29 @@
         loadPriceTotals(titles);
     }
 
-    async function loadPriceTotals(titles) {
+    async function loadPriceTotals(titles, dependencies = {}) {
         if (!hasSteamAccountData()) return;
         const runId = ++priceTotalsRunId;
         const summary = document.getElementById('hb-helper-price-summary');
-        if (summary) summary.textContent = t('loadingPriceTotals');
-        lastPriceResult = null;
+        const contextKey = getPriceResultContextKey();
+        const previousResult = lastPriceResult?.contextKey === contextKey
+            ? lastPriceResult
+            : undefined;
+        if (!previousResult) {
+            lastPriceResult = undefined;
+            if (summary) summary.textContent = t('loadingPriceTotals');
+        }
+        const findApp = dependencies.findSteamApp || findSteamApp;
+        const resolveCurrency = dependencies.resolveHumbleCurrencyCode
+            || resolveHumbleCurrencyCode;
+        const fetchPriceHistory = dependencies.fetchXiaoheihePriceHistory
+            || fetchXiaoheihePriceHistory;
+        const fetchRate = dependencies.fetchExchangeRate || fetchExchangeRate;
 
         try {
-            const humbleCurrencyCodePromise = resolveHumbleCurrencyCode();
+            const humbleCurrencyCodePromise = resolveCurrency();
             const resolvedGames = await Promise.all(titles.map(async title => {
-                const app = await findSteamApp(title);
+                const app = await findApp(title);
                 return {title, appId: app?.appid || null};
             }));
             const games = resolvedGames.filter((game, index) =>
@@ -6541,7 +6608,7 @@
                 try {
                     pricesByAppId.set(
                         appId,
-                        await fetchXiaoheihePriceHistory(appId, steamCountryCode)
+                        await fetchPriceHistory(appId, steamCountryCode)
                     );
                 } catch (error) {
                     console.warn('[HB-Helper] Fetch price failed:', error);
@@ -6556,14 +6623,15 @@
             let exchangeRate;
             if (currencyCode && humbleCurrencyCode && humbleCurrencyCode !== currencyCode) {
                 try {
-                    exchangeRate = await fetchExchangeRate(currencyCode, humbleCurrencyCode);
+                    exchangeRate = await fetchRate(currencyCode, humbleCurrencyCode);
                 } catch (error) {
                     console.warn('[HB-Helper] Fetch exchange rate failed:', error);
                 }
             }
             if (runId !== priceTotalsRunId) return;
 
-            lastPriceResult = {
+            const nextResult = {
+                contextKey,
                 region: steamCountryCode,
                 currencyCode,
                 humbleCurrencyCode,
@@ -6573,11 +6641,12 @@
                     price: pricesByAppId.get(game.appId) || null,
                 })),
             };
-            renderPriceTotals();
+            renderPriceTotals(nextResult, runId);
         } catch (error) {
             if (runId !== priceTotalsRunId) return;
             console.warn('[HB-Helper] Load bundle price totals failed:', error);
-            if (summary) summary.textContent = error.message;
+            if (previousResult) showStalePriceTotals(summary);
+            else if (summary) summary.textContent = error.message;
         }
     }
 
@@ -6908,6 +6977,7 @@
             installHelperRouteLifecycleForTest: installHelperRouteLifecycle,
             waitForHelperRouteForTest: () => helperRouteTransitionPromise,
             getPriceTotalsRunIdForTest: () => priceTotalsRunId,
+            loadPriceTotalsForTest: loadPriceTotals,
             getSelectedChoiceGameIdsForTest: getSelectedChoiceGameIds,
             renderChoiceActivationResultsForTest: renderChoiceActivationResults,
             shouldRefreshForPageMutationsForTest: shouldRefreshForPageMutations,
