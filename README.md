@@ -46,6 +46,11 @@ checks, wishlist checks, and regional prices. Account-dependent price summaries
 and Choice activation controls appear only while that live Steam session is
 authenticated. Download-order activation controls remain disabled until then.
 
+During a retained-account Steam session check, Choice and Downloads keep their
+controls, results, selection mode, and selected presentation. Local selection
+remains usable while `Activate` is temporarily disabled. A settled logout or
+error still applies the existing cleanup and disabled behavior.
+
 The current implementation keeps newly loaded Steam account and session data
 in memory for the current page only; it does not persist new session or account
 data.
@@ -74,12 +79,15 @@ it is not a guarantee that the key is global. Missing or ambiguous metadata is
 not shown. These notices are an early warning based on Humble metadata; Steam's
 activation result is authoritative.
 
-The price summary follows the active Bundle Filters. Use `Show unowned` or
-`Show all` in the top-right corner of the summary to change which games are
-included. If an item cannot be priced, expand the matching details to see
-whether Steam identification or regional price history is missing. HB
-conversion uses the Humble Bundle account Location, defaulting to USD if that
-setting cannot be loaded.
+The price summary follows the active Bundle Filters. Its header shows the
+current all/unowned scope immediately before the existing `Show unowned` or
+`Show all` action. During a same-page refresh, the prior successful values and
+summary dimensions remain visible until the new result is ready to replace them
+atomically. If a background refresh fails, the previous totals remain and a
+localized warning appears beside the title. If an item cannot be priced, expand
+the matching details to see whether Steam identification or regional price
+history is missing. HB conversion uses the Humble Bundle account Location,
+defaulting to USD if that setting cannot be loaded.
 
 ### Humble Choice activation
 
