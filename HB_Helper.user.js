@@ -469,6 +469,11 @@
       display: block !important;
       font-weight: 700 !important;
     }
+    .hb-helper-region-restrictions__key-label {
+      display: block !important;
+      font-weight: 700 !important;
+      margin-bottom: 4px !important;
+    }
     .hb-helper-region-restrictions__list {
       margin-top: 4px !important;
     }
@@ -643,6 +648,7 @@
             regionExclusiveCountries: 'Humble allowlist: {countries}',
             regionDisallowedCountries: 'Humble blocklist: {countries}',
             regionCountryList: 'Show {count} country codes from Humble metadata',
+            regionKeyLabel: 'Key {current}/{total}',
         },
         'zh-CN': {
             settingsMenu: '设置',
@@ -751,6 +757,7 @@
             regionExclusiveCountries: 'Humble 允许列表：{countries}',
             regionDisallowedCountries: 'Humble 禁止列表：{countries}',
             regionCountryList: '显示 Humble 元数据中的 {count} 个国家/地区代码',
+            regionKeyLabel: 'Key {current}/{total}',
         },
     };
 
@@ -6956,15 +6963,56 @@
         return `${getHelperRouteFingerprint()}\n${helperRouteTransitionGeneration}`;
     }
 
-    function removeChoiceRegionRestrictionPanels(modal) {
-        modal?.querySelectorAll?.('.hb-helper-region-restrictions').forEach(panel => panel.remove());
+    function isVisibleChoiceRegionElement(element) {
+        return Boolean(element) && (!element.getClientRects || element.getClientRects().length > 0);
     }
 
-    function getChoiceModalIdentifier(modal) {
-        const title = modal?.querySelector?.('h2.title[data-machine-name]');
+    function isChoiceRegionElementWithin(element, view) {
+        for (let current = element; current; current = current.parentNode) {
+            if (current === view) return true;
+        }
+        return false;
+    }
+
+    function getChoiceRegionViewCandidates() {
+        const candidates = [];
+        const activeModal = getActiveChoiceModal()?.querySelector?.('.choice-modal');
+        if (activeModal) candidates.push(activeModal);
+        candidates.push(...Array.from(document.querySelectorAll?.('.choice-modal') || []));
+        candidates.push(...Array.from(document.querySelectorAll?.('.js-select-choice.select-choice') || []));
+        return [...new Set(candidates)];
+    }
+
+    function clearChoiceRegionRestrictionPanels() {
+        document.querySelectorAll?.('.hb-helper-region-restrictions--choice')
+            .forEach(panel => panel.remove());
+    }
+
+    function getActiveChoiceRegionView() {
+        const views = getChoiceRegionViewCandidates().filter(isVisibleChoiceRegionElement);
+        return views.length === 1 ? views[0] : null;
+    }
+
+    function getChoiceModalIdentifier(view) {
+        const titles = Array.from(view?.querySelectorAll?.('h2.title[data-machine-name]') || []);
+        if (titles.length !== 1) return titles.length ? {status: 'ambiguous'} : {status: 'missing'};
+        const title = titles[0];
         const machineName = title?.dataset?.machineName || title?.getAttribute?.('data-machine-name');
-        if (typeof machineName === 'string' && machineName.length > 0) return machineName;
-        return null;
+        return typeof machineName === 'string' && machineName.length > 0
+            ? {status: 'found', machineName}
+            : {status: 'ambiguous'};
+    }
+
+    function getChoiceDisplayIdentity(view) {
+        const identities = Array.from(view?.querySelectorAll?.(
+            '[data-entity-kind="display_item"][data-machine-name]'
+        ) || []);
+        if (identities.length !== 1) return identities.length ? {status: 'ambiguous'} : {status: 'missing'};
+        const machineName = identities[0].dataset?.machineName
+            || identities[0].getAttribute?.('data-machine-name');
+        return typeof machineName === 'string' && machineName.length > 0
+            ? {status: 'found', machineName}
+            : {status: 'ambiguous'};
     }
 
     function getChoiceHashIdentifier() {
@@ -6977,10 +7025,35 @@
         }
     }
 
+    function createChoiceRegionRestrictionPanel(tpkd, steamCountryCode, current, total) {
+        const panel = createRegionRestrictionPanel(tpkd, steamCountryCode);
+        if (!panel) return null;
+        panel.className += ' hb-helper-region-restrictions--choice';
+        panel.dataset.regionRestrictionOwner = 'choice';
+        if (total > 1) {
+            const keyLabel = document.createElement('span');
+            keyLabel.className = 'hb-helper-region-restrictions__key-label';
+            keyLabel.textContent = t('regionKeyLabel', {current, total});
+            panel.prepend(keyLabel);
+        }
+        return panel;
+    }
+
     function renderChoiceRegionRestrictions(catalogs) {
-        const modal = getActiveChoiceModal()?.querySelector?.('.choice-modal');
-        if (!modal) return;
-        const identifier = getChoiceModalIdentifier(modal);
+        clearChoiceRegionRestrictionPanels();
+        const view = getActiveChoiceRegionView();
+        if (!view) return;
+        const titleIdentity = getChoiceModalIdentifier(view);
+        const displayIdentity = getChoiceDisplayIdentity(view);
+        if (titleIdentity.status === 'ambiguous'
+            || displayIdentity.status === 'ambiguous'
+            || (titleIdentity.status === 'found' && displayIdentity.status === 'found'
+                && titleIdentity.machineName !== displayIdentity.machineName)) {
+            return;
+        }
+        const identifier = displayIdentity.status === 'found'
+            ? displayIdentity.machineName
+            : titleIdentity.status === 'found' ? titleIdentity.machineName : null;
         const hashIdentifier = getChoiceHashIdentifier();
         const titleMatch = identifier
             ? findChoiceRegionGame(catalogs, 'byDisplayMachineName', identifier)
@@ -6999,22 +7072,27 @@
         }
         match = validateChoiceRegionGameMatch(catalogs, match);
         const game = match.status === 'found' ? match.game : null;
-        const rows = Array.from(modal.querySelectorAll?.('.js-key-redeemer > .key-redeemer') || []);
-        const fields = rows.map(row => row.querySelector?.('.giftfield'));
+        const rows = Array.from(view.querySelectorAll?.('.key-redeemer') || []);
+        const containers = rows.map(row => row.closest?.('.key-redeemer-container'));
         if (!game || !Array.isArray(game.tpkds) || !rows.length
-            || game.tpkds.length !== rows.length || fields.some(field => !field)
+            || game.tpkds.length !== rows.length
+            || rows.some(row => !isVisibleChoiceRegionElement(row)
+                || !isChoiceRegionElementWithin(row, view))
+            || containers.some(container => !isVisibleChoiceRegionElement(container)
+                || !isChoiceRegionElementWithin(container, view))
             || game.tpkds.some(tpkd =>
                 normalizeRegionRestrictions(tpkd).status === 'unavailable')) {
-            removeChoiceRegionRestrictionPanels(modal);
             return;
         }
-        removeChoiceRegionRestrictionPanels(modal);
         const steamCountryCode = steamSessionState.account?.countryCode || null;
         game.tpkds.forEach((tpkd, index) => {
-            fields[index].insertAdjacentElement(
-                'afterend',
-                createRegionRestrictionPanel(tpkd, steamCountryCode)
+            const panel = createChoiceRegionRestrictionPanel(
+                tpkd,
+                steamCountryCode,
+                index + 1,
+                game.tpkds.length
             );
+            if (panel) containers[index].appendChild(panel);
         });
     }
 
@@ -7076,8 +7154,8 @@
 
     function ensureChoiceRegionRestrictions() {
         if (!isChoicePage()) return undefined;
-        const modal = getActiveChoiceModal()?.querySelector?.('.choice-modal');
-        if (!modal) return undefined;
+        clearChoiceRegionRestrictionPanels();
+        if (!getActiveChoiceRegionView()) return undefined;
 
         const routeKey = getChoiceRegionSourceRouteKey();
         const liveCatalogs = getLiveChoiceRegionCatalogs();
@@ -7086,7 +7164,6 @@
             return undefined;
         }
 
-        removeChoiceRegionRestrictionPanels(modal);
         if (choiceRegionSourceState?.routeKey === routeKey) {
             if (choiceRegionSourceState.status === 'ready') {
                 renderChoiceRegionRestrictions(choiceRegionSourceState.catalogs);

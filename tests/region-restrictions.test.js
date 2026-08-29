@@ -31,6 +31,13 @@ function makeElement(tagName = 'div') {
             return child;
         },
         append(...items) { items.forEach(item => this.appendChild(item)); },
+        prepend(...items) {
+            items.slice().reverse().forEach(child => {
+                child.remove?.();
+                children.unshift(child);
+                child.parentNode = this;
+            });
+        },
         insertAdjacentElement(position, child) {
             const parent = this.parentNode;
             if (!parent) return child;
@@ -50,11 +57,26 @@ function makeElement(tagName = 'div') {
         setAttribute(name, value) { attributes.set(name, String(value)); },
         getAttribute(name) { return attributes.get(name) || null; },
         querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
+        closest(selector) {
+            let current = this;
+            while (current) {
+                if (selector.startsWith('.')
+                    && current.className.split(/\s+/).includes(selector.slice(1))) {
+                    return current;
+                }
+                current = current.parentNode;
+            }
+            return null;
+        },
         querySelectorAll(selector) {
             const descendants = root => root.children.flatMap(child => [child, ...descendants(child)]);
             return descendants(this).filter(child =>
                 selector === '.hb-helper-region-restrictions'
                     ? child.className.split(/\s+/).includes('hb-helper-region-restrictions')
+                    : selector.startsWith('.')
+                        ? selector.slice(1).split('.').every(name =>
+                            child.className.split(/\s+/).includes(name)
+                        )
                     : child.tagName.toLowerCase() === selector
             );
         },
@@ -89,9 +111,23 @@ function loadApi({
         getElementById(id) { return this.elements.get(id) || null; },
         querySelector(selector) { return selector === '.choice-modal' ? this.choiceModal : null; },
         querySelectorAll(selector) {
-            return selector === '.disclaimer' ? this.downloadDisclaimers : [];
+            if (selector === '.disclaimer') return this.downloadDisclaimers;
+            if (selector === '.choice-modal') return this.choiceModals || [];
+            if (selector === '.js-select-choice.select-choice') return this.choiceSelects || [];
+            if (selector === '.hb-helper-region-restrictions--choice') {
+                const roots = [
+                    this.body,
+                    this.choiceModal,
+                    ...(this.choiceModals || []),
+                    ...(this.choiceSelects || []),
+                ].filter(Boolean);
+                return [...new Set(roots.flatMap(root => root.querySelectorAll?.(selector) || []))];
+            }
+            return [];
         },
         choiceModal: null,
+        choiceModals: [],
+        choiceSelects: [],
     };
     const context = {
         __HB_HELPER_TEST__: true,
@@ -192,35 +228,78 @@ function hasClass(element, className) {
     return element.className.split(/\s+/).includes(className);
 }
 
-function makeRow() {
-    const row = makeElement();
-    const giftField = makeElement();
-    giftField.className = 'giftfield';
-    row.appendChild(giftField);
-    row.querySelector = selector => selector === '.giftfield' ? giftField : null;
-    return {row, giftField};
+function choicePanel({container}) {
+    return container.children.find(child => hasClass(child, 'hb-helper-region-restrictions')) || null;
 }
 
-function makeChoiceModal(machineName, rows) {
+function makeRow({gift = true, container} = {}) {
+    const keyContainer = container || makeElement();
+    keyContainer.className = 'key-redeemer-container';
+    const row = makeElement();
+    row.className = 'key-redeemer';
+    const giftField = gift ? makeElement() : null;
+    if (giftField) {
+        giftField.className = 'giftfield';
+        row.appendChild(giftField);
+    }
+    row.querySelector = selector => selector === '.giftfield' ? giftField : null;
+    keyContainer.appendChild(row);
+    return {row, giftField, container: keyContainer};
+}
+
+function makeChoiceModal(machineName, rows, {displayMachineName} = {}) {
     const modal = makeElement();
+    modal.className = 'choice-modal';
+    modal.getClientRects = () => [{}];
     const title = makeElement('h2');
     title.className = 'title';
     if (typeof machineName === 'string') title.dataset.machineName = machineName;
     modal.appendChild(title);
-    rows.forEach(({row}) => modal.appendChild(row));
+    for (const {container} of rows) {
+        if (!modal.children.includes(container)) modal.appendChild(container);
+    }
+    let displayIdentity = null;
+    if (displayMachineName) {
+        displayIdentity = makeElement();
+        displayIdentity.dataset.entityKind = 'display_item';
+        displayIdentity.dataset.machineName = displayMachineName;
+        modal.appendChild(displayIdentity);
+    }
     modal.querySelector = selector => {
         if (selector === 'h2.title[data-machine-name]') {
             return title.dataset.machineName ? title : null;
+        }
+        if (selector === '[data-entity-kind="display_item"][data-machine-name]') {
+            return displayIdentity;
         }
         if (selector === '[data-machine-name]') return modal.unrelatedMachineName || title;
         return null;
     };
     modal.querySelectorAll = selector => {
+        if (selector === 'h2.title[data-machine-name]') {
+            return title.dataset.machineName ? [title] : [];
+        }
         if (selector === '.js-key-redeemer > .key-redeemer') return rows.map(({row}) => row);
-        return modal.children.flatMap(child => [child, ...child.querySelectorAll('.hb-helper-region-restrictions')])
-            .filter(child => child.className.split(/\s+/).includes('hb-helper-region-restrictions'));
+        if (selector === '.key-redeemer') return rows.map(({row}) => row);
+        if (selector === '.key-redeemer-container') {
+            return [...new Set(rows.map(({container}) => container))];
+        }
+        if (selector === '[data-entity-kind="display_item"][data-machine-name]') {
+            return displayIdentity ? [displayIdentity] : [];
+        }
+        const className = selector === '.hb-helper-region-restrictions--choice'
+            ? 'hb-helper-region-restrictions--choice'
+            : 'hb-helper-region-restrictions';
+        return modal.children.flatMap(child => [child, ...child.querySelectorAll(`.${className}`)])
+            .filter(child => child.className.split(/\s+/).includes(className));
     };
     return modal;
+}
+
+function makeRedeemedChoiceSurface(machineName, rows, options = {}) {
+    const surface = makeChoiceModal(machineName, rows, options);
+    surface.className = 'js-select-choice select-choice';
+    return surface;
 }
 
 function setActiveChoiceModal(document, modal) {
@@ -229,6 +308,7 @@ function setActiveChoiceModal(document, modal) {
     siteModal.getClientRects = () => [{}];
     siteModal.querySelector = selector => selector === '.choice-modal' ? modal : null;
     document.elements.set('site-modal', siteModal);
+    document.choiceModals = [modal];
 }
 
 function makeMutationNode(isHelperUi = false) {
@@ -372,7 +452,227 @@ test('renders inline and details country lists at the 12/13 item boundary withou
     assert.match(panelText(noRestriction), /Humble has not declared a region restriction/);
 });
 
-test('maps Choice rows by exact machine name and TPKD order, immediately after Gift', () => {
+test('renders redeemed external Choice restrictions at the key container end without Gift', () => {
+    const {api, document} = loadApi();
+    const row = makeRow({gift: false});
+    const redeemed = makeRedeemedChoiceSurface('display-alpha', [row], {
+        displayMachineName: 'display-alpha',
+    });
+    document.choiceSelects = [redeemed];
+    const emptySiteModal = makeElement();
+    emptySiteModal.getClientRects = () => [{}];
+    document.elements.set('site-modal', emptySiteModal);
+    document.elements.set('webpack-subscriber-hub-data', makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    })));
+    api.setSteamSessionStateForTest({
+        status: 'authenticated', account: {countryCode: 'US'}, error: null,
+    });
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(row.container.children.at(-1).className.includes(
+        'hb-helper-region-restrictions'
+    ), true);
+    assert.match(panelText(row.container.children.at(-1)), /can be activated/);
+});
+
+test('numbers multi-key redeemed restrictions in DOM order when rows share a container', () => {
+    const {api, document} = loadApi();
+    const container = makeElement();
+    const first = makeRow({gift: false, container});
+    const second = makeRow({gift: false, container});
+    document.choiceSelects = [makeRedeemedChoiceSurface('display-alpha', [first, second])];
+    document.elements.set('webpack-subscriber-hub-data', makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [
+                {exclusive_countries: ['US'], disallowed_countries: []},
+                {exclusive_countries: [], disallowed_countries: ['US']},
+            ],
+        },
+    })));
+    api.setSteamSessionStateForTest({
+        status: 'authenticated', account: {countryCode: 'US'}, error: null,
+    });
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    const panels = container.children.filter(child => hasClass(child, 'hb-helper-region-restrictions'));
+    assert.equal(panels.length, 2);
+    assert.match(panelText(panels[0]), /Key 1\/2/);
+    assert.match(panelText(panels[0]), /can be activated/);
+    assert.match(panelText(panels[1]), /Key 2\/2/);
+    assert.match(panelText(panels[1]), /restricted/);
+    assert.equal(hasClass(panels[0].children[0], 'hb-helper-region-restrictions__key-label'), true);
+    assert.deepEqual(container.children, [first.row, second.row, panels[0], panels[1]]);
+});
+
+test('renders redeemed restrictions at each of multiple key container ends', () => {
+    const {api, document} = loadApi();
+    const first = makeRow({gift: false});
+    const second = makeRow({gift: false});
+    document.choiceSelects = [makeRedeemedChoiceSurface('display-alpha', [first, second])];
+    document.elements.set('webpack-subscriber-hub-data', makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [
+                {exclusive_countries: ['US'], disallowed_countries: []},
+                {exclusive_countries: [], disallowed_countries: ['US']},
+            ],
+        },
+    })));
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(first.container.children.at(-1), choicePanel(first));
+    assert.equal(second.container.children.at(-1), choicePanel(second));
+    assert.match(panelText(choicePanel(first)), /Key 1\/2/);
+    assert.match(panelText(choicePanel(second)), /Key 2\/2/);
+});
+
+test('cleans redeemed containers on refresh and when a reused view becomes unreliable', () => {
+    const {api, document} = loadApi();
+    const row = makeRow({gift: false});
+    const surface = makeRedeemedChoiceSurface('display-alpha', [row]);
+    document.choiceSelects = [surface];
+    const source = makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    }));
+    document.elements.set('webpack-subscriber-hub-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+    api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(row.container.querySelectorAll('.hb-helper-region-restrictions').length, 1);
+
+    surface.querySelector = selector => selector === 'h2.title[data-machine-name]' ? null : null;
+    source.textContent = choicePayload({
+        beta: {
+            display_item_machine_name: 'display-beta',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(row.container.querySelectorAll('.hb-helper-region-restrictions').length, 0);
+});
+
+test('clears Choice-owned panels from a reused view after it loses Choice surface classes', () => {
+    const {api, document} = loadApi();
+    const row = makeRow({gift: false});
+    const stale = makeElement();
+    stale.className = 'hb-helper-region-restrictions hb-helper-region-restrictions--choice';
+    row.container.appendChild(stale);
+    const reusedView = makeElement();
+    reusedView.className = 'reused-view';
+    reusedView.appendChild(row.container);
+    document.body.appendChild(reusedView);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(row.container.children.includes(stale), false);
+});
+
+test('fails closed and clears Choice panels when a matched row is hidden', () => {
+    const {api, document} = loadApi();
+    const row = makeRow({gift: false});
+    row.row.getClientRects = () => [];
+    const stale = makeElement();
+    stale.className = 'hb-helper-region-restrictions hb-helper-region-restrictions--choice';
+    row.container.appendChild(stale);
+    document.choiceSelects = [makeRedeemedChoiceSurface('display-alpha', [row])];
+    document.elements.set('webpack-subscriber-hub-data', makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    })));
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(choicePanel(row), null);
+});
+
+test('fails closed and clears Choice panels for multiple exact title identities', () => {
+    const {api, document} = loadApi();
+    const row = makeRow({gift: false});
+    const stale = makeElement();
+    stale.className = 'hb-helper-region-restrictions hb-helper-region-restrictions--choice';
+    row.container.appendChild(stale);
+    const surface = makeRedeemedChoiceSurface('display-alpha', [row]);
+    const extraTitle = makeElement('h2');
+    extraTitle.className = 'title';
+    extraTitle.dataset.machineName = 'display-beta';
+    surface.appendChild(extraTitle);
+    const querySelectorAll = surface.querySelectorAll;
+    surface.querySelectorAll = selector => selector === 'h2.title[data-machine-name]'
+        ? [surface.querySelector(selector), extraTitle]
+        : querySelectorAll(selector);
+    document.choiceSelects = [surface];
+    document.elements.set('webpack-subscriber-hub-data', makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    })));
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(choicePanel(row), null);
+});
+
+test('fails closed for hidden or multiple Choice surfaces, missing containers, and identity conflicts', () => {
+    const payload = makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    }));
+    for (const [label, configure] of [
+        ['hidden surface', document => {
+            const row = makeRow({gift: false});
+            const surface = makeRedeemedChoiceSurface('display-alpha', [row]);
+            surface.getClientRects = () => [];
+            document.choiceSelects = [surface];
+            return row;
+        }],
+        ['multiple surfaces', document => {
+            const first = makeRow({gift: false});
+            const second = makeRow({gift: false});
+            document.choiceSelects = [
+                makeRedeemedChoiceSurface('display-alpha', [first]),
+                makeRedeemedChoiceSurface('display-alpha', [second]),
+            ];
+            return first;
+        }],
+        ['identity conflict', document => {
+            const row = makeRow({gift: false});
+            document.choiceSelects = [makeRedeemedChoiceSurface(
+                'display-alpha', [row], {displayMachineName: 'display-beta'}
+            )];
+            return row;
+        }],
+        ['missing container', document => {
+            const row = makeRow({gift: false});
+            row.container.className = 'unsupported-container';
+            document.choiceSelects = [makeRedeemedChoiceSurface('display-alpha', [row])];
+            return row;
+        }],
+    ]) {
+        const {api, document} = loadApi();
+        const row = configure(document);
+        document.elements.set('webpack-subscriber-hub-data', payload);
+        api.ensureChoiceRegionRestrictionsForTest();
+        assert.equal(choicePanel(row), null, label);
+    }
+});
+
+test('maps Choice rows by exact machine name and TPKD order at their containers end', () => {
     const {api, document} = loadApi();
     const rows = [makeRow(), makeRow()];
     document.choiceModal = makeChoiceModal('display-alpha', rows);
@@ -391,12 +691,12 @@ test('maps Choice rows by exact machine name and TPKD order, immediately after G
     api.setSteamDerivedStateForTest({countryCode: 'US', ownedApps: [], wishlistApps: []});
     api.ensureChoiceRegionRestrictionsForTest();
 
-    assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
-    assert.match(panelText(rows[0].giftField.nextElementSibling), /can be activated/);
-    assert.match(panelText(rows[0].giftField.nextElementSibling), /Humble allowlist/);
-    assert.doesNotMatch(panelText(rows[0].giftField.nextElementSibling), /Humble blocklist/);
-    assert.equal(hasClass(rows[1].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
-    assert.match(panelText(rows[1].giftField.nextElementSibling), /restricted/);
+    assert.equal(hasClass(choicePanel(rows[0]), 'hb-helper-region-restrictions'), true);
+    assert.match(panelText(choicePanel(rows[0])), /can be activated/);
+    assert.match(panelText(choicePanel(rows[0])), /Humble allowlist/);
+    assert.doesNotMatch(panelText(choicePanel(rows[0])), /Humble blocklist/);
+    assert.equal(hasClass(choicePanel(rows[1]), 'hb-helper-region-restrictions'), true);
+    assert.match(panelText(choicePanel(rows[1])), /restricted/);
 });
 
 test('falls back to monthly data and an exact hash identifier when the Choice title is missing', () => {
@@ -415,11 +715,11 @@ test('falls back to monthly data and an exact hash identifier when the Choice ti
     document.elements.set('webpack-monthly-product-data', source);
     api.setSteamDerivedStateForTest({countryCode: 'US', ownedApps: [], wishlistApps: []});
     api.ensureChoiceRegionRestrictionsForTest();
-    assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+    assert.equal(hasClass(choicePanel(rows[0]), 'hb-helper-region-restrictions'), true);
 
-    rows[0].giftField.nextElementSibling.remove();
+    choicePanel(rows[0]).remove();
     api.ensureChoiceRegionRestrictionsForTest();
-    assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+    assert.equal(hasClass(choicePanel(rows[0]), 'hb-helper-region-restrictions'), true);
     assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 1);
 });
 
@@ -440,7 +740,7 @@ test('falls back to an exact hash identifier when the present Choice title is un
 
     api.ensureChoiceRegionRestrictionsForTest();
 
-    assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+    assert.equal(hasClass(choicePanel(rows[0]), 'hb-helper-region-restrictions'), true);
 });
 
 test('cleans stale Choice panels when source identity, row count, fields, or anchors are unreliable', () => {
@@ -449,7 +749,7 @@ test('cleans stale Choice panels when source identity, row count, fields, or anc
     document.choiceModal = makeChoiceModal('display-missing', rows);
     setActiveChoiceModal(document, document.choiceModal);
     const stale = makeElement();
-    stale.className = 'hb-helper-region-restrictions';
+    stale.className = 'hb-helper-region-restrictions hb-helper-region-restrictions--choice';
     rows[0].row.appendChild(stale);
     const source = makeChoiceSource();
     source.textContent = choicePayload({
@@ -509,6 +809,17 @@ test('building a Downloads restriction panel neither requests nor logs order dat
     assert.equal(messages.length, 0);
 });
 
+test('keeps the shared Downloads panel free of Choice ownership and key labels', () => {
+    const {api} = loadApi();
+    const panel = api.createRegionRestrictionPanel(
+        {exclusive_countries: ['US'], disallowed_countries: []},
+        'US'
+    );
+
+    assert.equal(hasClass(panel, 'hb-helper-region-restrictions--choice'), false);
+    assert.equal(panel.querySelector('.hb-helper-region-restrictions__key-label'), null);
+});
+
 test('renders only inside the active visible site modal, not a stale Choice modal', () => {
     const {api, document} = loadApi();
     const staleRows = [makeRow()];
@@ -531,7 +842,7 @@ test('renders only inside the active visible site modal, not a stale Choice moda
 
     api.ensureChoiceRegionRestrictionsForTest();
 
-    assert.equal(hasClass(activeRows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+    assert.equal(hasClass(choicePanel(activeRows[0]), 'hb-helper-region-restrictions'), true);
     assert.equal(staleRows[0].row.children.includes(stalePanel), true);
 });
 
@@ -584,7 +895,7 @@ test('falls through a subscriber catalog miss to monthly data using the final ha
 
     api.ensureChoiceRegionRestrictionsForTest();
 
-    assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+    assert.equal(hasClass(choicePanel(rows[0]), 'hb-helper-region-restrictions'), true);
 });
 
 test('fails closed for invalid Choice metadata and invalid shared panel metadata', () => {
@@ -690,7 +1001,7 @@ test('clears stale panels when TPKD and Choice row counts differ', () => {
     document.choiceModal = makeChoiceModal('display-alpha', rows);
     setActiveChoiceModal(document, document.choiceModal);
     const stale = makeElement();
-    stale.className = 'hb-helper-region-restrictions';
+    stale.className = 'hb-helper-region-restrictions hb-helper-region-restrictions--choice';
     rows[0].row.appendChild(stale);
     const source = makeChoiceSource();
     source.textContent = choicePayload({
@@ -709,14 +1020,13 @@ test('clears stale panels when TPKD and Choice row counts differ', () => {
     assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
 });
 
-test('clears stale panels when a Choice row has no Gift field', () => {
+test('replaces stale Choice panels when a Choice row has no Gift field', () => {
     const {api, document} = loadApi();
-    const {row} = makeRow();
-    row.querySelector = () => null;
+    const {row, container} = makeRow({gift: false});
     const stale = makeElement();
-    stale.className = 'hb-helper-region-restrictions';
-    row.appendChild(stale);
-    document.choiceModal = makeChoiceModal('display-alpha', [{row}]);
+    stale.className = 'hb-helper-region-restrictions hb-helper-region-restrictions--choice';
+    container.appendChild(stale);
+    document.choiceModal = makeChoiceModal('display-alpha', [{row, container}]);
     setActiveChoiceModal(document, document.choiceModal);
     const source = makeChoiceSource();
     source.textContent = choicePayload({
@@ -729,7 +1039,10 @@ test('clears stale panels when a Choice row has no Gift field', () => {
 
     api.ensureChoiceRegionRestrictionsForTest();
 
-    assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
+    assert.equal(container.querySelectorAll('.hb-helper-region-restrictions').length, 1);
+    assert.equal(container.children.at(-1).className.includes(
+        'hb-helper-region-restrictions--choice'
+    ), true);
 });
 
 test('fails closed for ambiguous display machine names and does not fall through to hash', () => {
@@ -799,7 +1112,7 @@ test('fails closed for conflicting cross-source identity data but accepts identi
     identical.document.elements.set('webpack-subscriber-hub-data', identicalSubscriber);
     identical.document.elements.set('webpack-monthly-product-data', identicalMonthly);
     identical.api.ensureChoiceRegionRestrictionsForTest();
-    assert.equal(hasClass(identicalRows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+    assert.equal(hasClass(choicePanel(identicalRows[0]), 'hb-helper-region-restrictions'), true);
 });
 
 test('recovers Choice restrictions from current same-origin HTML when both live webpack nodes are absent', async () => {
@@ -835,8 +1148,8 @@ test('recovers Choice restrictions from current same-origin HTML when both live 
     assert.equal(requests.length, 1);
     assert.equal(requests[0].url, '/membership');
     assert.equal(requests[0].options.credentials, 'include');
-    assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
-    assert.match(panelText(rows[0].giftField.nextElementSibling), /can be activated/);
+    assert.equal(hasClass(choicePanel(rows[0]), 'hb-helper-region-restrictions'), true);
+    assert.match(panelText(choicePanel(rows[0])), /can be activated/);
 });
 
 test('recovers Choice restrictions from the fetched monthly webpack source', async () => {
@@ -859,9 +1172,52 @@ test('recovers Choice restrictions from the fetched monthly webpack source', asy
     await api.ensureChoiceRegionRestrictionsForTest();
 
     assert.equal(hasClass(
-        rows[0].giftField.nextElementSibling,
+        choicePanel(rows[0]),
         'hb-helper-region-restrictions'
     ), true);
+});
+
+test('renders external redeemed views from live data and coalesces their fetched fallback', async () => {
+    const live = loadApi({
+        fetchImpl() { return Promise.reject(new Error('live metadata should render directly')); },
+    });
+    const liveRow = makeRow({gift: false});
+    live.document.choiceSelects = [makeRedeemedChoiceSurface('display-alpha', [liveRow])];
+    live.document.elements.set('webpack-subscriber-hub-data', makeChoiceSource(choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    })));
+    await live.api.ensureChoiceRegionRestrictionsForTest();
+    assert.ok(choicePanel(liveRow));
+
+    let requests = 0;
+    let resolveResponse;
+    const fetched = loadApi({
+        DOMParserImpl: createChoiceHtmlParser(),
+        fetchImpl() {
+            requests += 1;
+            return new Promise(resolve => { resolveResponse = resolve; });
+        },
+    });
+    const fetchedRow = makeRow({gift: false});
+    fetched.document.choiceSelects = [makeRedeemedChoiceSurface('display-alpha', [fetchedRow])];
+    const firstRefresh = fetched.api.ensureChoiceRegionRestrictionsForTest();
+    const secondRefresh = fetched.api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(requests, 1);
+    assert.equal(firstRefresh, secondRefresh);
+    resolveResponse(htmlResponse(choiceHtml({
+        subscriber: choicePayload({
+            alpha: {
+                display_item_machine_name: 'display-alpha',
+                tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+            },
+        }),
+    })));
+    await Promise.all([firstRefresh, secondRefresh]);
+
+    assert.ok(choicePanel(fetchedRow));
 });
 
 test('does not fetch Choice HTML when live webpack data can render the active modal', async () => {
@@ -889,7 +1245,7 @@ test('does not fetch Choice HTML when live webpack data can render the active mo
 
     assert.equal(requests, 0);
     assert.equal(api.getChoiceRegionSourceStateForTest(), null);
-    assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+    assert.equal(hasClass(choicePanel(rows[0]), 'hb-helper-region-restrictions'), true);
 });
 
 test('reparses a changed live Choice source without fetching', async () => {
@@ -916,7 +1272,7 @@ test('reparses a changed live Choice source without fetching', async () => {
     }));
     document.elements.set('webpack-subscriber-hub-data', source);
     await api.ensureChoiceRegionRestrictionsForTest();
-    assert.match(panelText(rows[0].giftField.nextElementSibling), /can be activated/);
+    assert.match(panelText(choicePanel(rows[0])), /can be activated/);
 
     source.textContent = choicePayload({
         alpha: {
@@ -927,7 +1283,7 @@ test('reparses a changed live Choice source without fetching', async () => {
     await api.ensureChoiceRegionRestrictionsForTest();
 
     assert.equal(requests, 0);
-    assert.match(panelText(rows[0].giftField.nextElementSibling), /restricted/);
+    assert.match(panelText(choicePanel(rows[0])), /restricted/);
 });
 
 test('falls back to current HTML after the live Choice source is removed', async () => {
@@ -964,7 +1320,7 @@ test('falls back to current HTML after the live Choice source is removed', async
     await api.ensureChoiceRegionRestrictionsForTest();
 
     assert.equal(requests, 1);
-    assert.match(panelText(rows[0].giftField.nextElementSibling), /restricted/);
+    assert.match(panelText(choicePanel(rows[0])), /restricted/);
 });
 
 test('keeps a successful route fallback cached across temporary live Choice data', async () => {
@@ -1033,7 +1389,7 @@ test('prefers live Choice data that appears while the route fallback is pending'
     resolveRequest(htmlResponse(choiceHtml({subscriber: fallbackPayload})));
     await pending;
 
-    assert.match(panelText(rows[0].giftField.nextElementSibling), /can be activated/);
+    assert.match(panelText(choicePanel(rows[0])), /can be activated/);
     assert.equal(api.getChoiceRegionSourceStateForTest().status, 'ready');
 });
 
@@ -1061,7 +1417,7 @@ test('invalid live Choice element or MIME falls through to HTML while normalized
         document.elements.set('webpack-subscriber-hub-data', source);
         await api.ensureChoiceRegionRestrictionsForTest();
         assert.equal(requests, 1, label);
-        assert.equal(rows[0].giftField.nextElementSibling !== null, true, label);
+        assert.equal(choicePanel(rows[0]) !== null, true, label);
     }
 
     let requests = 0;
@@ -1074,7 +1430,7 @@ test('invalid live Choice element or MIME falls through to HTML while normalized
     );
     await normalized.api.ensureChoiceRegionRestrictionsForTest();
     assert.equal(requests, 0);
-    assert.equal(rows[0].giftField.nextElementSibling !== null, true);
+    assert.equal(choicePanel(rows[0]) !== null, true);
 });
 
 test('coalesces repeated Choice fallback refreshes while the route request is pending', async () => {
@@ -1108,7 +1464,7 @@ test('coalesces repeated Choice fallback refreshes while the route request is pe
     })));
     await Promise.all([firstRefresh, secondRefresh]);
 
-    assert.equal(hasClass(rows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
+    assert.equal(hasClass(choicePanel(rows[0]), 'hb-helper-region-restrictions'), true);
 });
 
 test('renders only the current Choice modal when its hash changes during a pending fallback request', async () => {
@@ -1455,7 +1811,7 @@ test('cross-checks the selected Choice record identity when only title or hash i
         }))
     );
     titleOnly.api.ensureChoiceRegionRestrictionsForTest();
-    assert.equal(titleRows[0].giftField.nextElementSibling, null);
+    assert.equal(choicePanel(titleRows[0]), null);
 
     const hashOnly = loadApi();
     const hashRows = [makeRow()];
@@ -1480,7 +1836,7 @@ test('cross-checks the selected Choice record identity when only title or hash i
         }))
     );
     hashOnly.api.ensureChoiceRegionRestrictionsForTest();
-    assert.equal(hashRows[0].giftField.nextElementSibling, null);
+    assert.equal(choicePanel(hashRows[0]), null);
 });
 
 test('refreshes Choice restrictions on hashchange without refetching the same source route', async () => {
@@ -1524,7 +1880,7 @@ test('refreshes Choice restrictions on hashchange without refetching the same so
         reconcileBatch: async () => {},
         recoverCollection: async () => ({recovered: false}),
     });
-    assert.equal(firstRows[0].giftField.nextElementSibling?.className.includes(
+    assert.equal(choicePanel(firstRows[0])?.className.includes(
         'hb-helper-region-restrictions'
     ), true);
 
@@ -1534,7 +1890,7 @@ test('refreshes Choice restrictions on hashchange without refetching the same so
     assert.ok(timers.length > 0, 'hashchange should schedule a lightweight page refresh');
     timers.at(-1)();
 
-    assert.match(panelText(secondRows[0].giftField.nextElementSibling), /restricted/);
+    assert.match(panelText(choicePanel(secondRows[0])), /restricted/);
     assert.equal(requests, 0);
 });
 
