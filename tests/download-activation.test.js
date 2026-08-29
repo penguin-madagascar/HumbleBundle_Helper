@@ -1182,6 +1182,158 @@ test('download activation falls back to machine name for a safe nonempty batch t
     assert.equal(collectedItems[0].title, product.machine_name);
 });
 
+test('Downloads activation continues through retained-account same-order remaps', async () => {
+    const {api, document, orderSecret} = loadApi();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const product = tpk({
+        human_name: 'Remapped download',
+        machine_name: 'remapped-download',
+    });
+    const row = downloadRow(document, {
+        title: product.human_name,
+        machineName: product.machine_name,
+        keyindex: product.keyindex,
+    });
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const originalMapping = api.mapDownloadOrderRows([product], [row]);
+    api.setDownloadOrderStateForTest(
+        scope,
+        {gamekey: orderSecret, tpkd_dict: {all_tpks: [product]}},
+        originalMapping
+    );
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    const authenticated = {status: 'authenticated', account, error: null};
+    api.setSteamDerivedStateForTest(account);
+    api.mountDownloadActivationControlsForTest();
+    const id = api.getDownloadActivationItemId(scope, product);
+    await api.updateDownloadSelection(scope, selection => selection.add(id));
+
+    let collections = 0;
+    let reveals = 0;
+    const result = await api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => {
+                api.applySteamSessionState({...authenticated, status: 'syncing'});
+                api.refreshDownloadOrderPageForTest();
+                assert.notEqual(api.getDownloadOrderMappingForTest(), originalMapping);
+                api.applySteamSessionState(authenticated);
+                return authenticated;
+            },
+            collectWork: async (items, options) => {
+                collections += 1;
+                await options.revealKey(items[0]);
+                return {started: true, pendingCount: 0};
+            },
+            collectionOptions: {
+                revealKey: async () => {
+                    reveals += 1;
+                    return steamKey(0);
+                },
+            },
+        },
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+
+    assert.deepEqual(result, {started: true, pendingCount: 0});
+    assert.equal(collections, 1);
+    assert.equal(reveals, 1);
+});
+
+test('Downloads activation rejects ineligible or ambiguous same-order remaps', async () => {
+    for (const remap of [
+        ({api, document, orderSecret, scope, product, row}) => {
+            const ineligible = {...product, is_gift: true};
+            api.setDownloadOrderStateForTest(
+                scope,
+                {gamekey: orderSecret, tpkd_dict: {all_tpks: [ineligible]}},
+                api.mapDownloadOrderRows([ineligible], [row])
+            );
+        },
+        ({api, document, orderSecret, scope, product, row}) => {
+            const duplicate = {...product};
+            const duplicateRow = downloadRow(document, {
+                title: duplicate.human_name,
+                machineName: duplicate.machine_name,
+                keyindex: duplicate.keyindex,
+            });
+            row.parentNode.appendChild(duplicateRow);
+            api.setDownloadOrderStateForTest(
+                scope,
+                {gamekey: orderSecret, tpkd_dict: {all_tpks: [product, duplicate]}},
+                api.mapDownloadOrderRows([product, duplicate], [row, duplicateRow])
+            );
+        },
+    ]) {
+        const {api, document, orderSecret} = loadApi();
+        const scope = await api.hashDownloadOrderKey(orderSecret);
+        const product = tpk({
+            human_name: 'Fail-closed remap',
+            machine_name: 'fail-closed-remap',
+        });
+        const row = downloadRow(document, {
+            title: product.human_name,
+            machineName: product.machine_name,
+            keyindex: product.keyindex,
+        });
+        const container = document.createElement('div');
+        container.className = 'key-container wrapper';
+        container.appendChild(row);
+        document.body.appendChild(container);
+        api.setDownloadOrderStateForTest(
+            scope,
+            {gamekey: orderSecret, tpkd_dict: {all_tpks: [product]}},
+            api.mapDownloadOrderRows([product], [row])
+        );
+        const account = {
+            countryCode: 'CA',
+            ownedApps: [],
+            wishlistApps: [],
+            sessionId: 'session',
+        };
+        const authenticated = {status: 'authenticated', account, error: null};
+        api.setSteamDerivedStateForTest(account);
+        api.mountDownloadActivationControlsForTest();
+        const id = api.getDownloadActivationItemId(scope, product);
+        await api.updateDownloadSelection(scope, selection => selection.add(id));
+
+        let collections = 0;
+        let reveals = 0;
+        const result = await api.startDownloadActivationForTest({
+            directActivationOptions: {
+                syncSession: async () => {
+                    remap({api, document, orderSecret, scope, product, row});
+                    api.applySteamSessionState({...authenticated, status: 'syncing'});
+                    api.applySteamSessionState(authenticated);
+                    return authenticated;
+                },
+                collectWork: async () => {
+                    collections += 1;
+                    return {started: true, pendingCount: 0};
+                },
+                collectionOptions: {
+                    revealKey: async () => {
+                        reveals += 1;
+                        return steamKey(0);
+                    },
+                },
+            },
+            reconcileBatch: async () => ({reconciled: true}),
+        });
+
+        assert.deepEqual(clone(result), {started: false, stale: true});
+        assert.equal(collections, 0);
+        assert.equal(reveals, 0);
+    }
+});
+
 test('an API-only mapping mismatch surfaces one overall warning', async () => {
     const {api, document, orderSecret} = loadApi();
     const scope = await api.hashDownloadOrderKey(orderSecret);

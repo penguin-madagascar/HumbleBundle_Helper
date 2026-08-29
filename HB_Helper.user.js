@@ -4430,10 +4430,21 @@
             routeGeneration: helperRouteTransitionGeneration,
             initializationGeneration: downloadOrderInitializationGeneration,
             routeKey: downloadOrderRouteKey,
-            mapping: downloadOrderMapping,
             controls: document.getElementById('hb-helper-choice-activation-controls'),
             selectionIds: sortedActivationSelectionIds(selectedDownloadItemIds),
         };
+    }
+
+    function areCapturedDownloadSelectionsCurrent(context) {
+        const capturedIds = new Set(context.selectionIds);
+        const matchingPairCounts = new Map();
+        for (const pair of downloadOrderMapping?.pairs || []) {
+            if (!isDownloadMappingPairEligible(pair)) continue;
+            const id = getDownloadActivationItemId(downloadOrderScope, pair.tpkd);
+            if (!capturedIds.has(id)) continue;
+            matchingPairCounts.set(id, (matchingPairCounts.get(id) || 0) + 1);
+        }
+        return context.selectionIds.every(id => matchingPairCounts.get(id) === 1);
     }
 
     function isActivationUiContextCurrent(context) {
@@ -4456,7 +4467,7 @@
             && context.routeKey === getDownloadsOrderKey()
             && context.scope.scope === downloadOrderScope
             && context.initializationGeneration === downloadOrderInitializationGeneration
-            && context.mapping === downloadOrderMapping
+            && areCapturedDownloadSelectionsCurrent(context)
             && activationSelectionIdsMatch(
                 context.selectionIds,
                 selectedDownloadItemIds
