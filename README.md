@@ -18,11 +18,12 @@ download pages.
   Location when the currencies differ.
 - Adds sorting controls to Humble bundle landing pages for default order,
   bundles ending soon, and newly added bundles.
-- Adds Humble Choice controls for selecting games, revealing selected Steam
-  keys, activating them directly from Humble Choice, and showing partial
-  failures while a Steam account is authenticated.
+- Adds Humble Choice controls for selecting games, revealing every selected
+  Steam key in sequence, activating them directly from Humble Choice, and
+  showing per-key partial failures while a Steam account is authenticated.
 - Supports game bundle pages and the Humble Choice membership page.
-- Shows Steam key activation restrictions on Humble download pages.
+- Shows Humble-provided Steam activation restrictions before reveal in Choice
+  game dialogs and with the same presentation on Humble download pages.
 - Supports English and Chinese script UI.
 
 ## Installation
@@ -60,6 +61,15 @@ and `Newly Added` to show the newest bundles first. A click changes only that
 section immediately, while the last clicked mode initializes every landing
 section on the next page load.
 
+When Humble provides activation metadata that can be mapped reliably, each
+Steam redemption row in a Choice game dialog shows its restriction below
+`Gift to a friend on Steam` before the key is revealed. Humble download pages
+use the same restriction card. A card saying Humble has not marked a regional
+restriction means only that both supplied country lists are explicitly empty;
+it is not a guarantee that the key is global. Missing or ambiguous metadata is
+not shown. These notices are an early warning based on Humble metadata; Steam's
+activation result is authoritative.
+
 The price summary follows the active Bundle Filters. Use `Show unowned` or
 `Show all` in the top-right corner of the summary to change which games are
 included. If an item cannot be priced, expand the matching details to see
@@ -78,9 +88,11 @@ selection with visible Choice games that are not marked as owned, `Clear` or
 selected Steam keys and activate them directly while staying on Humble Choice.
 No separate Steam activation page is opened. Log in to the Steam Store in the
 same browser before activation. The helper checks the live Steam session again
-before revealing any key, then reports reveal and activation progress on the
-same Humble page. A normal Humble key retrieval or Steam product activation
-failure does not stop later selected games from being processed.
+before revealing any key. It reveals every pending `Get Game` Steam row for a
+selected game one at a time, then submits the collected keys to Steam one at a
+time and reports progress on the same Humble page. A normal Humble key
+retrieval or Steam product activation failure does not stop a later sibling
+key or selected game from being processed.
 
 Activation results remain below the Choice controls and group Humble key
 retrieval failures separately from Steam activation failures. A failed Steam
@@ -91,9 +103,13 @@ activation again to retry them. Results remain visible until the next batch.
 If the Humble page is closed, reloaded, or loses a verifiable Steam session
 while processing a key, the script marks that key's result as uncertain,
 cancels every key not yet submitted, and never resumes or retries the batch
-automatically. Check uncertain keys in Steam before trying again. After each
-completed batch, the script synchronizes Steam ownership and wishlist data so
-highlights, selection, and price totals reflect the latest account state.
+automatically. Check uncertain keys in Steam before trying again. A game is
+removed from the selection only when every key processed for that game succeeds.
+If only some keys fail, the next activation attempt skips the slots recorded as
+successful by the previous completed batch and retries the failed slots without
+retaining the successful key text. After each completed batch, the script
+synchronizes Steam ownership and wishlist data so highlights, selection, and
+price totals reflect the latest account state.
 
 ## Data Sources
 
@@ -101,6 +117,8 @@ highlights, selection, and price totals reflect the latest account state.
   game-key activation.
 - Humble Bundle account settings provide the account Location used for HB
   currency conversion, with USD as the fallback when settings cannot be loaded.
+- Humble Choice and order metadata provide advisory Steam activation country
+  lists; the final availability decision comes from Steam during activation.
 - Xiaoheihe provides Steam regional price history.
 - [Frankfurter](https://frankfurter.dev/) provides exchange rates when Steam
   and Humble Bundle use different currencies.
