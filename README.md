@@ -82,6 +82,16 @@ empty; it is not a guarantee that the key is global. Missing or ambiguous
 metadata is not shown. These notices are an early warning based on Humble
 metadata; Steam's activation result is authoritative.
 
+Long country-code lists (13 or more) use the same native disclosure control
+and visual interaction as the price summary's `Show unpriced items` control;
+lists of 12 or fewer remain visible inline. The control is accessible by
+keyboard and mouse. When the exact same validated Choice game or Downloads
+order mapping is redrawn, each row's expanded or collapsed state is retained
+independently in memory. Switching games or orders, changing key counts,
+losing a reliable mapping or view, or returning later after invalidation
+starts the rows collapsed; state is not restored across page reloads or other
+contexts.
+
 The price summary follows the active Bundle Filters. Its header shows the
 current all/unowned scope immediately before the existing `Show unowned` or
 `Show all` action. During a same-page refresh, the prior successful values and
