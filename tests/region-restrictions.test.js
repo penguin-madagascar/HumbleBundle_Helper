@@ -114,6 +114,14 @@ function loadApi({
             if (selector === '.disclaimer') return this.downloadDisclaimers;
             if (selector === '.choice-modal') return this.choiceModals || [];
             if (selector === '.js-select-choice.select-choice') return this.choiceSelects || [];
+            if (selector === '.key-redeemer-container') {
+                const roots = [
+                    this.choiceModal,
+                    ...(this.choiceModals || []),
+                    ...(this.choiceSelects || []),
+                ].filter(Boolean);
+                return [...new Set(roots.flatMap(root => root.querySelectorAll?.(selector) || []))];
+            }
             if (selector === '.hb-helper-region-restrictions--choice') {
                 const roots = [
                     this.body,
@@ -307,6 +315,8 @@ function setActiveChoiceModal(document, modal) {
     siteModal.textContent = 'Choice details';
     siteModal.getClientRects = () => [{}];
     siteModal.querySelector = selector => selector === '.choice-modal' ? modal : null;
+    siteModal.querySelectorAll = selector => selector === '.choice-modal' ? [modal] : [];
+    siteModal.appendChild(modal);
     document.elements.set('site-modal', siteModal);
     document.choiceModals = [modal];
 }
@@ -844,6 +854,28 @@ test('renders only inside the active visible site modal, not a stale Choice moda
 
     assert.equal(hasClass(choicePanel(activeRows[0]), 'hb-helper-region-restrictions'), true);
     assert.equal(staleRows[0].row.children.includes(stalePanel), true);
+});
+
+test('uses the active Choice modal as the authority over its nested redeemed Choice surface', () => {
+    const {api, document} = loadApi();
+    const row = makeRow({gift: false});
+    const activeModal = makeChoiceModal('display-like-a-dragon', [row]);
+    const redeemedSurface = makeRedeemedChoiceSurface('display-like-a-dragon', [row]);
+    activeModal.appendChild(redeemedSurface);
+    setActiveChoiceModal(document, activeModal);
+    document.choiceSelects = [redeemedSurface];
+    const source = makeChoiceSource();
+    source.textContent = choicePayload({
+        like_a_dragon: {
+            display_item_machine_name: 'display-like-a-dragon',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.ok(choicePanel(row));
 });
 
 test('does not use unrelated data-machine-name attributes outside the Choice title', () => {

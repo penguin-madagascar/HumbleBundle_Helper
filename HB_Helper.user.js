@@ -7440,23 +7440,39 @@
         return false;
     }
 
-    function getChoiceRegionViewCandidates() {
-        const candidates = [];
-        const activeModal = getActiveChoiceModal()?.querySelector?.('.choice-modal');
-        if (activeModal) candidates.push(activeModal);
-        candidates.push(...Array.from(document.querySelectorAll?.('.choice-modal') || []));
-        candidates.push(...Array.from(document.querySelectorAll?.('.js-select-choice.select-choice') || []));
-        return [...new Set(candidates)];
-    }
-
     function clearChoiceRegionRestrictionPanels() {
         document.querySelectorAll?.('.hb-helper-region-restrictions--choice')
             .forEach(panel => panel.remove());
     }
 
+    function isChoiceRegionRedeemedView(element) {
+        const classes = String(element?.className || '').split(/\s+/);
+        return classes.includes('js-select-choice') && classes.includes('select-choice');
+    }
+
+    function getChoiceRegionRedeemedViewForContainer(container) {
+        for (let current = container; current; current = current.parentNode) {
+            if (isChoiceRegionRedeemedView(current)) return current;
+        }
+        return null;
+    }
+
     function getActiveChoiceRegionView() {
-        const views = getChoiceRegionViewCandidates().filter(isVisibleChoiceRegionElement);
-        return views.length === 1 ? views[0] : null;
+        const activeModal = getActiveChoiceModal();
+        if (activeModal) {
+            const choiceModals = Array.from(activeModal.querySelectorAll?.('.choice-modal') || [])
+                .filter(isVisibleChoiceRegionElement);
+            return choiceModals.length === 1 ? choiceModals[0] : null;
+        }
+        const containers = Array.from(document.querySelectorAll?.('.key-redeemer-container') || [])
+            .filter(isVisibleChoiceRegionElement);
+        if (!containers.length) return null;
+        const views = containers.map(getChoiceRegionRedeemedViewForContainer);
+        const [view] = views;
+        return view && isVisibleChoiceRegionElement(view)
+            && views.every(candidate => candidate === view)
+            ? view
+            : null;
     }
 
     function getChoiceModalIdentifier(view) {
