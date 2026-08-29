@@ -933,6 +933,7 @@
     let helperRouteTransitionPromise = Promise.resolve();
     let helperRouteDependencies = {};
     let pageRefreshTimer;
+    let choiceRegionRefreshTimer;
     let choiceCollectionRecoveryTimer;
     let choiceActivationRecoveryTimer;
     let choiceOwnershipRefreshTimer;
@@ -1440,10 +1441,15 @@
         return location.pathname.startsWith('/games/') && getCurrentPath() !== '/games';
     }
 
+    function isChoicePathname(pathname) {
+        return pathname === '/membership'
+            || pathname === '/membership/'
+            || pathname === '/membership/home'
+            || pathname.startsWith('/membership/home/');
+    }
+
     function isChoicePage() {
-        return location.pathname === '/membership'
-            || location.pathname === '/membership/'
-            || location.pathname.startsWith('/membership/home');
+        return isChoicePathname(location.pathname);
     }
 
     function getDownloadsOrderKey() {
@@ -5397,6 +5403,15 @@
         }, 300);
     }
 
+    function scheduleChoiceRegionRestrictionRefresh() {
+        if (!isChoicePage()) return;
+        clearTimeout(choiceRegionRefreshTimer);
+        choiceRegionRefreshTimer = setTimeout(() => {
+            if (!isChoicePage()) return;
+            ensureChoiceRegionRestrictions();
+        }, 0);
+    }
+
     function observeSteamSessionSynchronizationTriggers() {
         if (steamSessionTriggersObserved) return;
         steamSessionTriggersObserved = true;
@@ -6248,12 +6263,25 @@
             const original = window.history?.[methodName];
             if (typeof original !== 'function') continue;
             window.history[methodName] = function (...args) {
+                const previousRoute = getHelperRouteFingerprint();
+                const previousHash = location.hash;
                 const result = original.apply(this, args);
-                scheduleHelperRouteSynchronization();
+                if (getHelperRouteFingerprint() !== previousRoute) {
+                    scheduleHelperRouteSynchronization();
+                } else if (location.hash !== previousHash) {
+                    scheduleChoiceRegionRestrictionRefresh();
+                }
                 return result;
             };
         }
-        window.addEventListener('popstate', () => scheduleHelperRouteSynchronization());
+        window.addEventListener('popstate', () => {
+            if (getHelperRouteFingerprint() !== helperRouteFingerprint) {
+                scheduleHelperRouteSynchronization();
+            } else {
+                scheduleChoiceRegionRestrictionRefresh();
+            }
+        });
+        window.addEventListener('hashchange', scheduleChoiceRegionRestrictionRefresh);
         return scheduleHelperRouteSynchronization({force: true});
     }
 
@@ -6779,18 +6807,23 @@
         return panel;
     }
 
-    const choiceRegionCatalogCache = new WeakMap();
+    const choiceRegionSourceIds = [
+        'webpack-subscriber-hub-data',
+        'webpack-monthly-product-data',
+    ];
+    let choiceRegionSourceState;
+    let choiceRegionFallbackWarningShown = false;
 
-    function getStableChoiceGameSignature(value) {
-        if (Array.isArray(value)) {
-            return `[${value.map(getStableChoiceGameSignature).join(',')}]`;
-        }
-        if (value && typeof value === 'object') {
-            return `{${Object.keys(value).sort().map(key =>
-                `${JSON.stringify(key)}:${getStableChoiceGameSignature(value[key])}`
-            ).join(',')}}`;
-        }
-        return JSON.stringify(value);
+    function getChoiceRegionGameSignature(game) {
+        const canonicalCountries = countries => [...countries].sort();
+        return JSON.stringify([
+            game.choiceIdentifier,
+            game.display_item_machine_name,
+            game.tpkds.map(tpkd => [
+                canonicalCountries(tpkd.exclusive_countries),
+                canonicalCountries(tpkd.disallowed_countries),
+            ]),
+        ]);
     }
 
     function addChoiceRegionCatalogRecord(index, identifier, game, signature) {
@@ -6800,6 +6833,36 @@
             return;
         }
         index.set(identifier, {status: 'found', game, signature});
+    }
+
+    function projectChoiceRegionGame(choiceIdentifier, game) {
+        if (!game || typeof game !== 'object' || Array.isArray(game)
+            || !Array.isArray(game.tpkds) || !game.tpkds.length) {
+            return null;
+        }
+        const normalizedChoiceIdentifier = typeof choiceIdentifier === 'string'
+            && choiceIdentifier.length > 0
+            ? choiceIdentifier
+            : null;
+        const displayMachineName = typeof game.display_item_machine_name === 'string'
+            && game.display_item_machine_name.length > 0
+            ? game.display_item_machine_name
+            : null;
+        if (!normalizedChoiceIdentifier && !displayMachineName) return null;
+        const tpkds = [];
+        for (const tpkd of game.tpkds) {
+            const restrictions = normalizeRegionRestrictions(tpkd);
+            if (restrictions.status === 'unavailable') return null;
+            tpkds.push({
+                exclusive_countries: restrictions.exclusiveCountries,
+                disallowed_countries: restrictions.disallowedCountries,
+            });
+        }
+        return {
+            choiceIdentifier: normalizedChoiceIdentifier,
+            display_item_machine_name: displayMachineName,
+            tpkds,
+        };
     }
 
     function parseChoiceRegionCatalog(dataText) {
@@ -6821,37 +6884,41 @@
                 ? [[null, gameData]]
                 : Object.entries(gameData);
         for (const [key, game] of entries) {
-            if (!game || typeof game !== 'object' || Array.isArray(game) || !Array.isArray(game.tpkds)) continue;
-            const signature = getStableChoiceGameSignature(game);
+            const record = projectChoiceRegionGame(key, game);
+            if (!record) continue;
+            const signature = getChoiceRegionGameSignature(record);
             addChoiceRegionCatalogRecord(
                 catalog.byDisplayMachineName,
-                game.display_item_machine_name,
-                game,
+                record.display_item_machine_name,
+                record,
                 signature
             );
-            addChoiceRegionCatalogRecord(catalog.byChoiceIdentifier, key, game, signature);
+            addChoiceRegionCatalogRecord(
+                catalog.byChoiceIdentifier,
+                record.choiceIdentifier,
+                record,
+                signature
+            );
         }
-        return catalog;
+        return catalog.byDisplayMachineName.size || catalog.byChoiceIdentifier.size
+            ? catalog
+            : null;
     }
 
     function getChoiceRegionCatalog(source) {
         if (!source || typeof source.textContent !== 'string') return null;
-        const cached = choiceRegionCatalogCache.get(source);
-        if (cached?.text === source.textContent) return cached.catalog;
-        const catalog = parseChoiceRegionCatalog(source.textContent);
-        if (catalog) choiceRegionCatalogCache.set(source, {text: source.textContent, catalog});
-        return catalog;
+        const type = source.type || source.getAttribute?.('type');
+        const mediaType = String(type || '').split(';')[0].trim().toLowerCase();
+        if (source.tagName?.toLowerCase() !== 'script' || mediaType !== 'application/json') {
+            return null;
+        }
+        return parseChoiceRegionCatalog(source.textContent);
     }
 
-    function findChoiceRegionGame(channel, identifier) {
+    function findChoiceRegionGame(catalogs, channel, identifier) {
         if (typeof identifier !== 'string' || identifier.length === 0) return {status: 'missing'};
-        const sources = [
-            document.getElementById('webpack-subscriber-hub-data'),
-            document.getElementById('webpack-monthly-product-data'),
-        ];
         let found = null;
-        for (const source of sources) {
-            const catalog = getChoiceRegionCatalog(source);
+        for (const catalog of catalogs) {
             const match = catalog?.[channel]?.get(identifier);
             if (!match) continue;
             if (match.status === 'ambiguous') return match;
@@ -6862,6 +6929,31 @@
             }
         }
         return found || {status: 'missing'};
+    }
+
+    function validateChoiceRegionGameMatch(catalogs, match) {
+        if (match.status !== 'found') return match;
+        const identities = [
+            ['byChoiceIdentifier', match.game.choiceIdentifier],
+            ['byDisplayMachineName', match.game.display_item_machine_name],
+        ];
+        const conflicts = identities.some(([channel, identifier]) => {
+            if (typeof identifier !== 'string' || identifier.length === 0) return false;
+            const identityMatch = findChoiceRegionGame(catalogs, channel, identifier);
+            return identityMatch.status !== 'found'
+                || identityMatch.signature !== match.signature;
+        });
+        return conflicts ? {status: 'ambiguous'} : match;
+    }
+
+    function getLiveChoiceRegionCatalogs() {
+        return choiceRegionSourceIds
+            .map(id => getChoiceRegionCatalog(document.getElementById(id)))
+            .filter(Boolean);
+    }
+
+    function getChoiceRegionSourceRouteKey() {
+        return `${getHelperRouteFingerprint()}\n${helperRouteTransitionGeneration}`;
     }
 
     function removeChoiceRegionRestrictionPanels(modal) {
@@ -6885,30 +6977,161 @@
         }
     }
 
-    function ensureChoiceRegionRestrictions() {
+    function renderChoiceRegionRestrictions(catalogs) {
         const modal = getActiveChoiceModal()?.querySelector?.('.choice-modal');
         if (!modal) return;
         const identifier = getChoiceModalIdentifier(modal);
+        const hashIdentifier = getChoiceHashIdentifier();
         const titleMatch = identifier
-            ? findChoiceRegionGame('byDisplayMachineName', identifier)
+            ? findChoiceRegionGame(catalogs, 'byDisplayMachineName', identifier)
             : {status: 'missing'};
-        const match = titleMatch.status === 'missing'
-            ? findChoiceRegionGame('byChoiceIdentifier', getChoiceHashIdentifier())
-            : titleMatch;
+        const hashMatch = hashIdentifier
+            ? findChoiceRegionGame(catalogs, 'byChoiceIdentifier', hashIdentifier)
+            : {status: 'missing'};
+        let match = titleMatch;
+        if (titleMatch.status === 'missing') {
+            match = hashMatch;
+        } else if (titleMatch.status === 'found'
+            && (hashMatch.status === 'ambiguous'
+                || (hashMatch.status === 'found'
+                    && titleMatch.signature !== hashMatch.signature))) {
+            match = {status: 'ambiguous'};
+        }
+        match = validateChoiceRegionGameMatch(catalogs, match);
         const game = match.status === 'found' ? match.game : null;
         const rows = Array.from(modal.querySelectorAll?.('.js-key-redeemer > .key-redeemer') || []);
         const fields = rows.map(row => row.querySelector?.('.giftfield'));
         if (!game || !Array.isArray(game.tpkds) || !rows.length
             || game.tpkds.length !== rows.length || fields.some(field => !field)
-            || game.tpkds.some(tpkd => normalizeRegionRestrictions(tpkd).status === 'unavailable')) {
+            || game.tpkds.some(tpkd =>
+                normalizeRegionRestrictions(tpkd).status === 'unavailable')) {
             removeChoiceRegionRestrictionPanels(modal);
             return;
         }
         removeChoiceRegionRestrictionPanels(modal);
         const steamCountryCode = steamSessionState.account?.countryCode || null;
         game.tpkds.forEach((tpkd, index) => {
-            fields[index].insertAdjacentElement('afterend', createRegionRestrictionPanel(tpkd, steamCountryCode));
+            fields[index].insertAdjacentElement(
+                'afterend',
+                createRegionRestrictionPanel(tpkd, steamCountryCode)
+            );
         });
+    }
+
+    function isCurrentChoiceRegionSourceState(state) {
+        return choiceRegionSourceState === state
+            && state.routeKey === getChoiceRegionSourceRouteKey();
+    }
+
+    function getChoiceRegionCatalogsFromHtml(html) {
+        const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
+        return choiceRegionSourceIds
+            .map(id => getChoiceRegionCatalog(parsedDocument.getElementById?.(id)))
+            .filter(Boolean);
+    }
+
+    async function loadChoiceRegionCatalogs(state) {
+        const requestOrigin = location.origin;
+        const requestPathname = location.pathname;
+        const requestSearch = location.search || '';
+        const requestTarget = `${requestPathname}${requestSearch}`;
+        try {
+            const response = await fetch(
+                requestTarget,
+                {credentials: 'include'}
+            );
+            const contentType = response.headers?.get?.('content-type');
+            let responseUrl;
+            try {
+                responseUrl = new URL(response.url);
+            } catch (_) {
+                throw new Error('invalid response URL');
+            }
+            if (!response.ok
+                || response.status !== 200
+                || response.redirected
+                || String(contentType || '').split(';')[0].trim().toLowerCase() !== 'text/html'
+                || responseUrl.origin !== requestOrigin
+                || responseUrl.pathname !== requestPathname
+                || responseUrl.search !== requestSearch
+                || !isChoicePathname(responseUrl.pathname)) {
+                throw new Error('invalid response');
+            }
+            const catalogs = getChoiceRegionCatalogsFromHtml(await response.text());
+            if (!catalogs.length) throw new Error('missing metadata');
+            if (!isCurrentChoiceRegionSourceState(state)) return;
+            state.status = 'ready';
+            state.catalogs = catalogs;
+            ensureChoiceRegionRestrictions();
+        } catch (_) {
+            if (!isCurrentChoiceRegionSourceState(state)) return;
+            state.status = 'failed';
+            state.catalogs = [];
+            if (!choiceRegionFallbackWarningShown) {
+                choiceRegionFallbackWarningShown = true;
+                console.warn('[HB-Helper] Choice restriction metadata unavailable.');
+            }
+        }
+    }
+
+    function ensureChoiceRegionRestrictions() {
+        if (!isChoicePage()) return undefined;
+        const modal = getActiveChoiceModal()?.querySelector?.('.choice-modal');
+        if (!modal) return undefined;
+
+        const routeKey = getChoiceRegionSourceRouteKey();
+        const liveCatalogs = getLiveChoiceRegionCatalogs();
+        if (liveCatalogs.length) {
+            renderChoiceRegionRestrictions(liveCatalogs);
+            return undefined;
+        }
+
+        removeChoiceRegionRestrictionPanels(modal);
+        if (choiceRegionSourceState?.routeKey === routeKey) {
+            if (choiceRegionSourceState.status === 'ready') {
+                renderChoiceRegionRestrictions(choiceRegionSourceState.catalogs);
+            }
+            return choiceRegionSourceState.promise;
+        }
+
+        const state = {routeKey, status: 'pending', catalogs: [], promise: null};
+        choiceRegionSourceState = state;
+        state.promise = loadChoiceRegionCatalogs(state);
+        return state.promise;
+    }
+
+    function serializeChoiceRegionCatalog(catalog) {
+        const serializeGame = game => ({
+            choiceIdentifier: game.choiceIdentifier,
+            display_item_machine_name: game.display_item_machine_name,
+            tpkds: game.tpkds.map(tpkd => ({
+                exclusive_countries: [...tpkd.exclusive_countries],
+                disallowed_countries: [...tpkd.disallowed_countries],
+            })),
+        });
+        const serializeIndex = index => Object.fromEntries(
+            [...index].map(([identifier, match]) => [
+                identifier,
+                match.status === 'found' ? serializeGame(match.game) : null,
+            ])
+        );
+        return {
+            byChoiceIdentifier: serializeIndex(catalog.byChoiceIdentifier),
+            byDisplayMachineName: serializeIndex(catalog.byDisplayMachineName),
+        };
+    }
+
+    function parseChoiceRegionCatalogForTest(dataText) {
+        const catalog = parseChoiceRegionCatalog(dataText);
+        return catalog ? serializeChoiceRegionCatalog(catalog) : null;
+    }
+
+    function getChoiceRegionSourceStateForTest() {
+        return choiceRegionSourceState ? {
+            routeKey: choiceRegionSourceState.routeKey,
+            status: choiceRegionSourceState.status,
+            catalogs: choiceRegionSourceState.catalogs.map(serializeChoiceRegionCatalog),
+        } : null;
     }
 
     if (globalThis.__HB_HELPER_TEST__) {
@@ -7003,6 +7226,8 @@
             createRegionRestrictionPanel,
             isHelperUiMutation,
             ensureChoiceRegionRestrictionsForTest: ensureChoiceRegionRestrictions,
+            parseChoiceRegionCatalogForTest,
+            getChoiceRegionSourceStateForTest,
             createSteamSessionSynchronizer,
             createSteamSessionSyncTrigger,
             getLiveSteamAccount,
