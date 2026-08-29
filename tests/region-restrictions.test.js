@@ -97,6 +97,7 @@ function loadApi({
     fetchImpl = () => Promise.reject(new Error('unexpected fetch')),
     DOMParserImpl,
     consoleImpl = {log() {}, warn() {}, error() {}},
+    gmSetValueImpl = () => {},
 } = {}) {
     const mutationObservers = [];
     const windowListeners = new Map();
@@ -105,6 +106,7 @@ function loadApi({
         head: makeElement('head'),
         documentElement: makeElement('html'),
         elements: new Map(),
+        scripts: [],
         downloadDisclaimers: [],
         createElement: makeElement,
         addEventListener() {},
@@ -155,7 +157,7 @@ function loadApi({
         },
         fetch: fetchImpl,
         GM_getValue(_name, fallback) { return fallback; },
-        GM_setValue() {},
+        GM_setValue: gmSetValueImpl,
         GM_deleteValue() {},
         GM_addValueChangeListener() {},
         GM_setClipboard() {},
@@ -351,10 +353,14 @@ function choiceHtml({
     monthlyTag = 'script',
     subscriberType = 'application/json',
     monthlyType = 'application/json',
+    sources = [],
 } = {}) {
     const scripts = [
         ['webpack-subscriber-hub-data', subscriber, subscriberTag, subscriberType],
         ['webpack-monthly-product-data', monthly, monthlyTag, monthlyType],
+        ...sources.map(({id, payload, tag = 'script', type = 'application/json'}) =>
+            [id, payload, tag, type]
+        ),
     ].filter(([, payload]) => typeof payload === 'string').map(([id, payload, tag, type]) =>
         `<${tag} id="${id}"${type === null ? '' : ` type="${type}"`}>${payload}</${tag}>`
     );
@@ -364,22 +370,22 @@ function choiceHtml({
 function createChoiceHtmlParser() {
     return class {
         parseFromString(html) {
-            const scripts = new Map();
-            for (const id of ['webpack-subscriber-hub-data', 'webpack-monthly-product-data']) {
-                const match = new RegExp(
-                    `<([a-z][a-z0-9-]*)\\s+id="${id}"([^>]*)>([\\s\\S]*?)<\\/\\1>`,
-                    'i'
-                ).exec(html);
-                if (match) {
-                    const type = /\btype="([^"]*)"/i.exec(match[2])?.[1] ?? null;
-                    const script = makeChoiceSource(match[3], {tagName: match[1], type});
-                    scripts.set(id, script);
-                }
+            const elements = new Map();
+            const scripts = [];
+            const matches = html.matchAll(
+                /<([a-z][a-z0-9-]*)\s+id="([^"]+)"([^>]*)>([\s\S]*?)<\/\1>/gi
+            );
+            for (const match of matches) {
+                const type = /\btype="([^"]*)"/i.exec(match[3])?.[1] ?? null;
+                const element = makeChoiceSource(match[4], {tagName: match[1], type});
+                elements.set(match[2], element);
+                if (match[1].toLowerCase() === 'script') scripts.push(element);
             }
             return {
-                getElementById(id) { return scripts.get(id) || null; },
+                scripts,
+                getElementById(id) { return elements.get(id) || null; },
                 querySelector(selector) {
-                    return selector.startsWith('#') ? scripts.get(selector.slice(1)) || null : null;
+                    return selector.startsWith('#') ? elements.get(selector.slice(1)) || null : null;
                 },
             };
         }
@@ -1147,6 +1153,35 @@ test('fails closed for conflicting cross-source identity data but accepts identi
     assert.equal(hasClass(choicePanel(identicalRows[0]), 'hb-helper-region-restrictions'), true);
 });
 
+test('deduplicates repeated fixed Choice metadata nodes before parsing', () => {
+    const {api, document} = loadApi();
+    const rows = [makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('display-alpha', rows));
+    const source = makeChoiceSource();
+    let reads = 0;
+    Object.defineProperty(source, 'textContent', {
+        get() {
+            reads += 1;
+            return choicePayload({
+                alpha: {
+                    display_item_machine_name: 'display-alpha',
+                    tpkds: [{
+                        exclusive_countries: [reads <= 2 ? 'US' : 'CA'],
+                        disallowed_countries: [],
+                    }],
+                },
+            });
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+    document.elements.set('webpack-monthly-product-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.ok(choicePanel(rows[0]));
+    assert.equal(reads, 2);
+});
+
 test('recovers Choice restrictions from current same-origin HTML when both live webpack nodes are absent', async () => {
     const requests = [];
     const {api, document, context} = loadApi({
@@ -1182,6 +1217,164 @@ test('recovers Choice restrictions from current same-origin HTML when both live 
     assert.equal(requests[0].options.credentials, 'include');
     assert.equal(hasClass(choicePanel(rows[0]), 'hb-helper-region-restrictions'), true);
     assert.match(panelText(choicePanel(rows[0])), /can be activated/);
+});
+
+test('discovers renamed Choice JSON metadata in fetched HTML for redeemed external views', async () => {
+    const requests = [];
+    const {api, document} = loadApi({
+        DOMParserImpl: createChoiceHtmlParser(),
+        fetchImpl(url, options) {
+            requests.push({url, options});
+            return Promise.resolve(htmlResponse(choiceHtml({
+                sources: [{
+                    id: 'choice-data-renamed-2026',
+                    payload: choicePayload({
+                        'dead-cells': {
+                            display_item_machine_name: 'dead-cells',
+                            tpkds: [
+                                {exclusive_countries: ['US'], disallowed_countries: []},
+                                {exclusive_countries: ['US'], disallowed_countries: []},
+                            ],
+                        },
+                    }),
+                }],
+            })));
+        },
+    });
+    const rows = [makeRow({gift: false}), makeRow({gift: false})];
+    document.choiceSelects = [makeRedeemedChoiceSurface('dead-cells', rows)];
+
+    await api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(requests.length, 1);
+    assert.ok(choicePanel(rows[0]), 'renamed metadata should render the first redeemed key');
+    assert.match(panelText(choicePanel(rows[0])), /Key 1\/2/);
+    assert.match(panelText(choicePanel(rows[1])), /Key 2\/2/);
+    assert.equal(requests[0].options.credentials, 'include');
+    assert.equal(requests[0].options.cache, 'no-store');
+    assert.equal(
+        requests[0].options.headers.Accept,
+        'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+    );
+});
+
+test('discovers renamed Choice JSON metadata from the live DOM without fetching', async () => {
+    let requests = 0;
+    const {api, document} = loadApi({
+        fetchImpl() { requests += 1; },
+    });
+    const rows = [makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('dead-cells', rows));
+    const source = makeChoiceSource(choicePayload({
+        'dead-cells': {
+            display_item_machine_name: 'dead-cells',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    }));
+    document.scripts.push(source);
+
+    await api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(requests, 0);
+    assert.ok(choicePanel(rows[0]));
+});
+
+test('keeps valid fixed Choice metadata authoritative over renamed scripts', async () => {
+    let requests = 0;
+    const {api, document} = loadApi({
+        fetchImpl() { requests += 1; },
+    });
+    const rows = [makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('dead-cells', rows));
+    const fixedSource = makeChoiceSource(choicePayload({
+        'dead-cells': {
+            display_item_machine_name: 'dead-cells',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    }));
+    const renamedConflict = makeChoiceSource(choicePayload({
+        'dead-cells': {
+            display_item_machine_name: 'dead-cells',
+            tpkds: [{exclusive_countries: ['CA'], disallowed_countries: []}],
+        },
+    }));
+    document.elements.set('webpack-subscriber-hub-data', fixedSource);
+    document.scripts.push(fixedSource, renamedConflict);
+
+    await api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(requests, 0);
+    assert.ok(choicePanel(rows[0]));
+});
+
+test('rejects malformed renamed Choice scripts during structural discovery', async () => {
+    const validGame = {
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    };
+    const invalidSources = [
+        {id: 'renamed-wrong-mime', payload: choicePayload(validGame), type: 'text/plain'},
+        {id: 'renamed-js-wrapper', payload: `window.choiceData = ${choicePayload(validGame)}`},
+        {id: 'renamed-invalid-json', payload: '{not json'},
+        {
+            id: 'renamed-wrong-shape',
+            payload: JSON.stringify({contentChoiceOptions: {contentChoiceData: {games: validGame}}}),
+        },
+    ];
+    for (const source of invalidSources) {
+        const {api, document, context} = loadApi({
+            DOMParserImpl: createChoiceHtmlParser(),
+            fetchImpl() {
+                return Promise.resolve(htmlResponse(choiceHtml({sources: [source]})));
+            },
+        });
+        const rows = [makeRow()];
+        setActiveChoiceModal(document, makeChoiceModal('display-alpha', rows));
+        context.location.hash = '#alpha';
+
+        await api.ensureChoiceRegionRestrictionsForTest();
+
+        assert.equal(choicePanel(rows[0]), null, source.id);
+    }
+});
+
+test('fails closed when renamed Choice catalogs conflict', async () => {
+    const {api, document, context} = loadApi({
+        DOMParserImpl: createChoiceHtmlParser(),
+        fetchImpl() {
+            return Promise.resolve(htmlResponse(choiceHtml({
+                sources: [
+                    {
+                        id: 'renamed-one',
+                        payload: choicePayload({
+                            alpha: {
+                                display_item_machine_name: 'display-alpha',
+                                tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+                            },
+                        }),
+                    },
+                    {
+                        id: 'renamed-two',
+                        payload: choicePayload({
+                            alpha: {
+                                display_item_machine_name: 'display-alpha',
+                                tpkds: [{exclusive_countries: ['CA'], disallowed_countries: []}],
+                            },
+                        }),
+                    },
+                ],
+            })));
+        },
+    });
+    const rows = [makeRow()];
+    setActiveChoiceModal(document, makeChoiceModal('display-alpha', rows));
+    context.location.hash = '#alpha';
+
+    await api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(choicePanel(rows[0]), null);
 });
 
 test('recovers Choice restrictions from the fetched monthly webpack source', async () => {
@@ -1682,28 +1875,34 @@ test('warns only once globally when Choice HTML fallback fails across routes', a
 });
 
 test('projects fetched Choice data to identity and country arrays without retaining sensitive values', async () => {
-    const sensitiveSentinel = 'purchase-token-should-never-be-cached-or-logged';
+    const sensitiveSentinel = 'gamekey-csrf-account-should-never-be-cached-or-logged';
     const messages = [];
+    const gmWrites = [];
     const payload = choicePayload({
         'choice-beta': {
             display_item_machine_name: 'display-beta',
             tpkds: [{
                 exclusive_countries: ['US'],
                 disallowed_countries: ['CA'],
-                purchase_token: sensitiveSentinel,
+                gamekey: sensitiveSentinel,
             }],
-            purchase_token: sensitiveSentinel,
-            nested: {credential: sensitiveSentinel},
+            csrf_token: sensitiveSentinel,
+            account: {id: sensitiveSentinel},
         },
     });
     const {api, document, context} = loadApi({
         DOMParserImpl: createChoiceHtmlParser(),
-        fetchImpl() { return Promise.resolve(htmlResponse(choiceHtml({subscriber: payload}))); },
+        fetchImpl() {
+            return Promise.resolve(htmlResponse(choiceHtml({
+                sources: [{id: 'renamed-choice-data', payload}],
+            })));
+        },
         consoleImpl: {
             log(...values) { messages.push(values.join(' ')); },
             warn(...values) { messages.push(values.join(' ')); },
             error(...values) { messages.push(values.join(' ')); },
         },
+        gmSetValueImpl(...values) { gmWrites.push(values); },
     });
     assert.ok(api.parseChoiceRegionCatalogForTest, 'normalized Choice catalog test seam is missing');
     assert.ok(api.getChoiceRegionSourceStateForTest, 'Choice source-state test seam is missing');
@@ -1738,6 +1937,8 @@ test('projects fetched Choice data to identity and country arrays without retain
     assert.deepEqual(plain(sourceState.catalogs), [plain(parsed)]);
     assert.deepEqual(Object.keys(sourceState).sort(), ['catalogs', 'routeKey', 'status']);
     assert.equal(JSON.stringify(sourceState).includes(sensitiveSentinel), false);
+    assert.equal(panelText(choicePanel(rows[0])).includes(sensitiveSentinel), false);
+    assert.equal(JSON.stringify(gmWrites).includes(sensitiveSentinel), false);
     assert.equal(messages.some(message => message.includes(sensitiveSentinel)), false);
     sourceState.catalogs[0].byChoiceIdentifier['choice-beta']
         .tpkds[0].exclusive_countries.push(sensitiveSentinel);

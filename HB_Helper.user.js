@@ -7419,10 +7419,29 @@
         return conflicts ? {status: 'ambiguous'} : match;
     }
 
+    function getChoiceRegionCatalogsFromDocument(documentLike) {
+        const sources = new Set();
+        const catalogs = [];
+        for (const id of choiceRegionSourceIds) {
+            const source = documentLike?.getElementById?.(id);
+            if (!source || sources.has(source)) continue;
+            sources.add(source);
+            const catalog = getChoiceRegionCatalog(source);
+            if (catalog) catalogs.push(catalog);
+        }
+        if (catalogs.length) return catalogs;
+
+        for (const source of documentLike?.scripts || []) {
+            if (sources.has(source)) continue;
+            sources.add(source);
+            const catalog = getChoiceRegionCatalog(source);
+            if (catalog) catalogs.push(catalog);
+        }
+        return catalogs;
+    }
+
     function getLiveChoiceRegionCatalogs() {
-        return choiceRegionSourceIds
-            .map(id => getChoiceRegionCatalog(document.getElementById(id)))
-            .filter(Boolean);
+        return getChoiceRegionCatalogsFromDocument(document);
     }
 
     function getChoiceRegionSourceRouteKey() {
@@ -7585,9 +7604,7 @@
 
     function getChoiceRegionCatalogsFromHtml(html) {
         const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
-        return choiceRegionSourceIds
-            .map(id => getChoiceRegionCatalog(parsedDocument.getElementById?.(id)))
-            .filter(Boolean);
+        return getChoiceRegionCatalogsFromDocument(parsedDocument);
     }
 
     async function loadChoiceRegionCatalogs(state) {
@@ -7598,7 +7615,13 @@
         try {
             const response = await fetch(
                 requestTarget,
-                {credentials: 'include'}
+                {
+                    credentials: 'include',
+                    cache: 'no-store',
+                    headers: {
+                        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    },
+                }
             );
             const contentType = response.headers?.get?.('content-type');
             let responseUrl;
