@@ -556,6 +556,8 @@
             steamSyncLoggedOut: 'Log in to Steam, then return to Humble Bundle. Your Steam session will synchronize automatically.',
             steamSyncError: 'Could not synchronize your Steam session. Check that you are logged in, then retry.',
             steamSyncRetry: 'Retry synchronization',
+            steamSessionChecking: 'Checking Steam login status…',
+            steamSessionRechecking: 'Rechecking Steam session; activation becomes available when complete.',
             steamGiftsSearch: 'Search SteamGifts discussions (for potential region lock)',
             loadingPriceTotals: 'Loading Steam price totals...',
             stalePriceTotals: 'Refresh failed; showing previous totals.',
@@ -663,6 +665,8 @@
             steamSyncLoggedOut: '登录 Steam 后返回 Humble Bundle，助手会自动同步 Steam 会话。',
             steamSyncError: '无法同步 Steam 会话。请确认已登录后重试。',
             steamSyncRetry: '重新同步',
+            steamSessionChecking: '正在检查 Steam 登录状态…',
+            steamSessionRechecking: '正在重新检查 Steam 会话；完成后即可激活。',
             steamGiftsSearch: '搜索 SteamGifts 讨论（查看可能的区域限制）',
             loadingPriceTotals: '正在加载 Steam 价格汇总...',
             stalePriceTotals: '刷新失败，正在显示上次成功的价格汇总。',
@@ -1349,7 +1353,7 @@
                 console.warn('[HB-Helper] Complete deferred ownership refresh failed:', error);
             });
         }
-        refreshHelperPage(nextState.status === 'authenticated');
+        refreshHelperPage(nextState.status === 'authenticated', {skipDownloadRemap: true});
     }
 
     function clearSteamAccountDerivedState() {
@@ -2569,20 +2573,9 @@
         downloadRowInteractionState.delete(row);
     }
 
-    function ensureDownloadLoginReminder(controls) {
-        let reminder = document.getElementById('hb-helper-login-reminder');
-        if (hasSteamAccountData()) {
-            reminder?.remove();
-            return;
-        }
-        const errorPresentation = steamSessionState.status === 'error'
-            || (steamSessionState.status === 'syncing' && steamSessionState.error);
-        if (steamSessionState.status !== 'logged-out' && !errorPresentation) return;
-        if (!reminder) {
-            reminder = document.createElement('div');
-            reminder.id = 'hb-helper-login-reminder';
-            reminder.className = 'hb-helper-downloads-login';
-        }
+    function renderSteamSessionReminder(reminder, {loggedOutMessageKey}) {
+        reminder.setAttribute('role', 'status');
+        reminder.setAttribute('aria-live', 'polite');
         let link = reminder.querySelector('a');
         let message = reminder.querySelector('.hb-helper-login-message');
         if (!message) {
@@ -2590,6 +2583,8 @@
             message.className = 'hb-helper-login-message';
             reminder.appendChild(message);
         }
+        const errorPresentation = steamSessionState.status === 'error'
+            || (steamSessionState.status === 'syncing' && steamSessionState.error);
         if (errorPresentation) {
             link?.remove();
             message.textContent = t('steamSyncError');
@@ -2607,7 +2602,10 @@
             }
             retryButton.textContent = t('steamSyncRetry');
             retryButton.disabled = steamSessionState.status === 'syncing';
-        } else {
+            return;
+        }
+        reminder.querySelector('button')?.remove();
+        if (steamSessionState.status === 'logged-out') {
             if (!link) {
                 link = document.createElement('a');
                 link.href = 'https://store.steampowered.com/login/';
@@ -2616,9 +2614,27 @@
                 reminder.insertBefore(link, reminder.firstChild);
             }
             link.textContent = t('loginSteamCheckOwned');
-            message.textContent = t('downloadLoginSteam');
-            reminder.querySelector('button')?.remove();
+            message.textContent = t(loggedOutMessageKey);
+            return;
         }
+        link?.remove();
+        message.textContent = hasSteamAccountData()
+            ? t('steamSessionRechecking')
+            : t('steamSessionChecking');
+    }
+
+    function ensureDownloadLoginReminder(controls) {
+        let reminder = document.getElementById('hb-helper-login-reminder');
+        if (steamSessionState.status === 'authenticated' && isSteamAccountData(steamSessionState.account)) {
+            reminder?.remove();
+            return;
+        }
+        if (!reminder) {
+            reminder = document.createElement('div');
+            reminder.id = 'hb-helper-login-reminder';
+            reminder.className = 'hb-helper-downloads-login';
+        }
+        renderSteamSessionReminder(reminder, {loggedOutMessageKey: 'downloadLoginSteam'});
         if (reminder.parentNode !== controls || controls.firstElementChild !== reminder) {
             controls.insertBefore(reminder, controls.firstChild);
         }
@@ -4911,7 +4927,7 @@
         }
     }
 
-    function refreshDownloadOrderPage({loadOrder} = {}) {
+    function refreshDownloadOrderPage({loadOrder, remap = true} = {}) {
         const orderKey = getDownloadsOrderKey();
         if (!orderKey) {
             resetDownloadOrderPage();
@@ -4929,7 +4945,7 @@
         }
 
         mountDownloadActivationControls();
-        if (downloadOrderData) {
+        if (downloadOrderData && remap) {
             clearDownloadMappingUi();
             downloadOrderMapping = mapDownloadOrderRows(
                 downloadOrderData.tpkd_dict.all_tpks
@@ -5123,52 +5139,8 @@
         if (!loginDiv) {
             loginDiv = document.createElement('div');
             loginDiv.id = 'hb-helper-login-reminder';
-            const loginLink = document.createElement('a');
-            loginLink.href = 'https://store.steampowered.com/login/';
-            loginLink.target = '_blank';
-            loginLink.rel = 'noopener noreferrer';
-            loginDiv.appendChild(loginLink);
         }
-        let loginLink = loginDiv.querySelector('a');
-        const existingMessage = loginDiv.querySelector('.hb-helper-login-message');
-        if (steamSessionState.status === 'error'
-            || (steamSessionState.status === 'syncing' && steamSessionState.error)) {
-            loginLink?.remove();
-            if (!existingMessage) {
-                const message = document.createElement('div');
-                message.className = 'hb-helper-login-message';
-                loginDiv.appendChild(message);
-            }
-            loginDiv.querySelector('.hb-helper-login-message').textContent = t('steamSyncError');
-            let retryButton = loginDiv.querySelector('button');
-            if (!retryButton) {
-                retryButton = document.createElement('button');
-                retryButton.type = 'button';
-                retryButton.addEventListener('click', () => {
-                    retryButton.disabled = true;
-                    syncSteamSession({force: true}).finally(() => { retryButton.disabled = false; });
-                });
-                loginDiv.appendChild(retryButton);
-            }
-            retryButton.textContent = t('steamSyncRetry');
-            retryButton.disabled = steamSessionState.status === 'syncing';
-        } else {
-            if (!loginLink) {
-                loginLink = document.createElement('a');
-                loginLink.href = 'https://store.steampowered.com/login/';
-                loginLink.target = '_blank';
-                loginLink.rel = 'noopener noreferrer';
-                loginDiv.insertBefore(loginLink, loginDiv.firstChild);
-            }
-            loginLink.textContent = t('loginSteamCheckOwned');
-            if (!existingMessage) {
-                const message = document.createElement('div');
-                message.className = 'hb-helper-login-message';
-                loginDiv.appendChild(message);
-            }
-            loginDiv.querySelector('.hb-helper-login-message').textContent = t('steamSyncLoggedOut');
-            loginDiv.querySelector('button')?.remove();
-        }
+        renderSteamSessionReminder(loginDiv, {loggedOutMessageKey: 'steamSyncLoggedOut'});
         if (loginDiv.parentNode !== controls || controls.firstElementChild !== loginDiv) {
             controls.insertBefore(loginDiv, controls.firstChild);
         }
@@ -5382,9 +5354,9 @@
         });
     }
 
-    function refreshHelperPage(forcePriceReload = false) {
+    function refreshHelperPage(forcePriceReload = false, {skipDownloadRemap = false} = {}) {
         if (isDownloadsPage()) {
-            refreshDownloadOrderPage();
+            refreshDownloadOrderPage({remap: !skipDownloadRemap});
             return;
         }
         if (downloadOrderRouteKey !== undefined || downloadOrderMapping) {
@@ -7008,6 +6980,7 @@
             runChoiceCollectionWorkForTest: runChoiceCollectionWork,
             mountDownloadActivationControlsForTest: mountDownloadActivationControls,
             setDownloadOrderStateForTest,
+            getDownloadOrderMappingForTest: () => downloadOrderMapping,
             renderDownloadSelectionStateForTest: renderDownloadSelectionState,
             setDownloadSelectionModeForTest: setDownloadSelectionMode,
             handleDownloadSelectionEventForTest: handleDownloadSelectionEvent,

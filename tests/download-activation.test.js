@@ -2586,7 +2586,7 @@ test('live downloads controls gate interaction, restore native rows, and select 
 
     const controls = api.mountDownloadActivationControlsForTest();
     api.renderDownloadSelectionStateForTest();
-    assert.equal(controls.querySelector('.hb-helper-downloads-login'), null);
+    assert.ok(controls.querySelector('.hb-helper-downloads-login'));
 
     api.setSteamDerivedStateForTest({
         countryCode: 'CA',
@@ -2626,7 +2626,7 @@ test('live downloads controls gate interaction, restore native rows, and select 
     assert.equal(unknownRow.hasAttribute('role'), false);
 });
 
-test('retained Downloads synchronization preserves UI and keeps local selection usable', async () => {
+test('retained Downloads synchronization preserves UI, mapping identity, and keeps local selection usable', async () => {
     const {api, document, orderSecret} = loadApi();
     const scope = await api.hashDownloadOrderKey(orderSecret);
     const first = tpk({human_name: 'First game', machine_name: 'first-game'});
@@ -2649,10 +2649,11 @@ test('retained Downloads synchronization preserves UI and keeps local selection 
     container.className = 'key-container wrapper';
     container.append(firstRow, secondRow);
     document.body.appendChild(container);
+    const mapping = api.mapDownloadOrderRows([first, second], [firstRow, secondRow]);
     api.setDownloadOrderStateForTest(
         scope,
         {gamekey: orderSecret, tpkd_dict: {all_tpks: [first, second]}},
-        api.mapDownloadOrderRows([first, second], [firstRow, secondRow])
+        mapping
     );
     const account = {
         countryCode: 'CA',
@@ -2690,6 +2691,7 @@ test('retained Downloads synchronization preserves UI and keeps local selection 
 
     api.applySteamSessionState({...authenticated, status: 'syncing'});
 
+    assert.equal(api.getDownloadOrderMappingForTest(), mapping);
     assert.equal(document.getElementById('hb-helper-choice-activation-controls'), controls);
     assert.equal(document.getElementById('hb-helper-choice-activation-results'), results);
     assert.equal(treeText(results), resultText);
@@ -2708,7 +2710,9 @@ test('retained Downloads synchronization preserves UI and keeps local selection 
         unavailable: true,
     });
     assert.match(treeText(controls.querySelector('.hb-helper-choice-status')), /1 selected/);
-    assert.equal(document.getElementById('hb-helper-login-reminder'), null);
+    const retainedReminder = document.getElementById('hb-helper-login-reminder');
+    assert.ok(retainedReminder);
+    assert.match(treeText(retainedReminder), /Rechecking Steam session/);
 
     await api.handleDownloadSelectionEventForTest({
         type: 'click',
@@ -2756,21 +2760,32 @@ test('retained Downloads synchronization preserves UI and keeps local selection 
     assert.deepEqual([...api.getDownloadSelection(scope)], [firstId]);
 });
 
-test('Downloads login reminder follows unknown, terminal, retry, and retained-account states', () => {
+test('Downloads Steam session card follows every non-authenticated state', () => {
     const {api, document} = loadApi();
     const container = document.createElement('div');
     container.className = 'key-container wrapper';
     document.body.appendChild(container);
-    api.mountDownloadActivationControlsForTest();
-    assert.equal(document.getElementById('hb-helper-login-reminder'), null);
-
-    api.applySteamSessionState({status: 'logged-out', account: null, error: null});
+    const controls = api.mountDownloadActivationControlsForTest();
     const reminder = document.getElementById('hb-helper-login-reminder');
     assert.ok(reminder);
-    assert.match(treeText(reminder), /Log in to Steam/);
-    api.applySteamSessionState({status: 'syncing', account: null, error: null});
+    assert.equal(controls.firstElementChild, reminder);
+    assert.equal(reminder.getAttribute('role'), 'status');
+    assert.equal(reminder.getAttribute('aria-live'), 'polite');
+    assert.match(treeText(reminder), /Checking Steam login status/);
+    assert.equal(reminder.querySelector('a'), null);
+    assert.equal(reminder.querySelector('button'), null);
+
+    api.applySteamSessionState({status: 'logged-out', account: null, error: null});
     assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
     assert.match(treeText(reminder), /Log in to Steam/);
+    const link = reminder.querySelector('a');
+    assert.equal(link.target, '_blank');
+    assert.equal(link.rel, 'noopener noreferrer');
+    api.applySteamSessionState({status: 'syncing', account: null, error: null});
+    assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
+    assert.match(treeText(reminder), /Checking Steam login status/);
+    assert.equal(reminder.querySelector('a'), null);
+    assert.equal(reminder.querySelector('button'), null);
     api.applySteamSessionState({status: 'logged-out', account: null, error: null});
     assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
 
@@ -2794,7 +2809,12 @@ test('Downloads login reminder follows unknown, terminal, retry, and retained-ac
     api.applySteamSessionState({status: 'authenticated', account, error: null});
     assert.equal(document.getElementById('hb-helper-login-reminder'), null);
     api.applySteamSessionState({status: 'syncing', account, error: null});
-    assert.equal(document.getElementById('hb-helper-login-reminder'), null);
+    const retainedReminder = document.getElementById('hb-helper-login-reminder');
+    assert.ok(retainedReminder);
+    assert.equal(controls.firstElementChild, retainedReminder);
+    assert.match(treeText(retainedReminder), /Rechecking Steam session; activation becomes available when complete/);
+    assert.equal(retainedReminder.querySelector('a'), null);
+    assert.equal(retainedReminder.querySelector('button'), null);
 });
 
 test('select unowned abandons an ownership result after navigation to another order', async () => {
