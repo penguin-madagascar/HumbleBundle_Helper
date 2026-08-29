@@ -941,6 +941,8 @@
     let helperRouteTransitionPromise = Promise.resolve();
     let helperRouteDependencies = {};
     let pageRefreshTimer;
+    let pageRefreshPromise = Promise.resolve();
+    let pageRefreshDownloadOrderReloadIntent;
     let choiceRegionRefreshTimer;
     let choiceCollectionRecoveryTimer;
     let choiceActivationRecoveryTimer;
@@ -967,6 +969,12 @@
     let downloadOrderRouteKey;
     let downloadOrderInitializationGeneration = 0;
     let downloadOrderLoadError = false;
+    let downloadOrderReloadPending = false;
+    let queuedDownloadOrderReloadIntent;
+    let downloadOrderReloadMutationGeneration = 0;
+    let downloadOrderReloadConsumedMutationGeneration = 0;
+    const observedUnknownDownloadSteamKeys = new Set();
+    let downloadOrderInitialLoadContext;
     let downloadSelectionMode = false;
     let downloadActivationInProgress = false;
     let downloadActivationContext;
@@ -2558,6 +2566,7 @@
             && /^[0-9a-f]{64}$/.test(downloadOrderScope || '')
             && Boolean(downloadOrderMapping)
             && !downloadOrderLoadError
+            && !isDownloadOrderRefreshPending()
             && Boolean(lockManager && typeof lockManager.request === 'function')
             && hasSteamAccountData();
     }
@@ -2730,6 +2739,10 @@
         if (!activationCurrent) {
             if (downloadOrderLoadError) {
                 setChoiceStatus(t('downloadOrderLoadFailed'));
+            } else if (downloadOrderReloadPending) {
+                setChoiceStatus(t('choiceSelectedCount', {
+                    count: selectedDownloadItemIds.size,
+                }));
             } else if (!globalThis.crypto?.subtle || !downloadOrderScope) {
                 setChoiceStatus(t('downloadWebCryptoUnavailable'));
             } else if (!getChoiceLockManager()?.request) {
@@ -5111,6 +5124,12 @@
         downloadOrderData = undefined;
         downloadOrderMapping = undefined;
         downloadOrderLoadError = false;
+        downloadOrderReloadPending = false;
+        queuedDownloadOrderReloadIntent = undefined;
+        downloadOrderReloadMutationGeneration = 0;
+        downloadOrderReloadConsumedMutationGeneration = 0;
+        observedUnknownDownloadSteamKeys.clear();
+        downloadOrderInitialLoadContext = undefined;
         downloadSelectionMode = false;
         selectedDownloadItemIds.clear();
         document.documentElement.classList.remove('hb-helper-download-select-mode');
@@ -5139,7 +5158,7 @@
         }
 
         mountDownloadActivationControls();
-        if (downloadOrderData && remap) {
+        if (downloadOrderData && remap && !isDownloadOrderRefreshPending()) {
             clearDownloadMappingUi();
             downloadOrderMapping = mapDownloadOrderRows(
                 downloadOrderData.tpkd_dict.all_tpks
@@ -5157,8 +5176,34 @@
             return {stale: true};
         }
         if (downloadOrderRouteKey !== orderKey) resetDownloadOrderPage({removeControls: false});
+        const retainingInitialReload = downloadOrderInitialLoadContext?.reloadQueued
+            && downloadOrderInitialLoadContext.orderKey === orderKey;
+        const takingOverReload = downloadOrderReloadPending
+            && downloadOrderRouteKey === orderKey;
+        const adoptingQueuedReload = !takingOverReload
+            && queuedDownloadOrderReloadIntent?.orderKey === orderKey
+            && downloadOrderRouteKey === orderKey;
+        const authoritativeReload = takingOverReload || adoptingQueuedReload;
         downloadOrderRouteKey = orderKey;
         const generation = ++downloadOrderInitializationGeneration;
+        if (adoptingQueuedReload) {
+            queuedDownloadOrderReloadIntent = undefined;
+            pageRefreshDownloadOrderReloadIntent = undefined;
+            downloadOrderReloadPending = true;
+            downloadOrderReloadConsumedMutationGeneration
+                = downloadOrderReloadMutationGeneration;
+            invalidateDownloadOrder();
+        } else if (!takingOverReload) {
+            downloadOrderReloadPending = false;
+            queuedDownloadOrderReloadIntent = undefined;
+            if (!retainingInitialReload) {
+                downloadOrderReloadMutationGeneration = 0;
+                downloadOrderReloadConsumedMutationGeneration = 0;
+            }
+        }
+        downloadOrderInitialLoadContext = authoritativeReload
+            ? undefined
+            : {orderKey, generation, reloadQueued: Boolean(retainingInitialReload)};
         mountDownloadActivationControls();
         const scope = await hashDownloadOrderKey(orderKey);
         if (generation !== downloadOrderInitializationGeneration
@@ -5169,22 +5214,173 @@
         if (scope) observeDownloadSelection(scope);
         try {
             const order = validateDownloadOrder(await loadOrder(orderKey), orderKey);
-            if (generation !== downloadOrderInitializationGeneration
-                || getDownloadsOrderKey() !== orderKey) {
-                return {stale: true};
-            }
-            downloadOrderLoadError = false;
-            downloadOrderData = order;
-            refreshDownloadOrderPage();
-            return {scope, order, mapping: downloadOrderMapping};
+            return await completeDownloadOrderLoad(order, {
+                generation,
+                loadOrder,
+                orderKey,
+                scope,
+                allowTrailingReload: authoritativeReload,
+            });
         } catch (error) {
-            if (generation !== downloadOrderInitializationGeneration
-                || getDownloadsOrderKey() !== orderKey) {
+            if (!isCurrentDownloadOrderLoad(generation, orderKey)) {
                 return {stale: true};
             }
-            downloadOrderLoadError = true;
-            downloadOrderData = undefined;
-            renderDownloadSelectionState();
+            failDownloadOrderLoad();
+            throw error;
+        }
+    }
+
+    function isCurrentDownloadOrderLoad(generation, orderKey) {
+        return generation === downloadOrderInitializationGeneration
+            && orderKey === downloadOrderRouteKey
+            && orderKey === getDownloadsOrderKey();
+    }
+
+    function getCurrentDownloadOrderInitialLoadContext() {
+        const context = downloadOrderInitialLoadContext;
+        return context
+            && context.generation === downloadOrderInitializationGeneration
+            && context.orderKey === downloadOrderRouteKey
+            && context.orderKey === getDownloadsOrderKey()
+            ? context
+            : null;
+    }
+
+    function isDownloadOrderRefreshPending() {
+        return downloadOrderReloadPending
+            || Boolean(getCurrentDownloadOrderInitialLoadContext()?.reloadQueued);
+    }
+
+    function getDownloadOrderSteamKeys(order) {
+        return new Set(order.tpkd_dict.all_tpks
+            .map(tpkd => findSteamKeyInText(tpkd.redeemed_key_val))
+            .filter(Boolean));
+    }
+
+    function getVisibleDownloadSteamKeys() {
+        return new Set(Array.from(document.querySelectorAll('.key-redeemer'))
+            .map(row => extractSteamKeyFromScope(row))
+            .filter(Boolean));
+    }
+
+    function pruneObservedKnownDownloadSteamKeys(order) {
+        const knownKeys = getDownloadOrderSteamKeys(order);
+        for (const key of observedUnknownDownloadSteamKeys) {
+            if (knownKeys.has(key)) observedUnknownDownloadSteamKeys.delete(key);
+        }
+        return knownKeys;
+    }
+
+    function pruneObservedInvisibleDownloadSteamKeys() {
+        const visibleKeys = getVisibleDownloadSteamKeys();
+        for (const key of observedUnknownDownloadSteamKeys) {
+            if (!visibleKeys.has(key)) observedUnknownDownloadSteamKeys.delete(key);
+        }
+        return visibleKeys;
+    }
+
+    function hasUnknownVisibleDownloadSteamKey(order) {
+        const knownKeys = pruneObservedKnownDownloadSteamKeys(order);
+        const visibleKeys = pruneObservedInvisibleDownloadSteamKeys();
+        return [...visibleKeys].some(key => !knownKeys.has(key));
+    }
+
+    function failDownloadOrderLoad() {
+        clearDownloadMappingUi();
+        downloadOrderData = undefined;
+        downloadOrderMapping = undefined;
+        downloadOrderLoadError = true;
+        downloadOrderReloadPending = false;
+        queuedDownloadOrderReloadIntent = undefined;
+        downloadOrderReloadMutationGeneration = 0;
+        downloadOrderReloadConsumedMutationGeneration = 0;
+        observedUnknownDownloadSteamKeys.clear();
+        downloadOrderInitialLoadContext = undefined;
+        renderDownloadSelectionState();
+    }
+
+    async function completeDownloadOrderLoad(order, {
+        generation,
+        loadOrder,
+        orderKey,
+        scope = downloadOrderScope,
+        allowTrailingReload = false,
+    }) {
+        if (!isCurrentDownloadOrderLoad(generation, orderKey)) return {stale: true};
+        const initialLoadContext = getCurrentDownloadOrderInitialLoadContext();
+        let trailingReloadAllowed = allowTrailingReload;
+        if (initialLoadContext?.generation === generation
+            && initialLoadContext.orderKey === orderKey) {
+            downloadOrderInitialLoadContext = undefined;
+            if (initialLoadContext.reloadQueued) {
+                downloadOrderReloadPending = true;
+                trailingReloadAllowed = true;
+                renderDownloadSelectionState();
+            }
+        }
+        let currentOrder = order;
+        downloadOrderLoadError = false;
+        downloadOrderData = currentOrder;
+        pruneObservedKnownDownloadSteamKeys(currentOrder);
+        while (trailingReloadAllowed
+            && downloadOrderReloadMutationGeneration
+                !== downloadOrderReloadConsumedMutationGeneration) {
+            downloadOrderReloadConsumedMutationGeneration
+                = downloadOrderReloadMutationGeneration;
+            if (hasUnknownVisibleDownloadSteamKey(currentOrder)) {
+                invalidateDownloadOrder();
+                currentOrder = validateDownloadOrder(
+                    await loadOrder(orderKey),
+                    orderKey
+                );
+                if (!isCurrentDownloadOrderLoad(generation, orderKey)) {
+                    return {stale: true};
+                }
+                downloadOrderData = currentOrder;
+                pruneObservedKnownDownloadSteamKeys(currentOrder);
+                continue;
+            }
+            break;
+        }
+        if (!isCurrentDownloadOrderLoad(generation, orderKey)) return {stale: true};
+        queuedDownloadOrderReloadIntent = undefined;
+        downloadOrderReloadMutationGeneration = 0;
+        downloadOrderReloadConsumedMutationGeneration = 0;
+        downloadOrderReloadPending = false;
+        downloadOrderInitialLoadContext = undefined;
+        refreshDownloadOrderPage();
+        return {scope, order: downloadOrderData, mapping: downloadOrderMapping};
+    }
+
+    async function reloadDownloadOrderPage({
+        loadOrder = helperRouteDependencies.loadOrder || loadDownloadOrder,
+        orderKey = getDownloadsOrderKey(),
+    } = {}) {
+        if (!isNonEmptyString(orderKey)
+            || orderKey !== downloadOrderRouteKey
+            || orderKey !== getDownloadsOrderKey()) {
+            return {stale: true};
+        }
+        const generation = ++downloadOrderInitializationGeneration;
+        queuedDownloadOrderReloadIntent = undefined;
+        downloadOrderReloadPending = true;
+        downloadOrderReloadConsumedMutationGeneration
+            = downloadOrderReloadMutationGeneration;
+        renderDownloadSelectionState();
+        invalidateDownloadOrder();
+        try {
+            const order = validateDownloadOrder(await loadOrder(orderKey), orderKey);
+            return await completeDownloadOrderLoad(order, {
+                generation,
+                loadOrder,
+                orderKey,
+                allowTrailingReload: true,
+            });
+        } catch (error) {
+            if (!isCurrentDownloadOrderLoad(generation, orderKey)) {
+                return {stale: true};
+            }
+            failDownloadOrderLoad();
             throw error;
         }
     }
@@ -5573,21 +5769,44 @@
         }
     }
 
-    function schedulePageRefresh(forcePriceReload = false) {
+    function schedulePageRefresh(
+        forcePriceReload = false,
+        {reloadDownloadOrder = false} = {}
+    ) {
+        if (reloadDownloadOrder) {
+            pageRefreshDownloadOrderReloadIntent = {
+                routeFingerprint: getHelperRouteFingerprint(),
+                orderKey: getDownloadsOrderKey(),
+                generation: downloadOrderInitializationGeneration,
+            };
+        }
         clearTimeout(pageRefreshTimer);
         pageRefreshTimer = setTimeout(() => {
+            const reloadIntent = pageRefreshDownloadOrderReloadIntent;
+            pageRefreshDownloadOrderReloadIntent = undefined;
+            const requiresDownloadOrderReload = Boolean(reloadIntent
+                && reloadIntent.routeFingerprint === getHelperRouteFingerprint()
+                && reloadIntent.orderKey === getDownloadsOrderKey()
+                && reloadIntent.generation === downloadOrderInitializationGeneration);
+            let refresh;
             if (helperRouteLifecycleInstalled
                 && getHelperRouteFingerprint() !== helperRouteFingerprint) {
-                scheduleHelperRouteSynchronization();
-                return;
-            }
-            if (isLandingSortPage()) {
-                refreshLandingSortPage();
+                refresh = scheduleHelperRouteSynchronization();
+            } else if (isLandingSortPage()) {
+                refresh = refreshLandingSortPage();
             } else if (isDownloadsPage()) {
-                refreshDownloadOrderPage();
+                refresh = requiresDownloadOrderReload
+                    ? reloadDownloadOrderPage()
+                    : refreshDownloadOrderPage({remap: !isDownloadOrderRefreshPending()});
             } else {
-                refreshHelperPage(forcePriceReload);
+                refresh = refreshHelperPage(forcePriceReload);
             }
+            pageRefreshPromise = Promise.resolve(refresh).catch(error => {
+                if (requiresDownloadOrderReload) {
+                    console.warn('[HB-Helper] Load download order failed.');
+                }
+                return {error};
+            });
         }, 300);
     }
 
@@ -5638,11 +5857,69 @@
         return mutations.some(mutation => !isHelperUiMutation(mutation));
     }
 
+    function getDownloadRowsChangedByMutation(mutation) {
+        const rows = new Set();
+        const target = mutation?.target?.nodeType === 3
+            ? mutation.target.parentElement
+            : mutation?.target;
+        const targetRow = target?.closest?.('.key-redeemer');
+        if (targetRow) rows.add(targetRow);
+        for (const node of Array.from(mutation?.addedNodes || [])) {
+            const element = node?.nodeType === 3 ? node.parentElement : node;
+            const row = element?.closest?.('.key-redeemer');
+            if (row) rows.add(row);
+            element?.querySelectorAll?.('.key-redeemer').forEach(candidate => rows.add(candidate));
+        }
+        return rows;
+    }
+
+    function shouldReloadDownloadOrderForPageMutations(mutations) {
+        if (!isDownloadsPage()) return false;
+        const initialLoadContext = getCurrentDownloadOrderInitialLoadContext();
+        if (!downloadOrderData && !initialLoadContext) return false;
+        const knownKeys = downloadOrderData
+            ? pruneObservedKnownDownloadSteamKeys(downloadOrderData)
+            : new Set();
+        const relevantMutations = mutations.filter(mutation => !isHelperUiMutation(mutation));
+        if (observedUnknownDownloadSteamKeys.size > 0
+            && relevantMutations.some(mutation => mutation?.removedNodes?.length > 0)) {
+            pruneObservedInvisibleDownloadSteamKeys();
+        }
+        const newlyObservedKeys = new Set();
+        for (const mutation of relevantMutations) {
+            for (const row of getDownloadRowsChangedByMutation(mutation)) {
+                const displayedKey = extractSteamKeyFromScope(row);
+                if (displayedKey
+                    && !knownKeys.has(displayedKey)
+                    && !observedUnknownDownloadSteamKeys.has(displayedKey)) {
+                    newlyObservedKeys.add(displayedKey);
+                }
+            }
+        }
+        if (newlyObservedKeys.size === 0) return false;
+        for (const key of newlyObservedKeys) observedUnknownDownloadSteamKeys.add(key);
+        if (initialLoadContext) {
+            initialLoadContext.reloadQueued = true;
+            downloadOrderReloadMutationGeneration += 1;
+            renderDownloadSelectionState();
+            return false;
+        }
+        if (downloadOrderReloadPending) {
+            downloadOrderReloadMutationGeneration += 1;
+            return false;
+        }
+        queuedDownloadOrderReloadIntent = {orderKey: getDownloadsOrderKey()};
+        return true;
+    }
+
     function observePageChanges() {
         if (pageChangesObserved) return;
         pageChangesObserved = true;
         const observer = new MutationObserver(mutations => {
-            if (shouldRefreshForPageMutations(mutations)) schedulePageRefresh();
+            if (!shouldRefreshForPageMutations(mutations)) return;
+            schedulePageRefresh(false, {
+                reloadDownloadOrder: shouldReloadDownloadOrderForPageMutations(mutations),
+            });
         });
         observer.observe(document.body, {childList: true, subtree: true});
         document.addEventListener('click', handleChoiceSelectionClick, true);
@@ -7478,6 +7755,7 @@
             initializeDownloadOrderPageForTest: initializeDownloadOrderPage,
             installHelperRouteLifecycleForTest: installHelperRouteLifecycle,
             waitForHelperRouteForTest: () => helperRouteTransitionPromise,
+            waitForPageRefreshForTest: () => pageRefreshPromise,
             getPriceTotalsRunIdForTest: () => priceTotalsRunId,
             loadPriceTotalsForTest: loadPriceTotals,
             getSelectedChoiceGameIdsForTest: getSelectedChoiceGameIds,

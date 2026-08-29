@@ -298,6 +298,43 @@ function createQueuedLockManager({beforeRelease} = {}) {
     };
 }
 
+function createControlledObserverScheduler() {
+    const observers = [];
+    const timers = new Map();
+    let nextTimerId = 1;
+    return {
+        MutationObserver: class {
+            constructor(callback) {
+                this.callback = callback;
+                observers.push(this);
+            }
+            observe() {}
+            disconnect() {}
+        },
+        setTimeout(callback, delay) {
+            const id = nextTimerId++;
+            timers.set(id, {callback, delay});
+            return id;
+        },
+        clearTimeout(id) {
+            timers.delete(id);
+        },
+        notify(mutations) {
+            assert.equal(observers.length, 1);
+            observers[0].callback(mutations);
+        },
+        runPageRefresh() {
+            const entry = [...timers.entries()].find(([, timer]) => timer.delay === 300);
+            assert.ok(entry, 'expected a debounced page refresh');
+            timers.delete(entry[0]);
+            return entry[1].callback();
+        },
+        get pageRefreshCount() {
+            return [...timers.values()].filter(timer => timer.delay === 300).length;
+        },
+    };
+}
+
 function ephemeralOrderSecret() {
     return randomBytes(24).toString('base64url');
 }
@@ -310,6 +347,12 @@ function loadApi({
     crypto = webcrypto,
     onRequest = () => {},
     logs = [],
+    MutationObserver = class {
+        observe() {}
+        disconnect() {}
+    },
+    setTimeout: scheduleTimeout = setTimeout,
+    clearTimeout: cancelTimeout = clearTimeout,
 } = {}) {
     const orderSecret = ephemeralOrderSecret();
     const query = search === undefined ? `?key=${encodeURIComponent(orderSecret)}` : search;
@@ -357,10 +400,7 @@ function loadApi({
         Event: class {
             constructor(type) { this.type = type; }
         },
-        MutationObserver: class {
-            observe() {}
-            disconnect() {}
-        },
+        MutationObserver,
         crypto,
         TextEncoder,
         URL,
@@ -375,8 +415,8 @@ function loadApi({
         GM_setClipboard() {},
         GM_registerMenuCommand() {},
         GM_xmlhttpRequest: onRequest,
-        setTimeout,
-        clearTimeout,
+        setTimeout: scheduleTimeout,
+        clearTimeout: cancelTimeout,
         setInterval,
         clearInterval,
         Map,
@@ -3498,6 +3538,1495 @@ test('retained Downloads synchronization preserves UI, mapping identity, and kee
     assert.ok([activate, selectUnowned, select, clear].every(button => button.disabled));
     assert.equal(firstRow.classList.contains('hb-helper-download-selected'), false);
     assert.deepEqual([...api.getDownloadSelection(scope)], [firstId]);
+});
+
+test('native reveal during stale initial order load serializes one authoritative follow-up', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const revealedKey = steamKey(20);
+    const hiddenProduct = tpk({
+        human_name: 'Initial pending stale reveal',
+        machine_name: 'initial-pending-stale-reveal',
+        exclusive_countries: ['CA'],
+    });
+    const freshProduct = {
+        ...hiddenProduct,
+        redeemed_key_val: revealedKey,
+        exclusive_countries: ['MX'],
+    };
+    const row = downloadRow(document, {title: hiddenProduct.human_name});
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let loadCalls = 0;
+    let signalInitialStarted;
+    let releaseInitial;
+    const initialStarted = new Promise(resolve => { signalInitialStarted = resolve; });
+    const initialGate = new Promise(resolve => { releaseInitial = resolve; });
+    let signalFollowUpStarted;
+    let releaseFollowUp;
+    const followUpStarted = new Promise(resolve => { signalFollowUpStarted = resolve; });
+    const followUpGate = new Promise(resolve => { releaseFollowUp = resolve; });
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            if (loadCalls === 1) {
+                signalInitialStarted();
+                await initialGate;
+                return {gamekey: key, tpkd_dict: {all_tpks: [hiddenProduct]}};
+            }
+            signalFollowUpStarted();
+            await followUpGate;
+            return {gamekey: key, tpkd_dict: {all_tpks: [freshProduct]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await initialStarted;
+
+    const keyField = addTextChild(document, row, 'keyfield-value', revealedKey);
+    const revealMutation = {target: row, addedNodes: [keyField], removedNodes: []};
+    scheduler.notify([revealMutation]);
+    scheduler.notify([revealMutation]);
+    assert.equal(loadCalls, 1);
+
+    releaseInitial();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(loadCalls, 2);
+    await followUpStarted;
+    const controls = document.getElementById('hb-helper-choice-activation-controls');
+    assert.equal(api.getDownloadOrderMappingForTest(), undefined);
+    assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+
+    releaseFollowUp();
+    await api.waitForHelperRouteForTest();
+    const mapping = api.getDownloadOrderMappingForTest();
+    assert.equal(loadCalls, 2);
+    assert.equal(mapping.pairs.length, 1);
+    assert.equal(mapping.pairs[0].row, row);
+    assert.equal(mapping.pairs[0].tpkd.redeemed_key_val, revealedKey);
+    assert.equal(mapping.pairs[0].matchedBy, 'displayed-key');
+    assert.match(treeText(row), /MX/);
+    assert.equal(row.querySelector('.hb-helper-download-mapping-warning'), null);
+
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 2);
+});
+
+test('native reveal already present in initial response needs no authoritative follow-up', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const revealedKey = steamKey(21);
+    const product = tpk({
+        human_name: 'Initial pending fresh reveal',
+        machine_name: 'initial-pending-fresh-reveal',
+        redeemed_key_val: revealedKey,
+        exclusive_countries: ['US'],
+    });
+    const row = downloadRow(document, {title: product.human_name});
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let loadCalls = 0;
+    let signalInitialStarted;
+    let releaseInitial;
+    const initialStarted = new Promise(resolve => { signalInitialStarted = resolve; });
+    const initialGate = new Promise(resolve => { releaseInitial = resolve; });
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            signalInitialStarted();
+            await initialGate;
+            return {gamekey: key, tpkd_dict: {all_tpks: [product]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await initialStarted;
+
+    const keyField = addTextChild(document, row, 'keyfield-value', revealedKey);
+    scheduler.notify([{target: row, addedNodes: [keyField], removedNodes: []}]);
+    releaseInitial();
+    await api.waitForHelperRouteForTest();
+
+    const mapping = api.getDownloadOrderMappingForTest();
+    assert.equal(loadCalls, 1);
+    assert.equal(mapping.pairs.length, 1);
+    assert.equal(mapping.pairs[0].row, row);
+    assert.equal(mapping.pairs[0].tpkd.redeemed_key_val, revealedKey);
+    assert.equal(mapping.pairs[0].matchedBy, 'displayed-key');
+    assert.match(treeText(row), /US/);
+
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 1);
+});
+
+test('route switch discards a native reveal observed during an initial order load', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const loaded = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const {api, context, document, orderSecret: firstSecret} = loaded;
+    const secondSecret = ephemeralOrderSecret();
+    const firstProduct = tpk({
+        human_name: 'Initial pending route A',
+        machine_name: 'initial-pending-route-a',
+    });
+    const secondProduct = tpk({
+        human_name: 'Initial current route B',
+        machine_name: 'initial-current-route-b',
+        keyindex: 1,
+    });
+    const firstRow = downloadRow(document, {title: firstProduct.human_name});
+    const secondRow = downloadRow(document, {
+        title: secondProduct.human_name,
+        machineName: secondProduct.machine_name,
+        keyindex: secondProduct.keyindex,
+    });
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(firstRow);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let firstLoads = 0;
+    let secondLoads = 0;
+    let signalFirstStarted;
+    let releaseFirst;
+    const firstStarted = new Promise(resolve => { signalFirstStarted = resolve; });
+    const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            if (key === firstSecret) {
+                firstLoads += 1;
+                signalFirstStarted();
+                await firstGate;
+                return {gamekey: key, tpkd_dict: {all_tpks: [firstProduct]}};
+            }
+            secondLoads += 1;
+            return {gamekey: key, tpkd_dict: {all_tpks: [secondProduct]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await firstStarted;
+
+    const keyField = addTextChild(document, firstRow, 'keyfield-value', steamKey(22));
+    scheduler.notify([{target: firstRow, addedNodes: [keyField], removedNodes: []}]);
+    firstRow.remove();
+    container.appendChild(secondRow);
+    context.history.replaceState(
+        {},
+        '',
+        `/downloads?key=${encodeURIComponent(secondSecret)}`
+    );
+    await api.waitForHelperRouteForTest();
+    releaseFirst();
+    await new Promise(resolve => setImmediate(resolve));
+
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    const mapping = api.getDownloadOrderMappingForTest();
+    assert.equal(firstLoads, 1);
+    assert.equal(secondLoads, 1);
+    assert.equal(mapping.pairs.length, 1);
+    assert.equal(mapping.pairs[0].row, secondRow);
+    assert.equal(mapping.pairs[0].tpkd.machine_name, secondProduct.machine_name);
+});
+
+test('native reveal mutation authoritatively reloads once before remapping fresh Downloads data', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const loaded = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const {api, document, orderSecret} = loaded;
+    const revealedKey = steamKey(5);
+    const hiddenProduct = tpk({
+        human_name: 'Native reveal without tuple metadata',
+        machine_name: 'native-reveal-no-tuple',
+        exclusive_countries: ['CA'],
+    });
+    const freshProduct = {
+        ...hiddenProduct,
+        redeemed_key_val: revealedKey,
+        exclusive_countries: ['MX'],
+    };
+    const row = downloadRow(document, {title: hiddenProduct.human_name});
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let loadCalls = 0;
+    let signalRefetchStarted;
+    let releaseRefetch;
+    const refetchStarted = new Promise(resolve => { signalRefetchStarted = resolve; });
+    const refetchGate = new Promise(resolve => { releaseRefetch = resolve; });
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            if (loadCalls === 1) {
+                return {gamekey: key, tpkd_dict: {all_tpks: [hiddenProduct]}};
+            }
+            signalRefetchStarted();
+            await refetchGate;
+            return {gamekey: key, tpkd_dict: {all_tpks: [freshProduct]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const selectedId = api.getDownloadActivationItemId(scope, hiddenProduct);
+    await api.updateDownloadSelection(scope, selection => selection.add(selectedId));
+    api.setDownloadSelectionModeForTest(true);
+    const initialMapping = api.getDownloadOrderMappingForTest();
+    const controls = document.getElementById('hb-helper-choice-activation-controls');
+    assert.equal(initialMapping.pairs[0].matchedBy, 'composite');
+    assert.equal(row.classList.contains('hb-helper-download-selected'), true);
+    assert.match(treeText(row), /CA/);
+
+    const keyField = addTextChild(document, row, 'keyfield-value', revealedKey);
+    scheduler.notify([{
+        target: row,
+        addedNodes: [keyField],
+        removedNodes: [],
+    }]);
+    document.dispatchEvent({type: 'click', target: container});
+    assert.equal(scheduler.pageRefreshCount, 1);
+    scheduler.runPageRefresh();
+    await Promise.resolve();
+    assert.equal(loadCalls, 2);
+    await refetchStarted;
+
+    assert.equal(api.getDownloadOrderMappingForTest(), initialMapping);
+    assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+    assert.equal(row.getAttribute('role'), null);
+    assert.equal(row.querySelector('.hb-helper-download-mapping-warning'), null);
+    assert.deepEqual([...api.getDownloadSelection(scope)], [selectedId]);
+
+    releaseRefetch();
+    await api.waitForPageRefreshForTest();
+    const freshMapping = api.getDownloadOrderMappingForTest();
+    assert.equal(loadCalls, 2);
+    assert.notEqual(freshMapping, initialMapping);
+    assert.equal(freshMapping.pairs[0].row, row);
+    assert.equal(freshMapping.pairs[0].tpkd.redeemed_key_val, revealedKey);
+    assert.equal(freshMapping.pairs[0].matchedBy, 'displayed-key');
+    assert.equal(row.querySelector('.hb-helper-download-mapping-warning'), null);
+    assert.equal(row.classList.contains('hb-helper-download-selected'), true);
+    assert.match(treeText(row), /MX/);
+    assert.ok(controls.querySelectorAll('button').every(button => !button.disabled));
+});
+
+test('route sync continuation cannot remap a stale order during native reveal reload', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document, orderSecret} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const revealedKey = steamKey(7);
+    const hiddenProduct = tpk({
+        human_name: 'Steam sync overlap reveal',
+        machine_name: 'steam-sync-overlap-reveal',
+    });
+    const freshProduct = {...hiddenProduct, redeemed_key_val: revealedKey};
+    const row = downloadRow(document, {title: hiddenProduct.human_name});
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let signalSteamSyncStarted;
+    let releaseSteamSync;
+    const steamSyncStarted = new Promise(resolve => { signalSteamSyncStarted = resolve; });
+    const steamSyncGate = new Promise(resolve => { releaseSteamSync = resolve; });
+    let signalRefetchStarted;
+    let releaseRefetch;
+    const refetchStarted = new Promise(resolve => { signalRefetchStarted = resolve; });
+    const refetchGate = new Promise(resolve => { releaseRefetch = resolve; });
+    let loadCalls = 0;
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            if (loadCalls === 1) {
+                return {gamekey: key, tpkd_dict: {all_tpks: [hiddenProduct]}};
+            }
+            signalRefetchStarted();
+            await refetchGate;
+            return {gamekey: key, tpkd_dict: {all_tpks: [freshProduct]}};
+        },
+        syncSession: async () => {
+            signalSteamSyncStarted();
+            await steamSyncGate;
+            return {status: 'authenticated', account, error: null};
+        },
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await steamSyncStarted;
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const selectedId = api.getDownloadActivationItemId(scope, hiddenProduct);
+    await api.updateDownloadSelection(scope, selection => selection.add(selectedId));
+    api.setDownloadSelectionModeForTest(true);
+    const initialMapping = api.getDownloadOrderMappingForTest();
+    assert.equal(initialMapping.pairs[0].tpkd.redeemed_key_val, undefined);
+
+    const keyField = addTextChild(document, row, 'keyfield-value', revealedKey);
+    scheduler.notify([{target: row, addedNodes: [keyField], removedNodes: []}]);
+    scheduler.runPageRefresh();
+    await refetchStarted;
+    const controls = document.getElementById('hb-helper-choice-activation-controls');
+    assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+    assert.deepEqual([...api.getDownloadSelection(scope)], [selectedId]);
+
+    releaseSteamSync();
+    await api.waitForHelperRouteForTest();
+    assert.equal(api.getDownloadOrderMappingForTest(), initialMapping);
+    assert.equal(row.querySelector('.hb-helper-download-mapping-warning'), null);
+    assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+    assert.deepEqual([...api.getDownloadSelection(scope)], [selectedId]);
+
+    releaseRefetch();
+    await api.waitForPageRefreshForTest();
+    const freshMapping = api.getDownloadOrderMappingForTest();
+    assert.equal(loadCalls, 2);
+    assert.notEqual(freshMapping, initialMapping);
+    assert.equal(freshMapping.pairs[0].tpkd.redeemed_key_val, revealedKey);
+    assert.equal(freshMapping.pairs[0].row, row);
+    assert.equal(row.classList.contains('hb-helper-download-selected'), true);
+});
+
+test('same-order route reinitialization takes over a pending native reveal reload', async t => {
+    for (const outcome of ['success', 'failure']) {
+        await t.test(outcome, async () => {
+            const scheduler = createControlledObserverScheduler();
+            const loaded = loadApi({
+                MutationObserver: scheduler.MutationObserver,
+                setTimeout: scheduler.setTimeout.bind(scheduler),
+                clearTimeout: scheduler.clearTimeout.bind(scheduler),
+            });
+            const {api, context, document, orderSecret} = loaded;
+            const revealedKey = steamKey(outcome === 'success' ? 8 : 9);
+            const product = tpk({
+                human_name: `Same-order takeover ${outcome}`,
+                machine_name: `same-order-takeover-${outcome}`,
+            });
+            const freshProduct = {...product, redeemed_key_val: revealedKey};
+            const row = downloadRow(document, {title: product.human_name});
+            const container = document.createElement('div');
+            container.className = 'key-container wrapper';
+            container.appendChild(row);
+            document.body.appendChild(container);
+            const account = {
+                countryCode: 'CA',
+                ownedApps: [],
+                wishlistApps: [],
+                sessionId: 'session',
+            };
+            api.setSteamDerivedStateForTest(account);
+            let loadCalls = 0;
+            let signalReloadStarted;
+            let releaseReload;
+            let rejectReload;
+            const reloadStarted = new Promise(resolve => { signalReloadStarted = resolve; });
+            const sharedReload = new Promise((resolve, reject) => {
+                releaseReload = resolve;
+                rejectReload = reject;
+            });
+            api.installHelperRouteLifecycleForTest({
+                loadOrder: async key => {
+                    loadCalls += 1;
+                    if (loadCalls === 1) {
+                        return {gamekey: key, tpkd_dict: {all_tpks: [product]}};
+                    }
+                    signalReloadStarted();
+                    return sharedReload;
+                },
+                syncSession: async () => ({status: 'authenticated', account, error: null}),
+                reconcileBatch: async () => ({reconciled: true}),
+            });
+            await api.waitForHelperRouteForTest();
+            const scope = await api.hashDownloadOrderKey(orderSecret);
+            const selectedId = api.getDownloadActivationItemId(scope, product);
+            await api.updateDownloadSelection(scope, selection => selection.add(selectedId));
+            api.setDownloadSelectionModeForTest(true);
+            const initialMapping = api.getDownloadOrderMappingForTest();
+            const keyField = addTextChild(document, row, 'keyfield-value', revealedKey);
+            scheduler.notify([{target: row, addedNodes: [keyField], removedNodes: []}]);
+            scheduler.runPageRefresh();
+            await reloadStarted;
+
+            context.history.replaceState(
+                {},
+                '',
+                `/downloads?key=${encodeURIComponent(orderSecret)}&view=${outcome}`
+            );
+            await Promise.resolve();
+            await Promise.resolve();
+            const controls = document.getElementById('hb-helper-choice-activation-controls');
+            assert.equal(api.getDownloadOrderMappingForTest(), initialMapping);
+            assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+            assert.equal(row.getAttribute('role'), null);
+            assert.deepEqual([...api.getDownloadSelection(scope)], [selectedId]);
+
+            if (outcome === 'success') {
+                releaseReload({
+                    gamekey: orderSecret,
+                    tpkd_dict: {all_tpks: [freshProduct]},
+                });
+            } else {
+                rejectReload(new Error('same-order takeover reload failed'));
+            }
+            await api.waitForHelperRouteForTest();
+            await api.waitForPageRefreshForTest();
+
+            assert.deepEqual([...api.getDownloadSelection(scope)], [selectedId]);
+            if (outcome === 'success') {
+                const freshMapping = api.getDownloadOrderMappingForTest();
+                assert.notEqual(freshMapping, initialMapping);
+                assert.equal(freshMapping.pairs[0].tpkd.redeemed_key_val, revealedKey);
+                assert.equal(freshMapping.pairs[0].row, row);
+                assert.equal(row.classList.contains('hb-helper-download-selected'), true);
+                assert.ok(controls.querySelectorAll('button').every(button => !button.disabled));
+            } else {
+                assert.equal(api.getDownloadOrderMappingForTest(), undefined);
+                assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+                assert.match(treeText(controls), /Could not load this Humble order/);
+                assert.equal(row.classList.contains('hb-helper-download-selected'), false);
+            }
+        });
+    }
+});
+
+test('pending native reveals coalesce one trailing authoritative key recheck', async t => {
+    for (const firstResponse of ['partial', 'complete']) {
+        await t.test(firstResponse, async () => {
+            const scheduler = createControlledObserverScheduler();
+            const {api, document, orderSecret} = loadApi({
+                MutationObserver: scheduler.MutationObserver,
+                setTimeout: scheduler.setTimeout.bind(scheduler),
+                clearTimeout: scheduler.clearTimeout.bind(scheduler),
+            });
+            const firstKey = steamKey(10);
+            const secondKey = steamKey(11);
+            const products = [
+                tpk({
+                    human_name: 'Trailing reveal first',
+                    machine_name: 'trailing-reveal-first',
+                    exclusive_countries: ['CA'],
+                }),
+                tpk({
+                    human_name: 'Trailing reveal second',
+                    machine_name: 'trailing-reveal-second',
+                    keyindex: 1,
+                    exclusive_countries: ['MX'],
+                }),
+            ];
+            const completeProducts = [
+                {...products[0], redeemed_key_val: firstKey},
+                {...products[1], redeemed_key_val: secondKey},
+            ];
+            const partialProducts = [completeProducts[0], products[1]];
+            const rows = products.map(product => downloadRow(document, {
+                title: product.human_name,
+            }));
+            const container = document.createElement('div');
+            container.className = 'key-container wrapper';
+            container.append(...rows);
+            document.body.appendChild(container);
+            const account = {
+                countryCode: 'CA',
+                ownedApps: [],
+                wishlistApps: [],
+                sessionId: 'session',
+            };
+            api.setSteamDerivedStateForTest(account);
+            let loadCalls = 0;
+            let signalFirstReloadStarted;
+            let releaseFirstReload;
+            const firstReloadStarted = new Promise(resolve => {
+                signalFirstReloadStarted = resolve;
+            });
+            const firstReloadGate = new Promise(resolve => { releaseFirstReload = resolve; });
+            let signalTrailingReloadStarted;
+            let releaseTrailingReload;
+            const trailingReloadStarted = new Promise(resolve => {
+                signalTrailingReloadStarted = resolve;
+            });
+            const trailingReloadGate = new Promise(resolve => {
+                releaseTrailingReload = resolve;
+            });
+            api.installHelperRouteLifecycleForTest({
+                loadOrder: async key => {
+                    loadCalls += 1;
+                    if (loadCalls === 1) {
+                        return {gamekey: key, tpkd_dict: {all_tpks: products}};
+                    }
+                    if (loadCalls === 2) {
+                        signalFirstReloadStarted();
+                        await firstReloadGate;
+                        return {
+                            gamekey: key,
+                            tpkd_dict: {
+                                all_tpks: firstResponse === 'partial'
+                                    ? partialProducts
+                                    : completeProducts,
+                            },
+                        };
+                    }
+                    signalTrailingReloadStarted();
+                    await trailingReloadGate;
+                    return {gamekey: key, tpkd_dict: {all_tpks: completeProducts}};
+                },
+                syncSession: async () => ({status: 'authenticated', account, error: null}),
+                reconcileBatch: async () => ({reconciled: true}),
+            });
+            await api.waitForHelperRouteForTest();
+            const scope = await api.hashDownloadOrderKey(orderSecret);
+            const selectedIds = products.map(product =>
+                api.getDownloadActivationItemId(scope, product)
+            );
+            await api.updateDownloadSelection(scope, selection => {
+                selectedIds.forEach(id => selection.add(id));
+            });
+            api.setDownloadSelectionModeForTest(true);
+            const initialMapping = api.getDownloadOrderMappingForTest();
+            const firstKeyField = addTextChild(document, rows[0], 'keyfield-value', firstKey);
+            scheduler.notify([{
+                target: rows[0],
+                addedNodes: [firstKeyField],
+                removedNodes: [],
+            }]);
+            scheduler.runPageRefresh();
+            await firstReloadStarted;
+
+            const secondKeyField = addTextChild(document, rows[1], 'keyfield-value', secondKey);
+            const secondMutation = {
+                target: rows[1],
+                addedNodes: [secondKeyField],
+                removedNodes: [],
+            };
+            scheduler.notify([secondMutation]);
+            scheduler.notify([secondMutation]);
+            const controls = document.getElementById('hb-helper-choice-activation-controls');
+            assert.equal(api.getDownloadOrderMappingForTest(), initialMapping);
+            assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+            assert.deepEqual([...api.getDownloadSelection(scope)], selectedIds);
+
+            releaseFirstReload();
+            if (firstResponse === 'partial') {
+                await new Promise(resolve => setImmediate(resolve));
+                assert.equal(loadCalls, 3);
+                await trailingReloadStarted;
+                assert.equal(api.getDownloadOrderMappingForTest(), initialMapping);
+                assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+                releaseTrailingReload();
+            }
+            await api.waitForPageRefreshForTest();
+
+            const finalMapping = api.getDownloadOrderMappingForTest();
+            assert.equal(loadCalls, firstResponse === 'partial' ? 3 : 2);
+            assert.equal(finalMapping.pairs.length, 2);
+            assert.equal(finalMapping.pairs[0].row, rows[0]);
+            assert.equal(finalMapping.pairs[1].row, rows[1]);
+            assert.ok(finalMapping.pairs.every(pair => pair.matchedBy === 'displayed-key'));
+            assert.ok(rows.every(row =>
+                row.querySelector('.hb-helper-download-mapping-warning') === null
+            ));
+            assert.equal(
+                controls.querySelector('.hb-helper-download-mapping-summary-warning'),
+                null
+            );
+            assert.deepEqual([...api.getDownloadSelection(scope)], selectedIds);
+            assert.ok(rows.every(row =>
+                row.classList.contains('hb-helper-download-selected')
+            ));
+            assert.match(treeText(rows[0]), /CA/);
+            assert.match(treeText(rows[1]), /MX/);
+            assert.ok(controls.querySelectorAll('button').every(button => !button.disabled));
+        });
+    }
+});
+
+test('ordinary row mutation for an observed key does not add a pending trailing GET', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const revealedKey = steamKey(17);
+    const product = tpk({
+        human_name: 'Observed pending reveal',
+        machine_name: 'observed-pending-reveal',
+    });
+    const row = downloadRow(document, {title: product.human_name});
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let loadCalls = 0;
+    let signalReloadStarted;
+    let releaseReload;
+    const reloadStarted = new Promise(resolve => { signalReloadStarted = resolve; });
+    const reloadGate = new Promise(resolve => { releaseReload = resolve; });
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            if (loadCalls === 2) {
+                signalReloadStarted();
+                await reloadGate;
+            }
+            return {gamekey: key, tpkd_dict: {all_tpks: [product]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+
+    const keyField = addTextChild(document, row, 'keyfield-value', revealedKey);
+    scheduler.notify([{target: row, addedNodes: [keyField], removedNodes: []}]);
+    scheduler.runPageRefresh();
+    await reloadStarted;
+
+    const ordinaryUpdate = addTextChild(document, row, 'native-status', 'Still revealed');
+    scheduler.notify([{target: row, addedNodes: [ordinaryUpdate], removedNodes: []}]);
+    releaseReload();
+    await api.waitForPageRefreshForTest();
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+
+    assert.equal(loadCalls, 2);
+});
+
+test('ordinary row mutation cannot requeue an idle inconsistent native reveal', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document, orderSecret} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const revealedKey = steamKey(18);
+    const product = tpk({
+        human_name: 'Observed inconsistent reveal',
+        machine_name: 'observed-inconsistent-reveal',
+    });
+    const row = downloadRow(document, {title: product.human_name});
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let loadCalls = 0;
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            return {gamekey: key, tpkd_dict: {all_tpks: [product]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const selectedId = api.getDownloadActivationItemId(scope, product);
+    await api.updateDownloadSelection(scope, selection => selection.add(selectedId));
+    api.setDownloadSelectionModeForTest(true);
+
+    const keyField = addTextChild(document, row, 'keyfield-value', revealedKey);
+    scheduler.notify([{target: row, addedNodes: [keyField], removedNodes: []}]);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 2);
+    assert.deepEqual([...api.getDownloadSelection(scope)], [selectedId]);
+
+    const ordinaryUpdate = addTextChild(document, row, 'native-status', 'No reveal change');
+    scheduler.notify([{target: row, addedNodes: [ordinaryUpdate], removedNodes: []}]);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+
+    assert.equal(loadCalls, 2);
+    assert.deepEqual([...api.getDownloadSelection(scope)], [selectedId]);
+});
+
+test('observed-key classifier scans all rows only for removal pruning', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const revealedKey = steamKey(19);
+    const product = tpk({
+        human_name: 'Reappearing native reveal',
+        machine_name: 'reappearing-native-reveal',
+    });
+    const row = downloadRow(document, {title: product.human_name});
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let loadCalls = 0;
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            return {gamekey: key, tpkd_dict: {all_tpks: [product]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+    const querySelectorAll = document.querySelectorAll.bind(document);
+    const bodyQuerySelectorAll = document.body.querySelectorAll.bind(document.body);
+    let fullRowScans = 0;
+    document.querySelectorAll = selector => {
+        if (selector === '.key-redeemer') fullRowScans += 1;
+        return querySelectorAll(selector);
+    };
+    document.body.querySelectorAll = selector => {
+        if (selector === '.key-redeemer') fullRowScans += 1;
+        return bodyQuerySelectorAll(selector);
+    };
+    const notifyAndCountFullRowScans = mutations => {
+        fullRowScans = 0;
+        scheduler.notify(mutations);
+        return fullRowScans;
+    };
+
+    const initialOrdinaryUpdate = document.createElement('p');
+    initialOrdinaryUpdate.textContent = 'Ordinary page update';
+    document.body.appendChild(initialOrdinaryUpdate);
+    assert.equal(notifyAndCountFullRowScans([{
+        target: document.body,
+        addedNodes: [initialOrdinaryUpdate],
+        removedNodes: [],
+    }]), 0);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 1);
+
+    const firstKeyField = addTextChild(document, row, 'keyfield-value', revealedKey);
+    assert.equal(notifyAndCountFullRowScans([{
+        target: row,
+        addedNodes: [firstKeyField],
+        removedNodes: [],
+    }]), 0);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 2);
+
+    const observedOrdinaryUpdate = addTextChild(
+        document,
+        row,
+        'native-status',
+        'Ordinary revealed-row update'
+    );
+    assert.equal(notifyAndCountFullRowScans([{
+        target: row,
+        addedNodes: [observedOrdinaryUpdate],
+        removedNodes: [],
+    }]), 0);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 2);
+
+    firstKeyField.remove();
+    assert.equal(notifyAndCountFullRowScans([{
+        target: row,
+        addedNodes: [],
+        removedNodes: [firstKeyField],
+    }]), 1);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 2);
+
+    const secondKeyField = addTextChild(document, row, 'keyfield-value', revealedKey);
+    assert.equal(notifyAndCountFullRowScans([{
+        target: row,
+        addedNodes: [secondKeyField],
+        removedNodes: [],
+    }]), 0);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 3);
+});
+
+test('native reveal events during successive GETs trigger serialized generation rechecks', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document, orderSecret} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const keys = [steamKey(13), steamKey(14), steamKey(15)];
+    const products = [
+        tpk({
+            human_name: 'Generation reveal first',
+            machine_name: 'generation-reveal-first',
+            exclusive_countries: ['CA'],
+        }),
+        tpk({
+            human_name: 'Generation reveal second',
+            machine_name: 'generation-reveal-second',
+            keyindex: 1,
+            exclusive_countries: ['MX'],
+        }),
+        tpk({
+            human_name: 'Generation reveal third',
+            machine_name: 'generation-reveal-third',
+            keyindex: 2,
+            exclusive_countries: ['US'],
+        }),
+    ];
+    const snapshots = [
+        products,
+        [{...products[0], redeemed_key_val: keys[0]}, products[1], products[2]],
+        [
+            {...products[0], redeemed_key_val: keys[0]},
+            {...products[1], redeemed_key_val: keys[1]},
+            products[2],
+        ],
+        products.map((product, index) => ({...product, redeemed_key_val: keys[index]})),
+    ];
+    const rows = products.map(product => downloadRow(document, {
+        title: product.human_name,
+    }));
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.append(...rows);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    const gates = Array.from({length: 3}, () => {
+        let started;
+        let release;
+        return {
+            started: new Promise(resolve => { started = resolve; }),
+            release: () => release(),
+            wait: new Promise(resolve => { release = resolve; }),
+            signal: () => started(),
+        };
+    });
+    let loadCalls = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            const call = loadCalls++;
+            if (call === 0) {
+                return {gamekey: key, tpkd_dict: {all_tpks: snapshots[0]}};
+            }
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            gates[call - 1].signal();
+            await gates[call - 1].wait;
+            inFlight -= 1;
+            return {gamekey: key, tpkd_dict: {all_tpks: snapshots[call]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const selectedIds = products.map(product =>
+        api.getDownloadActivationItemId(scope, product)
+    );
+    await api.updateDownloadSelection(scope, selection => {
+        selectedIds.forEach(id => selection.add(id));
+    });
+    api.setDownloadSelectionModeForTest(true);
+    const initialMapping = api.getDownloadOrderMappingForTest();
+
+    const firstField = addTextChild(document, rows[0], 'keyfield-value', keys[0]);
+    scheduler.notify([{target: rows[0], addedNodes: [firstField], removedNodes: []}]);
+    scheduler.runPageRefresh();
+    await gates[0].started;
+
+    const secondField = addTextChild(document, rows[1], 'keyfield-value', keys[1]);
+    scheduler.notify([{target: rows[1], addedNodes: [secondField], removedNodes: []}]);
+    gates[0].release();
+    await gates[1].started;
+    assert.equal(maxInFlight, 1);
+    assert.equal(api.getDownloadOrderMappingForTest(), initialMapping);
+
+    const thirdField = addTextChild(document, rows[2], 'keyfield-value', keys[2]);
+    const thirdMutation = {target: rows[2], addedNodes: [thirdField], removedNodes: []};
+    scheduler.notify([thirdMutation]);
+    scheduler.notify([thirdMutation]);
+    gates[1].release();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(loadCalls, 4);
+    await gates[2].started;
+    assert.equal(maxInFlight, 1);
+    const controls = document.getElementById('hb-helper-choice-activation-controls');
+    assert.equal(api.getDownloadOrderMappingForTest(), initialMapping);
+    assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+    assert.deepEqual([...api.getDownloadSelection(scope)], selectedIds);
+
+    gates[2].release();
+    await api.waitForPageRefreshForTest();
+    const finalMapping = api.getDownloadOrderMappingForTest();
+    assert.equal(loadCalls, 4);
+    assert.equal(maxInFlight, 1);
+    assert.equal(finalMapping.pairs.length, 3);
+    assert.ok(finalMapping.pairs.every((pair, index) =>
+        pair.row === rows[index]
+        && pair.tpkd.redeemed_key_val === keys[index]
+        && pair.matchedBy === 'displayed-key'
+    ));
+    assert.ok(rows.every(row =>
+        row.querySelector('.hb-helper-download-mapping-warning') === null
+    ));
+    assert.equal(
+        controls.querySelector('.hb-helper-download-mapping-summary-warning'),
+        null
+    );
+    assert.deepEqual([...api.getDownloadSelection(scope)], selectedIds);
+    assert.ok(rows.every(row => row.classList.contains('hb-helper-download-selected')));
+    assert.match(treeText(rows[0]), /CA/);
+    assert.match(treeText(rows[1]), /MX/);
+    assert.match(treeText(rows[2]), /US/);
+    assert.ok(controls.querySelectorAll('button').every(button => !button.disabled));
+});
+
+test('whole native Downloads row replacement reloads and remaps only the revealed row', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document, orderSecret} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const revealedKey = steamKey(12);
+    const hiddenProduct = tpk({
+        human_name: 'Whole row native replacement',
+        machine_name: 'whole-row-native-replacement',
+        exclusive_countries: ['CA'],
+    });
+    const freshProduct = {
+        ...hiddenProduct,
+        redeemed_key_val: revealedKey,
+        exclusive_countries: ['MX'],
+    };
+    const oldRow = downloadRow(document, {title: hiddenProduct.human_name});
+    const newRow = downloadRow(document, {
+        title: hiddenProduct.human_name,
+        displayState: 'revealed',
+        key: revealedKey,
+    });
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(oldRow);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let loadCalls = 0;
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            return {
+                gamekey: key,
+                tpkd_dict: {all_tpks: [loadCalls === 1 ? hiddenProduct : freshProduct]},
+            };
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const selectedId = api.getDownloadActivationItemId(scope, hiddenProduct);
+    await api.updateDownloadSelection(scope, selection => selection.add(selectedId));
+    api.setDownloadSelectionModeForTest(true);
+    assert.equal(oldRow.getAttribute('role'), 'button');
+    assert.match(treeText(oldRow), /CA/);
+
+    oldRow.remove();
+    container.appendChild(newRow);
+    scheduler.notify([{
+        target: container,
+        addedNodes: [newRow],
+        removedNodes: [oldRow],
+    }]);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+
+    const controls = document.getElementById('hb-helper-choice-activation-controls');
+    const mapping = api.getDownloadOrderMappingForTest();
+    assert.equal(loadCalls, 2);
+    assert.equal(mapping.pairs.length, 1);
+    assert.equal(mapping.pairs[0].row, newRow);
+    assert.equal(mapping.pairs[0].matchedBy, 'displayed-key');
+    assert.equal(mapping.pairs[0].tpkd.redeemed_key_val, revealedKey);
+    assert.equal(oldRow.classList.contains('hb-helper-download-selected'), false);
+    assert.equal(oldRow.getAttribute('role'), null);
+    assert.equal(oldRow.querySelector('.hb-helper-region-restrictions'), null);
+    assert.equal(newRow.classList.contains('hb-helper-download-selected'), true);
+    assert.match(treeText(newRow), /MX/);
+    api.setDownloadSelectionModeForTest(true);
+    assert.equal(newRow.getAttribute('role'), 'button');
+    assert.equal(newRow.querySelector('.hb-helper-download-mapping-warning'), null);
+    assert.equal(
+        controls.querySelector('.hb-helper-download-mapping-summary-warning'),
+        null
+    );
+    assert.ok(controls.querySelectorAll('button').every(button => !button.disabled));
+});
+
+test('native reveal reload failure clears usable mapping but retains Downloads selection', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document, orderSecret} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const product = tpk({
+        human_name: 'Reveal reload failure',
+        machine_name: 'reveal-reload-failure',
+    });
+    const row = downloadRow(document, {title: product.human_name});
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let loadCalls = 0;
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            if (loadCalls === 1) {
+                return {gamekey: key, tpkd_dict: {all_tpks: [product]}};
+            }
+            throw new Error('authoritative reload failed');
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const selectedId = api.getDownloadActivationItemId(scope, product);
+    await api.updateDownloadSelection(scope, selection => selection.add(selectedId));
+    api.setDownloadSelectionModeForTest(true);
+
+    const keyField = addTextChild(document, row, 'keyfield-value', steamKey(6));
+    scheduler.notify([{
+        target: keyField,
+        addedNodes: [],
+        removedNodes: [],
+    }]);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+
+    const controls = document.getElementById('hb-helper-choice-activation-controls');
+    assert.equal(loadCalls, 2);
+    assert.equal(api.getDownloadOrderMappingForTest(), undefined);
+    assert.deepEqual([...api.getDownloadSelection(scope)], [selectedId]);
+    assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+    assert.match(treeText(controls), /Could not load this Humble order/);
+    assert.equal(row.classList.contains('hb-helper-download-selected'), false);
+    assert.equal(row.getAttribute('role'), null);
+});
+
+test('observer ignores helper, unrelated, invalid, and already-authoritative key mutations', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const {api, document} = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const product = tpk({
+        human_name: 'Already authoritative reveal',
+        machine_name: 'already-authoritative-reveal',
+        redeemed_key_val: steamKey(2),
+    });
+    const row = downloadRow(document, {
+        title: product.human_name,
+        displayState: 'revealed',
+        key: product.redeemed_key_val,
+    });
+    const invalidRow = downloadRow(document, {title: 'Invalid visible key'});
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.append(row, invalidRow);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let loadCalls = 0;
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            return {gamekey: key, tpkd_dict: {all_tpks: [product]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+
+    const helperStatus = document.querySelector('.hb-helper-choice-status');
+    scheduler.notify([{target: helperStatus, addedNodes: [], removedNodes: []}]);
+    assert.equal(scheduler.pageRefreshCount, 0);
+
+    const unrelated = document.createElement('p');
+    document.body.appendChild(unrelated);
+    scheduler.notify([{
+        target: document.body,
+        addedNodes: [unrelated],
+        removedNodes: [],
+    }]);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 1);
+
+    const invalidKey = addTextChild(document, invalidRow, 'keyfield-value', 'NOT-A-STEAM-KEY');
+    scheduler.notify([{target: invalidRow, addedNodes: [invalidKey], removedNodes: []}]);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 1);
+
+    const existingKeyField = row.querySelector('.keyfield-value');
+    scheduler.notify([{target: existingKeyField, addedNodes: [], removedNodes: []}]);
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 1);
+});
+
+test('late native reveal reload cannot replace a newly initialized Downloads order', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const loaded = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const {api, context, document, orderSecret: firstSecret} = loaded;
+    const secondSecret = ephemeralOrderSecret();
+    const firstProduct = tpk({
+        human_name: 'Late order A reveal',
+        machine_name: 'late-order-a-reveal',
+    });
+    const firstFreshProduct = {...firstProduct, redeemed_key_val: steamKey(3)};
+    const secondProduct = tpk({
+        human_name: 'Current order B mapping',
+        machine_name: 'current-order-b-mapping',
+        keyindex: 1,
+    });
+    const firstRow = downloadRow(document, {title: firstProduct.human_name});
+    const secondRow = downloadRow(document, {
+        title: secondProduct.human_name,
+        machineName: secondProduct.machine_name,
+        keyindex: secondProduct.keyindex,
+    });
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(firstRow);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let firstLoads = 0;
+    let signalLateReloadStarted;
+    let releaseLateReload;
+    const lateReloadStarted = new Promise(resolve => { signalLateReloadStarted = resolve; });
+    const lateReloadGate = new Promise(resolve => { releaseLateReload = resolve; });
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            if (key === firstSecret) {
+                firstLoads += 1;
+                if (firstLoads === 1) {
+                    return {gamekey: key, tpkd_dict: {all_tpks: [firstProduct]}};
+                }
+                signalLateReloadStarted();
+                await lateReloadGate;
+                return {gamekey: key, tpkd_dict: {all_tpks: [firstFreshProduct]}};
+            }
+            return {gamekey: key, tpkd_dict: {all_tpks: [secondProduct]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+
+    const keyField = addTextChild(document, firstRow, 'keyfield-value', steamKey(3));
+    scheduler.notify([{target: firstRow, addedNodes: [keyField], removedNodes: []}]);
+    scheduler.runPageRefresh();
+    await Promise.resolve();
+    assert.equal(firstLoads, 2);
+    await lateReloadStarted;
+
+    firstRow.remove();
+    container.appendChild(secondRow);
+    context.history.replaceState(
+        {},
+        '',
+        `/downloads?key=${encodeURIComponent(secondSecret)}`
+    );
+    await api.waitForHelperRouteForTest();
+    releaseLateReload();
+    await api.waitForPageRefreshForTest();
+
+    const mapping = api.getDownloadOrderMappingForTest();
+    assert.equal(mapping.pairs.length, 1);
+    assert.equal(mapping.pairs[0].row, secondRow);
+    assert.equal(mapping.pairs[0].tpkd.machine_name, secondProduct.machine_name);
+    assert.equal(treeText(document.body).includes(firstProduct.human_name), false);
+});
+
+test('queued native reveal intent is discarded after another Downloads order initializes', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const loaded = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const {api, context, document, orderSecret: firstSecret} = loaded;
+    const secondSecret = ephemeralOrderSecret();
+    const firstProduct = tpk({
+        human_name: 'Queued reveal order A',
+        machine_name: 'queued-reveal-order-a',
+    });
+    const secondProduct = tpk({
+        human_name: 'Initialized order B',
+        machine_name: 'initialized-order-b',
+        keyindex: 1,
+    });
+    const firstRow = downloadRow(document, {title: firstProduct.human_name});
+    const secondRow = downloadRow(document, {
+        title: secondProduct.human_name,
+        machineName: secondProduct.machine_name,
+        keyindex: secondProduct.keyindex,
+    });
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(firstRow);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    const loads = new Map();
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loads.set(key, (loads.get(key) || 0) + 1);
+            return {
+                gamekey: key,
+                tpkd_dict: {
+                    all_tpks: [key === firstSecret ? firstProduct : secondProduct],
+                },
+            };
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+
+    const revealedKey = addTextChild(document, firstRow, 'keyfield-value', steamKey(4));
+    scheduler.notify([{target: firstRow, addedNodes: [revealedKey], removedNodes: []}]);
+    assert.equal(scheduler.pageRefreshCount, 1);
+
+    firstRow.remove();
+    container.appendChild(secondRow);
+    context.history.replaceState(
+        {},
+        '',
+        `/downloads?key=${encodeURIComponent(secondSecret)}`
+    );
+    await api.waitForHelperRouteForTest();
+    const secondMapping = api.getDownloadOrderMappingForTest();
+    assert.equal(secondMapping.pairs[0].row, secondRow);
+
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+
+    assert.equal(loads.get(firstSecret), 1);
+    assert.equal(loads.get(secondSecret), 1);
+    assert.ok(api.getDownloadOrderMappingForTest());
+    assert.equal(api.getDownloadOrderMappingForTest().pairs[0].row, secondRow);
+});
+
+test('same-order query initialization adopts queued native reveal intent before debounce', async () => {
+    const scheduler = createControlledObserverScheduler();
+    const loaded = loadApi({
+        MutationObserver: scheduler.MutationObserver,
+        setTimeout: scheduler.setTimeout.bind(scheduler),
+        clearTimeout: scheduler.clearTimeout.bind(scheduler),
+    });
+    const {api, context, document, orderSecret} = loaded;
+    const revealedKey = steamKey(16);
+    const hiddenProduct = tpk({
+        human_name: 'Queued same-order query reveal',
+        machine_name: 'queued-same-order-query-reveal',
+        exclusive_countries: ['CA'],
+    });
+    const freshProduct = {
+        ...hiddenProduct,
+        redeemed_key_val: revealedKey,
+        exclusive_countries: ['MX'],
+    };
+    const row = downloadRow(document, {title: hiddenProduct.human_name});
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    let loadCalls = 0;
+    let signalReloadStarted;
+    let releaseReload;
+    const reloadStarted = new Promise(resolve => { signalReloadStarted = resolve; });
+    const reloadGate = new Promise(resolve => { releaseReload = resolve; });
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async key => {
+            loadCalls += 1;
+            if (loadCalls === 1) {
+                return {gamekey: key, tpkd_dict: {all_tpks: [hiddenProduct]}};
+            }
+            signalReloadStarted();
+            await reloadGate;
+            return {gamekey: key, tpkd_dict: {all_tpks: [freshProduct]}};
+        },
+        syncSession: async () => ({status: 'authenticated', account, error: null}),
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const selectedId = api.getDownloadActivationItemId(scope, hiddenProduct);
+    await api.updateDownloadSelection(scope, selection => selection.add(selectedId));
+    api.setDownloadSelectionModeForTest(true);
+    const initialMapping = api.getDownloadOrderMappingForTest();
+
+    const keyField = addTextChild(document, row, 'keyfield-value', revealedKey);
+    scheduler.notify([{target: row, addedNodes: [keyField], removedNodes: []}]);
+    assert.equal(scheduler.pageRefreshCount, 1);
+    context.history.replaceState(
+        {},
+        '',
+        `/downloads?key=${encodeURIComponent(orderSecret)}&view=queued-reveal`
+    );
+    await reloadStarted;
+
+    const controls = document.getElementById('hb-helper-choice-activation-controls');
+    assert.equal(api.getDownloadOrderMappingForTest(), initialMapping);
+    assert.ok(controls.querySelectorAll('button').every(button => button.disabled));
+    assert.equal(row.getAttribute('role'), null);
+    assert.deepEqual([...api.getDownloadSelection(scope)], [selectedId]);
+
+    releaseReload();
+    await api.waitForHelperRouteForTest();
+    const freshMapping = api.getDownloadOrderMappingForTest();
+    assert.equal(loadCalls, 2);
+    assert.equal(freshMapping.pairs[0].row, row);
+    assert.equal(freshMapping.pairs[0].tpkd.redeemed_key_val, revealedKey);
+    assert.equal(freshMapping.pairs[0].matchedBy, 'displayed-key');
+    assert.equal(row.classList.contains('hb-helper-download-selected'), true);
+    assert.match(treeText(row), /MX/);
+
+    scheduler.runPageRefresh();
+    await api.waitForPageRefreshForTest();
+    assert.equal(loadCalls, 2);
+    assert.equal(api.getDownloadOrderMappingForTest().pairs[0].row, row);
+    assert.equal(row.querySelector('.hb-helper-download-mapping-warning'), null);
+    assert.equal(
+        controls.querySelector('.hb-helper-download-mapping-summary-warning'),
+        null
+    );
+    assert.ok(controls.querySelectorAll('button').every(button => !button.disabled));
 });
 
 test('Downloads Steam session card follows every non-authenticated state', () => {
