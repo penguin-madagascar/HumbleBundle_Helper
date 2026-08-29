@@ -1182,6 +1182,745 @@ test('download activation falls back to machine name for a safe nonempty batch t
     assert.equal(collectedItems[0].title, product.machine_name);
 });
 
+async function setupReloadableDownloadActivation({revealedKey, loadOptions} = {}) {
+    const loaded = loadApi(loadOptions);
+    const {api, document, orderSecret} = loaded;
+    const scope = await api.hashDownloadOrderKey(orderSecret);
+    const product = tpk({
+        human_name: 'Reloadable download',
+        machine_name: 'reloadable-download',
+        ...(revealedKey ? {redeemed_key_val: revealedKey} : {}),
+    });
+    const row = downloadRow(document, {
+        title: product.human_name,
+        machineName: product.machine_name,
+        keyindex: product.keyindex,
+        displayState: revealedKey ? 'revealed' : 'hidden',
+        key: revealedKey,
+    });
+    const container = document.createElement('div');
+    container.className = 'key-container wrapper';
+    container.appendChild(row);
+    document.body.appendChild(container);
+    api.setDownloadOrderStateForTest(
+        scope,
+        {gamekey: orderSecret, tpkd_dict: {all_tpks: [product]}},
+        api.mapDownloadOrderRows([product], [row])
+    );
+    const account = {
+        countryCode: 'CA',
+        ownedApps: [],
+        wishlistApps: [],
+        sessionId: 'session',
+    };
+    api.setSteamDerivedStateForTest(account);
+    api.mountDownloadActivationControlsForTest();
+    const id = api.getDownloadActivationItemId(scope, product);
+    await api.updateDownloadSelection(scope, selection => selection.add(id));
+    return {...loaded, account, product, scope};
+}
+
+function authenticatedDownloadSession(account) {
+    return {status: 'authenticated', account, error: null};
+}
+
+test('Downloads defers a helper-reveal reload until its persisted batch completes and reconciles', async () => {
+    const {api, account, product, scope} = await setupReloadableDownloadActivation();
+    const id = api.getDownloadActivationItemId(scope, product);
+    const activeBatch = activationBatch([{
+        id,
+        key: steamKey(9),
+        status: 'pending-steam-activation',
+    }], {
+        id: 'delayed-helper-reveal',
+        state: 'activating',
+        owner: 'foreign-runner',
+    });
+    const completedBatch = activationBatch([{id, status: 'activated'}], {
+        id: activeBatch.id,
+    });
+    let reloads = 0;
+
+    const result = await api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticatedDownloadSession(account),
+            collectWork: async (items, options) => {
+                api.setChoiceActivationBatchForTest(activeBatch);
+                options.onBatchStarted(activeBatch);
+                await options.revealKey(items[0]);
+                return {started: true, pendingCount: 1, batch: activeBatch};
+            },
+            collectionOptions: {revealKey: async () => steamKey(9)},
+            activationWork: async () => ({
+                processed: false,
+                busy: true,
+                batch: activeBatch,
+            }),
+        },
+        reconcileBatch: async () => ({reconciled: true}),
+        reloadPage: () => { reloads += 1; },
+    });
+
+    assert.equal(result.busy, true);
+    assert.equal(reloads, 0);
+    assert.equal(api.getDownloadSelection(scope).has(id), true);
+
+    api.setChoiceActivationBatchForTest(completedBatch);
+    await api.reconcileChoiceActivationBatch(completedBatch);
+
+    assert.equal(api.getDownloadSelection(scope).has(id), false);
+    assert.equal(reloads, 1);
+    await api.reconcileChoiceActivationBatch(completedBatch);
+    assert.equal(reloads, 1);
+});
+
+test('Downloads completes a pending helper-reveal reload from the installed GM batch listener', async () => {
+    const fixture = await setupReloadableDownloadActivation();
+    const {api, account, orderSecret, product, scope} = fixture;
+    const order = {gamekey: orderSecret, tpkd_dict: {all_tpks: [product]}};
+    const authenticated = authenticatedDownloadSession(account);
+    api.installHelperRouteLifecycleForTest({
+        loadOrder: async () => order,
+        syncSession: async () => authenticated,
+        reconcileBatch: async () => ({reconciled: true}),
+    });
+    await api.waitForHelperRouteForTest();
+    const id = api.getDownloadActivationItemId(scope, product);
+    const activeBatch = activationBatch([{
+        id,
+        key: steamKey(16),
+        status: 'pending-steam-activation',
+    }], {
+        id: 'listener-completed-helper-reveal',
+        state: 'activating',
+        owner: 'foreign-runner',
+    });
+    const completedBatch = activationBatch([{id, status: 'activated'}], {
+        id: activeBatch.id,
+    });
+    let reloads = 0;
+
+    await api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticated,
+            collectWork: async (items, options) => {
+                api.setChoiceActivationBatchForTest(activeBatch);
+                options.onBatchStarted(activeBatch);
+                await options.revealKey(items[0]);
+                return {started: true, pendingCount: 1, batch: activeBatch};
+            },
+            collectionOptions: {revealKey: async () => steamKey(16)},
+            activationWork: async () => ({
+                processed: false,
+                busy: true,
+                batch: activeBatch,
+            }),
+        },
+        reconcileBatch: async () => ({reconciled: true}),
+        reloadPage: () => { reloads += 1; },
+    });
+
+    assert.equal(reloads, 0);
+    assert.equal(api.getDownloadSelection(scope).has(id), true);
+    api.setChoiceActivationBatchForTest(completedBatch);
+    for (let attempt = 0; attempt < 10 && reloads === 0; attempt++) {
+        await new Promise(resolve => setImmediate(resolve));
+    }
+
+    assert.equal(api.getDownloadSelection(scope).has(id), false);
+    assert.equal(reloads, 1);
+});
+
+test('Downloads retries helper-reveal selection reconciliation before reloading', async () => {
+    const scheduled = new Map();
+    let nextTimerId = 1;
+    const fixture = await setupReloadableDownloadActivation({
+        loadOptions: {
+            setTimeout(callback, delay) {
+                const id = nextTimerId++;
+                scheduled.set(id, {callback, delay});
+                return id;
+            },
+            clearTimeout(id) { scheduled.delete(id); },
+        },
+    });
+    const {api, account, product, scope, gmBus} = fixture;
+    const id = api.getDownloadActivationItemId(scope, product);
+    const activeBatch = activationBatch([{
+        id,
+        key: steamKey(10),
+        status: 'pending-steam-activation',
+    }], {
+        id: 'reconcile-retry-helper-reveal',
+        state: 'activating',
+    });
+    const completedBatch = activationBatch([{id, status: 'activated'}], {
+        id: activeBatch.id,
+    });
+    const selectionKey = api.getDownloadSelectionStorageKeyForTest(scope);
+    gmBus.ignoredWrites.add(selectionKey);
+    let reloads = 0;
+    let fullReconciliations = 0;
+
+    await api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticatedDownloadSession(account),
+            collectWork: async (items, options) => {
+                api.setChoiceActivationBatchForTest(activeBatch);
+                options.onBatchStarted(activeBatch);
+                await options.revealKey(items[0]);
+                return {started: true, pendingCount: 1, batch: activeBatch};
+            },
+            collectionOptions: {revealKey: async () => steamKey(10)},
+            activationWork: async () => {
+                api.setChoiceActivationBatchForTest(completedBatch);
+                return {processed: true, batch: completedBatch};
+            },
+        },
+        reconcileBatch: () => {
+            fullReconciliations += 1;
+            return api.reconcileChoiceActivationBatch(completedBatch);
+        },
+        reloadPage: () => { reloads += 1; },
+    });
+
+    assert.equal(api.getDownloadSelection(scope).has(id), true);
+    assert.equal(reloads, 0);
+    assert.equal(fullReconciliations, 1);
+    const firstRetries = [...scheduled.entries()].filter(([, timer]) => timer.delay === 250);
+    assert.equal(firstRetries.length, 1);
+
+    scheduled.delete(firstRetries[0][0]);
+    await firstRetries[0][1].callback();
+
+    assert.equal(api.getDownloadSelection(scope).has(id), true);
+    assert.equal(reloads, 0);
+    assert.equal(fullReconciliations, 1);
+    const secondRetries = [...scheduled.entries()].filter(([, timer]) => timer.delay === 500);
+    assert.equal(secondRetries.length, 1);
+
+    gmBus.ignoredWrites.delete(selectionKey);
+    scheduled.delete(secondRetries[0][0]);
+    await secondRetries[0][1].callback();
+
+    assert.equal(api.getDownloadSelection(scope).has(id), false);
+    assert.equal(reloads, 1);
+    assert.equal(fullReconciliations, 1);
+});
+
+test('Downloads reload retry never fully reconciles a missing or replaced batch', async t => {
+    for (const outcome of ['missing', 'replaced']) {
+        await t.test(outcome, async () => {
+            const scheduled = new Map();
+            let nextTimerId = 1;
+            const fixture = await setupReloadableDownloadActivation({
+                loadOptions: {
+                    setTimeout(callback, delay) {
+                        const timerId = nextTimerId++;
+                        scheduled.set(timerId, {callback, delay});
+                        return timerId;
+                    },
+                    clearTimeout(timerId) { scheduled.delete(timerId); },
+                },
+            });
+            const {api, account, product, scope, gmBus} = fixture;
+            const id = api.getDownloadActivationItemId(scope, product);
+            const activeBatch = activationBatch([{
+                id,
+                key: steamKey(12),
+                status: 'pending-steam-activation',
+            }], {
+                id: `retry-${outcome}-helper-reveal`,
+                state: 'activating',
+            });
+            const completedBatch = activationBatch([{id, status: 'activated'}], {
+                id: activeBatch.id,
+            });
+            const selectionKey = api.getDownloadSelectionStorageKeyForTest(scope);
+            gmBus.ignoredWrites.add(selectionKey);
+            let fullReconciliations = 0;
+            let reloads = 0;
+
+            await api.startDownloadActivationForTest({
+                directActivationOptions: {
+                    syncSession: async () => authenticatedDownloadSession(account),
+                    collectWork: async (items, options) => {
+                        api.setChoiceActivationBatchForTest(activeBatch);
+                        options.onBatchStarted(activeBatch);
+                        await options.revealKey(items[0]);
+                        return {started: true, pendingCount: 1, batch: activeBatch};
+                    },
+                    collectionOptions: {revealKey: async () => steamKey(12)},
+                    activationWork: async () => {
+                        api.setChoiceActivationBatchForTest(completedBatch);
+                        return {processed: true, batch: completedBatch};
+                    },
+                },
+                reconcileBatch: () => {
+                    fullReconciliations += 1;
+                    return api.reconcileChoiceActivationBatch(completedBatch);
+                },
+                reloadPage: () => { reloads += 1; },
+            });
+
+            const retry = [...scheduled.entries()].find(([, timer]) => timer.delay === 250);
+            assert.ok(retry);
+            gmBus.ignoredWrites.delete(selectionKey);
+            api.setChoiceActivationBatchForTest(outcome === 'missing'
+                ? null
+                : activationBatch([{id, status: 'activated'}], {
+                    id: `replacement-after-${activeBatch.id}`,
+                }));
+            scheduled.delete(retry[0]);
+            await retry[1].callback();
+
+            assert.equal(fullReconciliations, 1);
+            assert.equal(api.getDownloadSelection(scope).has(id), true);
+            assert.equal(reloads, 0);
+        });
+    }
+});
+
+test('Downloads never reloads when a successful reveal has no matching persisted batch', async () => {
+    const {api, account, product, scope} = await setupReloadableDownloadActivation();
+    const id = api.getDownloadActivationItemId(scope, product);
+    const unpersistedBatch = activationBatch([{
+        id,
+        key: steamKey(11),
+        status: 'pending-steam-activation',
+    }], {
+        id: 'unpersisted-helper-reveal',
+        state: 'activating',
+    });
+    let reloads = 0;
+
+    await api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticatedDownloadSession(account),
+            collectWork: async (items, options) => {
+                options.onBatchStarted(unpersistedBatch);
+                await options.revealKey(items[0]);
+                return {started: true, pendingCount: 1, batch: unpersistedBatch};
+            },
+            collectionOptions: {revealKey: async () => steamKey(11)},
+            activationWork: async () => ({
+                processed: false,
+                stopped: true,
+                batch: unpersistedBatch,
+            }),
+        },
+        reconcileBatch: async () => ({reconciled: true}),
+        reloadPage: () => { reloads += 1; },
+    });
+
+    assert.equal(api.getDownloadSelection(scope).has(id), true);
+    assert.equal(reloads, 0);
+});
+
+test('Downloads rejects a helper-reveal reload request containing any foreign-scope ID', async () => {
+    const {api, product, scope} = await setupReloadableDownloadActivation();
+    const id = api.getDownloadActivationItemId(scope, product);
+    const foreignScope = await api.hashDownloadOrderKey(ephemeralOrderSecret());
+    const foreignId = api.getDownloadActivationItemId(foreignScope, product);
+
+    assert.equal(api.rememberDownloadRevealReloadForTest({
+        batchId: 'foreign-scope-helper-reveal',
+        revealedItemIds: new Set([id, foreignId]),
+        reloadPage() {},
+    }), false);
+});
+
+test('Downloads discards a helper-reveal reload after A to B to A route replacement', async () => {
+    const fixture = await setupPendingDownloadRoute();
+    const {
+        api,
+        context,
+        container,
+        firstIds,
+        firstProducts,
+        firstRows,
+        secondRow,
+        authenticated,
+        gmBus,
+        navigateToSecondOrder,
+        orderSecret,
+    } = fixture;
+    const id = firstIds[0];
+    const activeBatch = activationBatch([{
+        id,
+        key: steamKey(13),
+        status: 'pending-steam-activation',
+    }], {id: 'returned-route-helper-reveal', state: 'activating'});
+    const completedBatch = activationBatch([{id, status: 'activated'}], {
+        id: activeBatch.id,
+    });
+    let reloads = 0;
+
+    await api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticated,
+            collectWork: async (items, options) => {
+                options.onBatchStarted(activeBatch);
+                await options.revealKey(items[0]);
+                await navigateToSecondOrder();
+                secondRow.remove();
+                container.append(...firstRows);
+                context.history.replaceState(
+                    {},
+                    '',
+                    `/downloads?key=${encodeURIComponent(orderSecret)}`
+                );
+                await api.waitForHelperRouteForTest();
+                return {started: true, pendingCount: 1, batch: activeBatch};
+            },
+            collectionOptions: {revealKey: async () => steamKey(13)},
+            activationWork: async () => {
+                gmBus.values.set('hb-helper-steam-activation-batch-v2', clone(completedBatch));
+                return {processed: true, batch: completedBatch};
+            },
+        },
+        reconcileBatch: () => api.reconcileChoiceActivationBatch(completedBatch),
+        reloadPage: () => { reloads += 1; },
+    });
+
+    assert.equal(api.getDownloadsOrderKey(), orderSecret);
+    assert.equal(api.getDownloadOrderMappingForTest().pairs.length, firstProducts.length);
+    assert.equal(reloads, 0);
+});
+
+test('Downloads binds helper-reveal reloads to the captured route initialization and controls', async t => {
+    for (const change of ['query', 'initialization', 'controls']) {
+        await t.test(change, async () => {
+            const fixture = await setupReloadableDownloadActivation();
+            const {api, account, context, document, gmBus, orderSecret, product, scope} = fixture;
+            const order = {gamekey: orderSecret, tpkd_dict: {all_tpks: [product]}};
+            const authenticated = authenticatedDownloadSession(account);
+            api.installHelperRouteLifecycleForTest({
+                loadOrder: async () => order,
+                syncSession: async () => authenticated,
+                reconcileBatch: async () => ({reconciled: true}),
+            });
+            await api.waitForHelperRouteForTest();
+            const id = api.getDownloadActivationItemId(scope, product);
+            const activeBatch = activationBatch([{
+                id,
+                key: steamKey(14),
+                status: 'pending-steam-activation',
+            }], {id: `identity-${change}-helper-reveal`, state: 'activating'});
+            const completedBatch = activationBatch([{id, status: 'activated'}], {
+                id: activeBatch.id,
+            });
+            let reloads = 0;
+
+            await api.startDownloadActivationForTest({
+                directActivationOptions: {
+                    syncSession: async () => authenticated,
+                    collectWork: async (items, options) => {
+                        options.onBatchStarted(activeBatch);
+                        await options.revealKey(items[0]);
+                        if (change === 'query') {
+                            context.history.replaceState(
+                                {},
+                                '',
+                                `/downloads?key=${encodeURIComponent(orderSecret)}&view=changed`
+                            );
+                            await api.waitForHelperRouteForTest();
+                        } else if (change === 'initialization') {
+                            await api.initializeDownloadOrderPageForTest({
+                                orderKey: orderSecret,
+                                loadOrder: async () => order,
+                            });
+                        } else {
+                            document.getElementById(
+                                'hb-helper-choice-activation-controls'
+                            ).remove();
+                            api.mountDownloadActivationControlsForTest();
+                        }
+                        return {started: true, pendingCount: 1, batch: activeBatch};
+                    },
+                    collectionOptions: {revealKey: async () => steamKey(14)},
+                    activationWork: async () => {
+                        gmBus.values.set(
+                            'hb-helper-steam-activation-batch-v2',
+                            clone(completedBatch)
+                        );
+                        return {processed: true, batch: completedBatch};
+                    },
+                },
+                reconcileBatch: () => api.reconcileChoiceActivationBatch(completedBatch),
+                reloadPage: () => { reloads += 1; },
+            });
+
+            assert.equal(reloads, 0);
+        });
+    }
+});
+
+test('Downloads keeps a helper-reveal reload through an equivalent same-order DOM remap', async () => {
+    const fixture = await setupReloadableDownloadActivation();
+    const {api, account, gmBus, product, scope} = fixture;
+    const id = api.getDownloadActivationItemId(scope, product);
+    const activeBatch = activationBatch([{
+        id,
+        key: steamKey(15),
+        status: 'pending-steam-activation',
+    }], {id: 'same-dom-remap-helper-reveal', state: 'activating'});
+    const completedBatch = activationBatch([{id, status: 'activated'}], {
+        id: activeBatch.id,
+    });
+    const initialMapping = api.getDownloadOrderMappingForTest();
+    let reloads = 0;
+
+    await api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticatedDownloadSession(account),
+            collectWork: async (items, options) => {
+                options.onBatchStarted(activeBatch);
+                await options.revealKey(items[0]);
+                api.refreshDownloadOrderPageForTest();
+                assert.notEqual(api.getDownloadOrderMappingForTest(), initialMapping);
+                return {started: true, pendingCount: 1, batch: activeBatch};
+            },
+            collectionOptions: {revealKey: async () => steamKey(15)},
+            activationWork: async () => {
+                gmBus.values.set('hb-helper-steam-activation-batch-v2', clone(completedBatch));
+                return {processed: true, batch: completedBatch};
+            },
+        },
+        reconcileBatch: () => api.reconcileChoiceActivationBatch(completedBatch),
+        reloadPage: () => { reloads += 1; },
+    });
+
+    assert.equal(reloads, 1);
+});
+
+test('Downloads reloads once after a newly revealed key activates and reconciliation settles', async () => {
+    const {api, account, product, scope} = await setupReloadableDownloadActivation();
+    const id = api.getDownloadActivationItemId(scope, product);
+    const activeBatch = activationBatch([{
+        id,
+        key: steamKey(0),
+        status: 'pending-steam-activation',
+    }], {id: 'settled-helper-reveal', state: 'activating'});
+    const completedBatch = activationBatch([{id, status: 'activated'}], {
+        id: activeBatch.id,
+    });
+    let reloads = 0;
+    let releaseReconciliation;
+    const reconciliationStarted = new Promise(resolve => { releaseReconciliation = resolve; });
+    let startReconciliation;
+    const reconciliationWaiting = new Promise(resolve => { startReconciliation = resolve; });
+    const activation = api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticatedDownloadSession(account),
+            collectWork: async (items, options) => {
+                assert.equal(items[0].tpkd, product);
+                api.setChoiceActivationBatchForTest(activeBatch);
+                options.onBatchStarted(activeBatch);
+                await options.revealKey(items[0]);
+                return {started: true, pendingCount: 1, batch: activeBatch};
+            },
+            collectionOptions: {revealKey: async () => steamKey(0)},
+            activationWork: async () => {
+                api.setChoiceActivationBatchForTest(completedBatch);
+                return {processed: true, batch: completedBatch};
+            },
+        },
+        reconcileBatch: async () => {
+            startReconciliation();
+            await reconciliationStarted;
+            return api.reconcileChoiceActivationBatch(completedBatch);
+        },
+        reloadPage: () => { reloads += 1; },
+    });
+
+    await reconciliationWaiting;
+    assert.equal(reloads, 0);
+    releaseReconciliation();
+    await activation;
+    assert.equal(reloads, 1);
+});
+
+test('Downloads reloads once after two hidden selected keys reveal', async () => {
+    const {api, authenticated, firstProducts, firstIds} = await setupPendingDownloadRoute();
+    const activeBatch = activationBatch(firstIds.map((id, index) => ({
+        id,
+        key: steamKey(index + 4),
+        status: 'pending-steam-activation',
+    })), {id: 'multi-helper-reveal', state: 'activating'});
+    const completedBatch = activationBatch(firstIds.map(id => ({
+        id,
+        status: 'activated',
+    })), {id: activeBatch.id});
+    const revealed = [];
+    let reloads = 0;
+    await api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticated,
+            collectWork: async (items, options) => {
+                options.onBatchStarted(activeBatch);
+                for (const item of items) await options.revealKey(item);
+                return {started: true, pendingCount: items.length, batch: activeBatch};
+            },
+            collectionOptions: {
+                revealKey: async item => {
+                    revealed.push(item.tpkd);
+                    return steamKey(revealed.length + 3);
+                },
+            },
+            activationWork: async () => {
+                api.setChoiceActivationBatchForTest(completedBatch);
+                return {processed: true, batch: completedBatch};
+            },
+        },
+        reconcileBatch: () => api.reconcileChoiceActivationBatch(completedBatch),
+        reloadPage: () => { reloads += 1; },
+    });
+
+    assert.deepEqual(revealed, firstProducts);
+    assert.equal(reloads, 1);
+});
+
+test('Downloads reloads once after Steam activation fails for a newly revealed key', async () => {
+    const {api, account, product, scope} = await setupReloadableDownloadActivation();
+    const id = api.getDownloadActivationItemId(scope, product);
+    const revealedKey = steamKey(1);
+    const activeBatch = activationBatch([{
+        id,
+        key: revealedKey,
+        status: 'pending-steam-activation',
+    }], {id: 'steam-failed-helper-reveal', state: 'activating'});
+    const completedBatch = activationBatch([{
+        id,
+        key: revealedKey,
+        status: 'steam-activation-failed',
+        error: 'Already owned',
+        code: 9,
+    }], {id: activeBatch.id});
+    let reloads = 0;
+    const result = await api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticatedDownloadSession(account),
+            collectWork: async (items, options) => {
+                api.setChoiceActivationBatchForTest(activeBatch);
+                options.onBatchStarted(activeBatch);
+                await options.revealKey(items[0]);
+                return {started: true, pendingCount: 1, batch: activeBatch};
+            },
+            collectionOptions: {revealKey: async () => revealedKey},
+            activationWork: async () => {
+                api.setChoiceActivationBatchForTest(completedBatch);
+                return {processed: false, failed: true, batch: completedBatch};
+            },
+        },
+        reconcileBatch: () => api.reconcileChoiceActivationBatch(completedBatch),
+        reloadPage: () => { reloads += 1; },
+    });
+
+    assert.equal(result.failed, true);
+    assert.equal(reloads, 1);
+});
+
+test('Downloads skips reloads when a reveal fails or every selected key was already revealed', async () => {
+    const failedReveal = await setupReloadableDownloadActivation();
+    let failedRevealReloads = 0;
+    await failedReveal.api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticatedDownloadSession(failedReveal.account),
+            collectWork: async (items, {revealKey}) => {
+                await assert.rejects(revealKey(items[0]));
+                return {started: true, pendingCount: 0};
+            },
+            collectionOptions: {revealKey: async () => {
+                throw new Error('Humble reveal failed');
+            }},
+        },
+        reconcileBatch: async () => ({reconciled: true}),
+        reloadPage: () => { failedRevealReloads += 1; },
+    });
+    assert.equal(failedRevealReloads, 0);
+
+    const existingKey = steamKey(2);
+    const alreadyRevealed = await setupReloadableDownloadActivation({revealedKey: existingKey});
+    let alreadyRevealedReloads = 0;
+    await alreadyRevealed.api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticatedDownloadSession(alreadyRevealed.account),
+            collectWork: async (items, {revealKey}) => {
+                assert.equal(await revealKey(items[0]), existingKey);
+                return {started: true, pendingCount: 1};
+            },
+            activationWork: async () => ({processed: true}),
+        },
+        reconcileBatch: async () => ({reconciled: true}),
+        reloadPage: () => { alreadyRevealedReloads += 1; },
+    });
+    assert.equal(alreadyRevealedReloads, 0);
+});
+
+test('Downloads skips reloads for unavailable and no-selection runs', async () => {
+    const unavailable = loadApi();
+    let unavailableReloads = 0;
+    assert.deepEqual(
+        clone(await unavailable.api.startDownloadActivationForTest({
+            reloadPage: () => { unavailableReloads += 1; },
+        })),
+        {started: false, unavailable: true}
+    );
+    assert.equal(unavailableReloads, 0);
+
+    const noSelection = await setupReloadableDownloadActivation();
+    await noSelection.api.updateDownloadSelection(noSelection.scope, selection => selection.clear());
+    let noSelectionReloads = 0;
+    assert.deepEqual(
+        clone(await noSelection.api.startDownloadActivationForTest({
+            reloadPage: () => { noSelectionReloads += 1; },
+        })),
+        {started: false, noSelection: true}
+    );
+    assert.equal(noSelectionReloads, 0);
+});
+
+test('Downloads skips reload after navigating to another order during activation', async () => {
+    const fixture = await setupPendingDownloadRoute();
+    const {api, context, authenticated, firstIds, navigateToSecondOrder} = fixture;
+    const id = firstIds[0];
+    const activeBatch = activationBatch([{
+        id,
+        key: steamKey(3),
+        status: 'pending-steam-activation',
+    }], {id: 'navigated-helper-reveal', state: 'activating'});
+    const completedBatch = activationBatch([{id, status: 'activated'}], {
+        id: activeBatch.id,
+    });
+    let reloads = 0;
+    const activation = api.startDownloadActivationForTest({
+        directActivationOptions: {
+            syncSession: async () => authenticated,
+            collectionOptions: {
+                revealKey: async () => steamKey(3),
+            },
+            collectWork: async (items, options) => {
+                options.onBatchStarted(activeBatch);
+                await options.revealKey(items[0]);
+                await navigateToSecondOrder();
+                return {started: true, pendingCount: 1, batch: activeBatch};
+            },
+            activationWork: async () => {
+                api.setChoiceActivationBatchForTest(completedBatch);
+                return {processed: true, batch: completedBatch};
+            },
+        },
+        reconcileBatch: () => api.reconcileChoiceActivationBatch(completedBatch),
+        reloadPage: () => { reloads += 1; },
+    });
+
+    await activation;
+    assert.equal(context.location.pathname, '/downloads');
+    assert.notEqual(api.getDownloadsOrderKey(), fixture.orderSecret);
+    assert.equal(reloads, 0);
+});
+
 test('Downloads activation continues through retained-account same-order remaps', async () => {
     const {api, document, orderSecret} = loadApi();
     const scope = await api.hashDownloadOrderKey(orderSecret);
@@ -1240,6 +1979,7 @@ test('Downloads activation continues through retained-account same-order remaps'
             },
         },
         reconcileBatch: async () => ({reconciled: true}),
+        reloadPage() {},
     });
 
     assert.deepEqual(result, {started: true, pendingCount: 0});

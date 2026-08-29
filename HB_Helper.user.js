@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.0.33
+// @version      0.0.34
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -917,6 +917,7 @@
     const choiceOwnershipRefreshLockName = 'hb-helper-choice-ownership-refresh';
     const choiceSelectionLockName = 'hb-helper-choice-selection';
     const choiceLockRetryMs = 250;
+    const downloadRevealReloadRetryMaxMs = 8000;
     const gmRequestTimeoutMs = 20000;
     const choiceRuntimeOwnerId = typeof crypto !== 'undefined'
         && crypto
@@ -969,6 +970,8 @@
     let downloadSelectionMode = false;
     let downloadActivationInProgress = false;
     let downloadActivationContext;
+    let pendingDownloadRevealReload;
+    let downloadRevealReloadCompletionPromise = Promise.resolve();
     const downloadSelectionListeners = new Map();
     const selectedDownloadItemIds = new Set();
     const downloadRowInteractionState = new WeakMap();
@@ -4608,6 +4611,156 @@
         return {...collection, ...activation, activation};
     }
 
+    function clearPendingDownloadRevealReload(request = pendingDownloadRevealReload) {
+        if (!request || pendingDownloadRevealReload !== request) return false;
+        clearTimeout(request.retryTimer);
+        pendingDownloadRevealReload = undefined;
+        return true;
+    }
+
+    function rememberDownloadRevealReload({
+        batchId,
+        context,
+        revealedItemIds,
+        reloadPage,
+    }) {
+        const scope = context?.scope?.kind === 'download'
+            ? context.scope.scope
+            : undefined;
+        const routeIdentity = {
+            routeFingerprint: context?.routeFingerprint,
+            routeGeneration: context?.routeGeneration,
+            initializationGeneration: context?.initializationGeneration,
+            routeKey: context?.routeKey,
+            scope,
+            controls: context?.controls,
+        };
+        if (!isNonEmptyString(batchId)
+            || !getDownloadSelectionStorageKey(scope)
+            || !isDownloadRevealReloadRouteCurrent(routeIdentity)) {
+            return false;
+        }
+        const revealedIds = [...revealedItemIds];
+        if (revealedIds.length === 0 || revealedIds.some(id =>
+            parseDownloadActivationItemId(id)?.scope !== scope
+        )) return false;
+        clearPendingDownloadRevealReload();
+        pendingDownloadRevealReload = {
+            batchId,
+            ...routeIdentity,
+            revealedItemIds: new Set(revealedIds),
+            reloadPage,
+            retryTimer: undefined,
+            retryAttempt: 0,
+        };
+        return true;
+    }
+
+    function isDownloadRevealReloadRouteCurrent(request) {
+        return request?.routeFingerprint === getHelperRouteFingerprint()
+            && request.routeGeneration === helperRouteTransitionGeneration
+            && request.initializationGeneration === downloadOrderInitializationGeneration
+            && request.routeKey === downloadOrderRouteKey
+            && request.routeKey === getDownloadsOrderKey()
+            && request.scope === downloadOrderScope
+            && request.controls === document.getElementById(
+                'hb-helper-choice-activation-controls'
+            );
+    }
+
+    function getDownloadRevealReloadBatchState(request) {
+        const batch = getChoiceActivationBatch();
+        if (!batch || batch.id !== request.batchId) return {invalid: true};
+        const batchScope = inferActivationBatchScope(batch);
+        if (batchScope?.kind !== 'download' || batchScope.scope !== request.scope) {
+            return {invalid: true};
+        }
+        const itemsById = new Map(batch.items.map(item => [item.id, item]));
+        const revealedItems = [...request.revealedItemIds].map(id => itemsById.get(id));
+        if (revealedItems.some(item =>
+            !item || item.status === choiceActivationItemStates.humbleFailed
+        )) {
+            return {invalid: true};
+        }
+        return {
+            batch,
+            complete: batch.state === choiceActivationBatchStates.complete,
+        };
+    }
+
+    function scheduleDownloadRevealReloadReconciliation(request) {
+        if (pendingDownloadRevealReload !== request || request.retryTimer !== undefined) return;
+        const retryDelay = Math.min(
+            choiceLockRetryMs * (2 ** Math.min(request.retryAttempt, 5)),
+            downloadRevealReloadRetryMaxMs
+        );
+        request.retryAttempt += 1;
+        request.retryTimer = setTimeout(async () => {
+            request.retryTimer = undefined;
+            if (pendingDownloadRevealReload !== request
+                || !isDownloadRevealReloadRouteCurrent(request)) {
+                clearPendingDownloadRevealReload(request);
+                return;
+            }
+            const expected = getDownloadRevealReloadBatchState(request);
+            if (expected.invalid || !expected.complete) {
+                clearPendingDownloadRevealReload(request);
+                return;
+            }
+            try {
+                await reconcileActivationSelectionStorageFromBatch(expected.batch, {
+                    shouldPersist: () => {
+                        const current = getDownloadRevealReloadBatchState(request);
+                        return isDownloadRevealReloadRouteCurrent(request)
+                            && !current.invalid
+                            && current.complete;
+                    },
+                });
+            } catch (_) {
+                // The stored batch and selection remain authoritative; retry below.
+            }
+            await queueDownloadRevealReloadCompletion();
+        }, retryDelay);
+    }
+
+    function completePendingDownloadRevealReload() {
+        const request = pendingDownloadRevealReload;
+        if (!request) return false;
+        if (!isDownloadRevealReloadRouteCurrent(request)) {
+            clearPendingDownloadRevealReload(request);
+            return false;
+        }
+
+        const expected = getDownloadRevealReloadBatchState(request);
+        if (expected.invalid) {
+            clearPendingDownloadRevealReload(request);
+            return false;
+        }
+        if (!expected.complete) return false;
+
+        const persistedSelection = getDownloadSelection(request.scope);
+        const successfulIds = expected.batch.items
+            .filter(item => item.status === choiceActivationItemStates.activated)
+            .map(item => item.id);
+        if (successfulIds.some(id => persistedSelection.has(id))) {
+            scheduleDownloadRevealReloadReconciliation(request);
+            return false;
+        }
+
+        clearPendingDownloadRevealReload(request);
+        request.reloadPage();
+        return true;
+    }
+
+    function queueDownloadRevealReloadCompletion() {
+        const completion = downloadRevealReloadCompletionPromise.then(
+            completePendingDownloadRevealReload,
+            completePendingDownloadRevealReload
+        );
+        downloadRevealReloadCompletionPromise = completion.catch(() => false);
+        return completion;
+    }
+
     async function startChoiceActivation() {
         if (choiceActivationInProgress
             && isActivationUiContextCurrent(choiceActivationContext)) {
@@ -4703,6 +4856,7 @@
     async function startDownloadActivation({
         directActivationOptions = {},
         reconcileBatch = reconcileChoiceActivationBatch,
+        reloadPage = () => location.reload(),
     } = {}) {
         if (!isDownloadActivationUiAvailable()) {
             refreshDownloadOrderPage();
@@ -4725,13 +4879,17 @@
         }
 
         const orderKey = downloadOrderRouteKey;
+        const orderScope = downloadOrderScope;
         const selectedItems = selectedPairs.map((pair, index) => ({
-            id: getDownloadActivationItemId(downloadOrderScope, pair.tpkd),
+            id: getDownloadActivationItemId(orderScope, pair.tpkd),
             title: [pair.tpkd.human_name, pair.tpkd.machine_name]
                 .find(isNonEmptyString)?.trim() || '',
             tpkd: pair.tpkd,
             index,
         }));
+        const hiddenItemIds = new Set(selectedItems
+            .filter(item => !findSteamKeyInText(item.tpkd.redeemed_key_val))
+            .map(item => item.id));
         const context = captureDownloadActivationUiContext();
         const {
             collectionOptions: providedCollectionOptions = {},
@@ -4742,6 +4900,8 @@
         downloadActivationContext = context;
         let completionStatus = '';
         let result = {started: false};
+        let activationBatchId;
+        const revealedHiddenItemIds = new Set();
         setActivationUiContextStatus(
             context,
             t('downloadRevealStarting', {count: selectedItems.length})
@@ -4753,6 +4913,7 @@
                 collectionOptions: {
                     ...providedCollectionOptions,
                     onBatchStarted: batch => {
+                        if (isChoiceActivationBatch(batch)) activationBatchId = batch.id;
                         if (!isActivationUiContextCurrent(context)) return;
                         setDownloadSelectionMode(false);
                         renderActivationUiContextResults(context, batch);
@@ -4775,9 +4936,13 @@
                             throw new Error(t('activationBusy'));
                         }
                         try {
-                            return providedCollectionOptions.revealKey
+                            const key = providedCollectionOptions.revealKey
                                 ? await providedCollectionOptions.revealKey(item)
                                 : await revealDownloadSteamKey(item.tpkd, {orderKey});
+                            if (hiddenItemIds.has(item.id) && findSteamKeyInText(key)) {
+                                revealedHiddenItemIds.add(item.id);
+                            }
+                            return key;
                         } catch (error) {
                             setActivationUiContextStatus(
                                 context,
@@ -4809,7 +4974,22 @@
             } else if (!result.started && !result.stale) {
                 completionStatus = t('activationBusy');
             }
-            if (!result.invalidSelection) await reconcileBatch();
+            if (revealedHiddenItemIds.size > 0 && activationBatchId) {
+                rememberDownloadRevealReload({
+                    batchId: activationBatchId,
+                    context,
+                    revealedItemIds: revealedHiddenItemIds,
+                    reloadPage,
+                });
+            }
+            if (!result.invalidSelection) {
+                try {
+                    await reconcileBatch();
+                } catch (_) {
+                    console.warn('[HB-Helper] Reconcile activation batch failed.');
+                }
+            }
+            await queueDownloadRevealReloadCompletion();
         } finally {
             if (downloadActivationContext === context) {
                 const contextCurrent = isActivationUiContextCurrent(context);
@@ -4924,6 +5104,7 @@
 
     function resetDownloadOrderPage({removeControls = true} = {}) {
         downloadOrderInitializationGeneration += 1;
+        clearPendingDownloadRevealReload();
         clearDownloadMappingUi();
         downloadOrderRouteKey = undefined;
         downloadOrderScope = undefined;
@@ -5699,7 +5880,7 @@
         return result;
     }
 
-    async function reconcileChoiceActivationBatch(
+    async function reconcileChoiceActivationBatchCore(
         batch = getChoiceActivationBatch(),
         {
             refreshBatch = refreshCompletedChoiceActivationBatch,
@@ -5828,6 +6009,14 @@
                     );
                 }
             }
+        }
+    }
+
+    async function reconcileChoiceActivationBatch(...args) {
+        try {
+            return await reconcileChoiceActivationBatchCore(...args);
+        } finally {
+            await queueDownloadRevealReloadCompletion();
         }
     }
 
@@ -7329,6 +7518,11 @@
             runDirectChoiceActivation,
             startChoiceActivationForTest: startChoiceActivation,
             startDownloadActivationForTest: startDownloadActivation,
+            rememberDownloadRevealReloadForTest: options =>
+                rememberDownloadRevealReload({
+                    ...options,
+                    context: captureDownloadActivationUiContext(),
+                }),
             postSteamActivationKey,
             processSteamActivationBatch,
             runSteamActivationWork,
