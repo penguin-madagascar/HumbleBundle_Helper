@@ -21,7 +21,11 @@ download pages.
 - Adds Humble Choice controls for selecting games, revealing every selected
   Steam key in sequence, activating them directly from Humble Choice, and
   showing per-key partial failures while a Steam account is authenticated.
-- Supports game bundle pages and the Humble Choice membership page.
+- Adds a white toolbar to individual purchased bundle download pages for
+  selecting eligible Steam keys, showing activation restrictions, and
+  activating keys sequentially.
+- Supports game bundle pages, the Humble Choice membership page, and individual
+  purchased bundle order pages.
 - Shows Humble-provided Steam activation restrictions before reveal in Choice
   game dialogs and with the same presentation on Humble download pages.
 - Supports English and Chinese script UI.
@@ -38,9 +42,9 @@ Steam Store links use public Steam search and work without logging in to Steam.
 The helper synchronizes the live Steam login state when Humble first loads and
 again when the page regains focus or becomes visible, including after returning
 from Steam login. Log in to Steam in the same browser to enable owned-game
-checks, wishlist checks, and regional prices. Account-dependent controls,
-price summaries, and Choice activation controls appear only while that live
-Steam session is authenticated.
+checks, wishlist checks, and regional prices. Account-dependent price summaries
+and Choice activation controls appear only while that live Steam session is
+authenticated. Download-order activation controls remain disabled until then.
 
 The current implementation keeps newly loaded Steam account and session data
 in memory for the current page only; it does not persist new session or account
@@ -110,6 +114,48 @@ successful by the previous completed batch and retries the failed slots without
 retaining the successful key text. After each completed batch, the script
 synchronizes Steam ownership and wishlist data so highlights, selection, and
 price totals reflect the latest account state.
+
+### Bundle download activation
+
+On an individual purchased bundle order at `/downloads?key=...`, a white
+toolbar appears at the top of the order with `Activate`, `Select unowned`,
+`Select`/`Done`, and `Clear`. This feature does not extend `/home/keys`, and the
+existing Humble Choice appearance stays unchanged. Only Steam key entries are
+eligible; gifts and direct or keyless redemption are excluded. Hidden entries
+that are expired or sold out are also excluded, but an already revealed valid
+Steam key remains usable if it later expires or sells out.
+
+Selections are persisted and synchronized separately for each order.
+`Select unowned` excludes only entries positively matched to games owned by the
+current Steam account, so unknown items remain selected.
+
+Selecting an entry does not reveal its hidden Humble key. After you click
+`Activate`, the helper first performs a fresh authenticated Steam-session check,
+then retrieves hidden keys as needed and submits Steam activations sequentially.
+An item-specific Humble retrieval or Steam activation failure does not stop
+later entries. Successful entries are cleared from the selection; failed
+entries remain selected for follow-up.
+
+While activation work is active, Choice and every order's activation controls
+are locked. Detailed results, including failed Steam keys, are visible only on
+the matching Choice or exact order page; other scopes show only a generic busy
+status.
+
+The raw order key is held in memory only for Humble order and reveal requests.
+It is never written to GM storage, activation batch or item IDs, DOM attributes,
+lock names, logs, errors, or tests. The helper uses a SHA-256 order scope
+instead. If Web Crypto SHA-256 or Web Locks is unavailable, activation is
+disabled or stopped without storing the raw key.
+
+If API entries cannot be mapped to page rows without ambiguity, including a
+duplicate-group count mismatch, the affected entries are disabled with a
+warning. A Humble reveal failure never falls back to clicking page controls. If
+a successful reveal response omits the key, the helper fetches the order once
+more and reconciles it by the exact `(machine_name,keyindex)` pair.
+
+Humble key reveal and Steam activation are live, irreversible actions and
+should be verified manually by you on the intended account. Automated coverage
+uses controlled tests rather than live Humble or Steam activation.
 
 ## Data Sources
 
