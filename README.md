@@ -43,8 +43,10 @@ The helper synchronizes the live Steam login state when Humble first loads and
 again when the page regains focus or becomes visible, including after returning
 from Steam login. Log in to Steam in the same browser to enable owned-game
 checks, wishlist checks, and regional prices. Account-dependent price summaries
-and Choice activation controls appear only while that live Steam session is
-authenticated. Download-order activation controls remain disabled until then.
+and Choice controls first appear after an authenticated Steam snapshot and
+remain visible during later retained-account checks. The `Activate` action stays
+disabled until the check settles as authenticated. Download-order activation
+controls remain disabled until then.
 
 During a retained-account Steam session check, Choice and Downloads keep their
 controls, results, selection mode, and selected presentation. Local selection
