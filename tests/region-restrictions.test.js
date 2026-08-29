@@ -154,11 +154,13 @@ function makeChoiceModal(machineName, rows) {
     const modal = makeElement();
     const title = makeElement('h2');
     title.className = 'title';
-    title.dataset.machineName = machineName;
+    if (typeof machineName === 'string') title.dataset.machineName = machineName;
     modal.appendChild(title);
     rows.forEach(({row}) => modal.appendChild(row));
     modal.querySelector = selector => {
-        if (selector === 'h2.title [data-machine-name]') return title;
+        if (selector === 'h2.title[data-machine-name]') {
+            return title.dataset.machineName ? title : null;
+        }
         if (selector === '[data-machine-name]') return modal.unrelatedMachineName || title;
         return null;
     };
@@ -429,4 +431,43 @@ test('fails closed for invalid Choice metadata and skips only invalid Downloads 
     ], [invalidDisclaimer, validDisclaimer], 'US');
     assert.equal(invalidDisclaimer.children.length, 0);
     assert.equal(hasClass(validDisclaimer.children[0], 'hb-helper-region-restrictions'), true);
+});
+
+test('does not match a Choice title machine name against a game-data entry key', () => {
+    const {api, document} = loadApi();
+    const rows = [makeRow()];
+    document.choiceModal = makeChoiceModal('choice-alpha', rows);
+    setActiveChoiceModal(document, document.choiceModal);
+    const source = makeElement('script');
+    source.textContent = choicePayload({
+        'choice-alpha': {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
+});
+
+test('does not match a Choice hash identifier against a display machine name', () => {
+    const {api, document, context} = loadApi();
+    const rows = [makeRow()];
+    document.choiceModal = makeChoiceModal('display-missing', rows);
+    setActiveChoiceModal(document, document.choiceModal);
+    context.location.hash = '#/membership/choices/display-alpha';
+    const source = makeElement('script');
+    source.textContent = choicePayload({
+        'choice-beta': {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
 });

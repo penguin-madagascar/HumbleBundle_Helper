@@ -4392,7 +4392,10 @@
         }
         const gameData = parsed?.contentChoiceOptions?.contentChoiceData?.game_data;
         if (!gameData || typeof gameData !== 'object') return null;
-        const catalog = new Map();
+        const catalog = {
+            byDisplayMachineName: new Map(),
+            byChoiceIdentifier: new Map(),
+        };
         const entries = Array.isArray(gameData)
             ? gameData.map(entry => [null, entry])
             : Array.isArray(gameData.tpkds)
@@ -4400,11 +4403,14 @@
                 : Object.entries(gameData);
         for (const [key, game] of entries) {
             if (!game || typeof game !== 'object' || Array.isArray(game) || !Array.isArray(game.tpkds)) continue;
-            [key, game.display_item_machine_name, game.machine_name, game.choice_machine_name, game.choice_id, game.id]
-                .filter(identifier => typeof identifier === 'string' && identifier.length > 0)
-                .forEach(identifier => {
-                    if (!catalog.has(identifier)) catalog.set(identifier, game);
-                });
+            if (typeof game.display_item_machine_name === 'string'
+                && game.display_item_machine_name.length > 0
+                && !catalog.byDisplayMachineName.has(game.display_item_machine_name)) {
+                catalog.byDisplayMachineName.set(game.display_item_machine_name, game);
+            }
+            if (typeof key === 'string' && key.length > 0 && !catalog.byChoiceIdentifier.has(key)) {
+                catalog.byChoiceIdentifier.set(key, game);
+            }
         }
         return catalog;
     }
@@ -4418,17 +4424,15 @@
         return catalog;
     }
 
-    function findChoiceRegionGame(...identifiers) {
-        const exactIdentifiers = identifiers.filter(identifier =>
-            typeof identifier === 'string' && identifier.length > 0
-        );
+    function findChoiceRegionGame(channel, identifier) {
+        if (typeof identifier !== 'string' || identifier.length === 0) return null;
         const sources = [
             document.getElementById('webpack-subscriber-hub-data'),
             document.getElementById('webpack-monthly-product-data'),
         ];
         for (const source of sources) {
             const catalog = getChoiceRegionCatalog(source);
-            const game = exactIdentifiers.map(identifier => catalog?.get(identifier)).find(Boolean);
+            const game = catalog?.[channel]?.get(identifier);
             if (game) return game;
         }
         return null;
@@ -4439,7 +4443,7 @@
     }
 
     function getChoiceModalIdentifier(modal) {
-        const title = modal?.querySelector?.('h2.title [data-machine-name]');
+        const title = modal?.querySelector?.('h2.title[data-machine-name]');
         const machineName = title?.dataset?.machineName || title?.getAttribute?.('data-machine-name');
         if (typeof machineName === 'string' && machineName.length > 0) return machineName;
         return null;
@@ -4459,7 +4463,8 @@
         const modal = getActiveChoiceModal()?.querySelector?.('.choice-modal');
         if (!modal) return;
         const identifier = getChoiceModalIdentifier(modal);
-        const game = findChoiceRegionGame(identifier) || findChoiceRegionGame(getChoiceHashIdentifier());
+        const game = findChoiceRegionGame('byDisplayMachineName', identifier)
+            || findChoiceRegionGame('byChoiceIdentifier', getChoiceHashIdentifier());
         const rows = Array.from(modal.querySelectorAll?.('.js-key-redeemer > .key-redeemer') || []);
         const fields = rows.map(row => row.querySelector?.('.giftfield'));
         if (!game || !Array.isArray(game.tpkds) || !rows.length
