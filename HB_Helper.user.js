@@ -2148,15 +2148,27 @@
         };
     }
 
-    function inspectLockedChoiceModal(modal, tile, rowCount) {
+    function getChoiceKeyRowTerminalState(row) {
+        if (row.classList?.contains('redeemed')
+            || row.querySelector('.js-keyfield.keyfield.redeemed')) {
+            return 'redeemed';
+        }
+        if (row.classList?.contains('error') || row.querySelector('.error')) {
+            return 'error';
+        }
+        return null;
+    }
+
+    function inspectLockedChoiceModal(modal, tile, initialRows = null) {
         const activeModal = getActiveChoiceModal();
         if (activeModal !== modal || !isChoiceModalForTile(modal, tile)) {
             return {fatal: true};
         }
         const rows = Array.from(modal.querySelectorAll('.key-redeemer'));
-        if (rows.length !== rowCount
-            || modal.querySelector('.js-select-choice-container.error')) {
-            return {fatal: true};
+        if (modal.querySelector('.js-select-choice-container.error')
+            || (initialRows && (rows.length !== initialRows.length
+                || rows.some((row, index) => row !== initialRows[index])))) {
+            return {fatal: true, rows};
         }
         return {fatal: false, rows};
     }
@@ -2169,8 +2181,23 @@
         }
     }
 
+    function createChoiceFailClosedOutcomes(rowCount, skipIndexes) {
+        const outcomes = [];
+        appendChoiceKeyFailures(outcomes, 0, rowCount, skipIndexes);
+        if (outcomes.length === 0) {
+            outcomes.push(createChoiceKeyFailure(
+                getSmallestNonSkippedChoiceKeyIndex(skipIndexes)
+            ));
+        }
+        return outcomes;
+    }
+
     async function revealChoiceSteamKeys(tile, {skipIndexes = new Set()} = {}) {
-        const skipped = new Set(Array.from(skipIndexes).filter(
+        const requestedSkipIndexes = Array.from(skipIndexes);
+        const invalidSkipIndex = requestedSkipIndexes.some(
+            keyIndex => !Number.isSafeInteger(keyIndex) || keyIndex < 0
+        );
+        const skipped = new Set(requestedSkipIndexes.filter(
             keyIndex => Number.isSafeInteger(keyIndex) && keyIndex >= 0
         ));
         const firstNonSkippedIndex = getSmallestNonSkippedChoiceKeyIndex(skipped);
@@ -2188,35 +2215,52 @@
         }, 8000);
         if (!modal) {
             const unmatchedModal = getActiveChoiceModal();
-            if (unmatchedModal && !await closeChoiceModal(unmatchedModal)) {
+            if (unmatchedModal && (!isChoiceModalForTile(unmatchedModal, tile)
+                || !await closeChoiceModal(unmatchedModal))) {
                 throw createChoiceModalCloseError(tile, firstNonSkippedIndex);
             }
             return [createChoiceKeyFailure(firstNonSkippedIndex)];
         }
 
-        let rowCount = 0;
         try {
-            rowCount = Array.from(modal.querySelectorAll('.key-redeemer')).length;
-            if (rowCount === 0) return [createChoiceKeyFailure(firstNonSkippedIndex)];
+            const baseline = await waitForCondition(() => {
+                const current = inspectLockedChoiceModal(modal, tile);
+                if (current.fatal) return current;
+                return current.rows.length > 0 ? current : null;
+            }, 8000);
+            if (!baseline) {
+                return [createChoiceKeyFailure(firstNonSkippedIndex)];
+            }
+            if (baseline.fatal) {
+                return baseline.rows?.length
+                    ? createChoiceFailClosedOutcomes(baseline.rows.length, skipped)
+                    : [createChoiceKeyFailure(firstNonSkippedIndex)];
+            }
+            const initialRows = baseline.rows;
+            const rowCount = initialRows.length;
+            if (invalidSkipIndex || [...skipped].some(keyIndex => keyIndex >= rowCount)) {
+                return createChoiceFailClosedOutcomes(rowCount, skipped);
+            }
 
             const outcomes = [];
             for (let keyIndex = 0; keyIndex < rowCount; keyIndex++) {
                 if (skipped.has(keyIndex)) continue;
-                const inspection = inspectLockedChoiceModal(modal, tile, rowCount);
+                const inspection = inspectLockedChoiceModal(modal, tile, initialRows);
                 if (inspection.fatal) {
                     appendChoiceKeyFailures(outcomes, keyIndex, rowCount, skipped);
                     break;
                 }
 
                 const row = inspection.rows[keyIndex];
-                if (row.classList.contains('redeemed')) {
+                const initialState = getChoiceKeyRowTerminalState(row);
+                if (initialState === 'redeemed') {
                     const key = extractUniqueSteamKeyFromScope(row);
                     outcomes.push(key
                         ? {keyIndex, key}
                         : createChoiceKeyFailure(keyIndex));
                     continue;
                 }
-                if (row.classList.contains('error')) {
+                if (initialState === 'error') {
                     outcomes.push(createChoiceKeyFailure(keyIndex));
                     continue;
                 }
@@ -2229,13 +2273,14 @@
                 revealControl.click();
 
                 const terminal = await waitForCondition(() => {
-                    const current = inspectLockedChoiceModal(modal, tile, rowCount);
+                    const current = inspectLockedChoiceModal(modal, tile, initialRows);
                     if (current.fatal) return current;
                     const currentRow = current.rows[keyIndex];
-                    if (currentRow.classList.contains('redeemed')) {
+                    const state = getChoiceKeyRowTerminalState(currentRow);
+                    if (state === 'redeemed') {
                         return {fatal: false, state: 'redeemed', row: currentRow};
                     }
-                    if (currentRow.classList.contains('error')) {
+                    if (state === 'error') {
                         return {fatal: false, state: 'error', row: currentRow};
                     }
                     return null;
@@ -2255,7 +2300,9 @@
             }
             return outcomes;
         } finally {
-            if (!await closeChoiceModal(modal)) {
+            const activeModal = getActiveChoiceModal();
+            if (activeModal && (!isChoiceModalForTile(activeModal, tile)
+                || !await closeChoiceModal(activeModal))) {
                 throw createChoiceModalCloseError(tile, firstNonSkippedIndex);
             }
         }
@@ -2726,14 +2773,15 @@
             choiceCollectionLockName,
             async () => {
                 const current = getChoiceActivationBatch();
+                if (current?.state !== choiceActivationBatchStates.collecting
+                    && isChoiceActivationBatchActive(current)) {
+                    return {started: false, busy: true, batch: current};
+                }
                 const previousBatch = current?.state === choiceActivationBatchStates.complete
                     ? current
                     : null;
                 if (current?.state === choiceActivationBatchStates.collecting) {
                     GM_deleteValue(steamActivationBatchKey);
-                } else if (current?.state !== choiceActivationBatchStates.complete
-                    && isChoiceActivationBatchActive(current)) {
-                    return {started: false, busy: true, batch: current};
                 }
 
                 const retryStates = getChoiceCollectionRetryStates(
@@ -2796,6 +2844,7 @@
     }
 
     function reconcileChoiceSelectionFromBatch(batch, selection = selectedChoiceGameIds) {
+        if (batch?.state !== choiceActivationBatchStates.complete) return false;
         let changed = false;
         const itemsByGame = new Map();
         for (const item of batch?.items || []) {
@@ -2932,6 +2981,7 @@
                     choiceActivationItemStates.steamFailed,
                 ].includes(item.status))
                 .map(item => ({
+                    id: item.id,
                     status: item.status,
                     title: getChoiceActivationDisplayLabel(batch, item),
                     key: item.status === choiceActivationItemStates.steamFailed ? item.key : null,

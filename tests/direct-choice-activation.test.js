@@ -263,6 +263,7 @@ function createFastPolling() {
         }
     }
     return {
+        currentTime() { return now; },
         DateImplementation: FastDate,
         setIntervalImplementation(callback) {
             const handle = {active: true};
@@ -288,8 +289,10 @@ const immediateLockManager = {
 
 function createChoiceModalHarness(api, {
     title = 'Choice game',
+    modalTitle = title,
     rowDefinitions,
     unsafeClose = false,
+    rowsAvailableAfterQueries = 0,
 } = {}) {
     const document = api.getTestDocument();
     const definitions = rowDefinitions || [];
@@ -301,7 +304,7 @@ function createChoiceModalHarness(api, {
     let globalError = false;
     let opened = 0;
 
-    const titleElement = {textContent: title};
+    const titleElement = {textContent: modalTitle};
     const closeButton = {
         className: 'close',
         disabled: false,
@@ -320,42 +323,112 @@ function createChoiceModalHarness(api, {
         value,
         getClientRects() { return [{}]; },
     });
-    const createRow = (definition, index) => {
-        const state = definition.state;
-        const keys = [...(definition.keys || [])];
-        const control = definition.hasControl === false ? null : {
-            disabled: definition.controlDisabled === true,
+    const createRowRoot = (definition, index) => ({
+        classList: {
+            contains(name) {
+                return definition.statusOnRoot === true && definition.state === name;
+            },
+        },
+        querySelector(selector) {
+            if (selector === '.js-keyfield.keyfield.redeemed') {
+                return definition.state === 'redeemed' ? {textContent: 'redeemed'} : null;
+            }
+            if (selector === '.error') {
+                return definition.state === 'error' ? {textContent: 'claim failed'} : null;
+            }
+            if (selector !== '.js-keyfield.keyfield.enabled'
+                || definition.hasControl === false) {
+                return null;
+            }
+            return {
+                disabled: definition.controlDisabled === true,
+                getClientRects() { return [{}]; },
+                click() {
+                    clicks[index] += 1;
+                    events.push(`click:${index}`);
+                    definition.state = 'loading';
+                    definition.onClick?.({
+                        definition,
+                        definitions,
+                        document,
+                        events,
+                        createReplacementModal,
+                        replaceRowRoot,
+                        setActiveModal,
+                        setGlobalError(value = true) { globalError = value; },
+                        swapRowRoots,
+                    });
+                },
+            };
+        },
+        querySelectorAll(selector) {
+            reads[index] += 1;
+            if (selector === 'input, textarea') return [];
+            if (selector === '.keyfield-value') {
+                return [...(definition.keys || [])].map(createField);
+            }
+            return [];
+        },
+    });
+    const rowRoots = definitions.map(createRowRoot);
+    const replaceRowRoot = index => {
+        rowRoots[index] = createRowRoot(definitions[index], index);
+        return rowRoots[index];
+    };
+    const swapRowRoots = (left, right) => {
+        [rowRoots[left], rowRoots[right]] = [rowRoots[right], rowRoots[left]];
+    };
+    const setActiveModal = activeModal => {
+        document.elements.set('site-modal', activeModal);
+    };
+    const createReplacementModal = ({
+        replacementTitle = title,
+        unsafeReplacementClose = false,
+    } = {}) => {
+        const replacementTitleElement = {textContent: replacementTitle};
+        let replacement;
+        const replacementCloseButton = {
+            className: 'close',
+            disabled: false,
+            textContent: 'Close',
+            getAttribute() { return null; },
             getClientRects() { return [{}]; },
             click() {
-                clicks[index] += 1;
-                events.push(`click:${index}`);
-                definition.state = 'loading';
-                definition.onClick?.({
-                    definition,
-                    definitions,
-                    document,
-                    events,
-                    setGlobalError(value = true) { globalError = value; },
-                });
+                events.push('close:replacement');
+                if (!unsafeReplacementClose
+                    && document.elements.get('site-modal') === replacement) {
+                    document.elements.delete('site-modal');
+                }
             },
         };
-        return {
+        replacement = {
+            textContent: replacementTitle,
+            getClientRects() {
+                modalChecks += 1;
+                return [{}];
+            },
             classList: {
-                contains(name) { return state === name; },
+                contains() { return false; },
             },
             querySelector(selector) {
-                return selector === '.js-keyfield.keyfield.enabled' ? control : null;
+                if (selector === '.js-select-choice-container.error') return null;
+                return null;
             },
             querySelectorAll(selector) {
-                reads[index] += 1;
-                if (selector === 'input, textarea') return [];
-                if (selector === '.keyfield-value') return keys.map(createField);
+                if (selector === '.key-redeemer') return [];
+                if (selector === 'button, a, [role="button"]') {
+                    return [replacementCloseButton];
+                }
+                if (selector.includes('.human-name-title') && selector.includes('h1')) {
+                    return [replacementTitleElement];
+                }
                 return [];
             },
         };
+        return replacement;
     };
     const modal = {
-        textContent: title,
+        textContent: modalTitle,
         getClientRects() {
             modalChecks += 1;
             return [{}];
@@ -374,9 +447,13 @@ function createChoiceModalHarness(api, {
                     definitions,
                     document,
                     rowQueries,
+                    replaceRowRoot,
+                    setActiveModal,
                     setGlobalError(value = true) { globalError = value; },
+                    swapRowRoots,
                 }));
-                return definitions.map(createRow);
+                if (rowQueries <= rowsAvailableAfterQueries) return [];
+                return rowRoots.slice(0, definitions.length);
             }
             if (selector === 'button, a, [role="button"]') return [closeButton];
             if (selector.includes('.human-name-title') && selector.includes('h1')) {
@@ -401,6 +478,7 @@ function createChoiceModalHarness(api, {
         events,
         modal,
         reads,
+        rowRoots,
         tile,
         get opened() { return opened; },
         get rowQueries() { return rowQueries; },
@@ -471,6 +549,33 @@ test('Choice key item IDs reject malformed reserved prefixes and decoded slot co
         },
     ]);
     assert.equal(api.getChoiceActivationBatchForTest(collision), null);
+});
+
+test('stable Choice row roots observe redeemed state from replaced descendant internals', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowDefinitions: [{
+            state: 'ready',
+            onClick({definition}) {
+                queueMicrotask(() => {
+                    definition.state = 'redeemed';
+                    definition.keys = ['AAAAA-BBBBB-CCCCC'];
+                });
+            },
+        }],
+    });
+    const initialRoot = harness.rowRoots[0];
+
+    const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+        skipIndexes: new Set(),
+    });
+
+    assert.equal(harness.rowRoots[0], initialRoot);
+    assert.equal(initialRoot.classList.contains('redeemed'), false);
+    assert.ok(initialRoot.querySelector('.js-keyfield.keyfield.redeemed'));
+    assert.deepEqual(JSON.parse(JSON.stringify(outcomes)), [
+        {keyIndex: 0, key: 'AAAAA-BBBBB-CCCCC'},
+    ]);
 });
 
 test('already-redeemed Choice rows yield exactly one unique key without clicks', async () => {
@@ -649,6 +754,118 @@ test('a pre-existing global Choice claim error fails every row without a reveal 
     assert.deepEqual(harness.clicks, [0, 0]);
 });
 
+test('Choice reveal waits for a delayed non-empty row baseline', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowsAvailableAfterQueries: 3,
+        rowDefinitions: [{
+            state: 'redeemed',
+            keys: ['AAAAA-BBBBB-CCCCC'],
+        }],
+    });
+
+    const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+        skipIndexes: new Set(),
+    });
+
+    assert.ok(harness.rowQueries >= 4);
+    assert.deepEqual(JSON.parse(JSON.stringify(outcomes)), [
+        {keyIndex: 0, key: 'AAAAA-BBBBB-CCCCC'},
+    ]);
+    assert.deepEqual(harness.clicks, [0]);
+});
+
+test('Choice baseline waiting stops on a global claim error before rows appear', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowsAvailableAfterQueries: 5,
+        rowDefinitions: [{
+            state: 'ready',
+            onRowsQueried({rowQueries, setGlobalError}) {
+                if (rowQueries === 2) setGlobalError();
+            },
+        }],
+    });
+
+    const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+        skipIndexes: new Set(),
+    });
+
+    assert.equal(harness.rowQueries, 2);
+    assert.deepEqual(JSON.parse(JSON.stringify(outcomes)), [{
+        keyIndex: 0,
+        key: null,
+        error: 'Humble did not provide a Steam key for this game.',
+    }]);
+    assert.deepEqual(harness.clicks, [0]);
+});
+
+test('same-count Choice row root replacement or reorder is fatal', async t => {
+    for (const change of ['replace', 'reorder']) {
+        await t.test(change, async () => {
+            const {api} = loadApi(createFastPolling());
+            const harness = createChoiceModalHarness(api, {
+                rowDefinitions: [
+                    {
+                        state: 'redeemed',
+                        keys: ['AAAAA-BBBBB-CCCCC'],
+                        onRowsQueried({replaceRowRoot, rowQueries, swapRowRoots}) {
+                            if (rowQueries !== 3) return;
+                            if (change === 'replace') replaceRowRoot(1);
+                            else swapRowRoots(0, 1);
+                        },
+                    },
+                    {
+                        state: 'ready',
+                        onClick({definition}) {
+                            queueMicrotask(() => {
+                                definition.state = 'redeemed';
+                                definition.keys = ['DDDDD-EEEEE-FFFFF'];
+                            });
+                        },
+                    },
+                ],
+            });
+
+            const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+                skipIndexes: new Set(),
+            });
+
+            assert.deepEqual(JSON.parse(JSON.stringify(outcomes)), [
+                {keyIndex: 0, key: 'AAAAA-BBBBB-CCCCC'},
+                {
+                    keyIndex: 1,
+                    key: null,
+                    error: 'Humble did not provide a Steam key for this game.',
+                },
+            ]);
+            assert.deepEqual(harness.clicks, [0, 0]);
+        });
+    }
+});
+
+test('an out-of-range prior-success Choice slot fails closed without reading or clicking rows', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowDefinitions: [
+            {state: 'redeemed', keys: ['AAAAA-BBBBB-CCCCC']},
+            {state: 'redeemed', keys: ['DDDDD-EEEEE-FFFFF']},
+        ],
+    });
+
+    const outcomes = await api.revealChoiceSteamKeys(harness.tile, {
+        skipIndexes: new Set([0, 1, 2]),
+    });
+
+    assert.deepEqual(JSON.parse(JSON.stringify(outcomes)), [{
+        keyIndex: 3,
+        key: null,
+        error: 'Humble did not provide a Steam key for this game.',
+    }]);
+    assert.deepEqual(harness.reads, [0, 0]);
+    assert.deepEqual(harness.clicks, [0, 0]);
+});
+
 test('global, timeout, modal-identity, and row-count failures stop clicks and fail every remaining slot', async t => {
     const cases = [
         {
@@ -660,8 +877,8 @@ test('global, timeout, modal-identity, and row-count failures stop clicks and fa
         {name: 'sustained timeout', onClick() {}},
         {
             name: 'modal identity change',
-            onClick({document}) {
-                queueMicrotask(() => document.elements.delete('site-modal'));
+            onClick({createReplacementModal, setActiveModal}) {
+                queueMicrotask(() => setActiveModal(createReplacementModal()));
             },
         },
         {
@@ -674,10 +891,18 @@ test('global, timeout, modal-identity, and row-count failures stop clicks and fa
 
     for (const scenario of cases) {
         await t.test(scenario.name, async () => {
-            const {api} = loadApi(createFastPolling());
+            const polling = createFastPolling();
+            const {api} = loadApi(polling);
+            let clickedAt = null;
             const harness = createChoiceModalHarness(api, {
                 rowDefinitions: [
-                    {state: 'ready', onClick: scenario.onClick},
+                    {
+                        state: 'ready',
+                        onClick(context) {
+                            clickedAt = polling.currentTime();
+                            scenario.onClick(context);
+                        },
+                    },
                     {state: 'ready'},
                     {state: 'ready'},
                 ],
@@ -698,10 +923,51 @@ test('global, timeout, modal-identity, and row-count failures stop clicks and fa
             assert.ok(harness.rowQueries >= 2, 'row count must be polled');
             assert.ok(harness.modalChecks >= 2, 'modal identity must be polled');
             if (scenario.name === 'sustained timeout') {
-                assert.ok(harness.rowQueries > 10, 'timeout must require sustained polling');
+                const elapsed = polling.currentTime() - clickedAt;
+                assert.ok(elapsed >= 60000, `timeout ended after only ${elapsed}ms`);
+                assert.ok(elapsed <= 65000, `timeout exceeded the boundary: ${elapsed}ms`);
             }
         });
     }
+});
+
+test('a different-title replacement modal remains an unsafe identity change', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        rowDefinitions: [{
+            state: 'ready',
+            onClick({createReplacementModal, setActiveModal}) {
+                queueMicrotask(() => setActiveModal(createReplacementModal({
+                    replacementTitle: 'Different game',
+                })));
+            },
+        }],
+    });
+
+    await assert.rejects(
+        api.revealChoiceSteamKeys(harness.tile, {skipIndexes: new Set()}),
+        /Could not safely close/
+    );
+
+    assert.deepEqual(harness.clicks, [1]);
+    assert.equal(harness.events.includes('close:replacement'), false);
+});
+
+test('a wrong-title modal from the initial Choice click is unsafe and remains open', async () => {
+    const {api} = loadApi(createFastPolling());
+    const harness = createChoiceModalHarness(api, {
+        title: 'Expected game',
+        modalTitle: 'Different game',
+        rowDefinitions: [{state: 'ready'}],
+    });
+
+    await assert.rejects(
+        api.revealChoiceSteamKeys(harness.tile, {skipIndexes: new Set()}),
+        /Could not safely close/
+    );
+
+    assert.equal(harness.events.includes('close'), false);
+    assert.equal(api.getTestDocument().elements.get('site-modal'), harness.modal);
 });
 
 test('one Choice tile with three row outcomes creates three unique flat v2 items', async () => {
@@ -974,6 +1240,127 @@ test('a legacy activated ID skips slot zero but still opens the modal to discove
     );
 });
 
+test('active Choice ownership refresh states keep collection busy without writes or reveals', async t => {
+    for (const refreshState of ['pending', 'refreshing']) {
+        await t.test(refreshState, async () => {
+            const {api, values} = loadApi();
+            const activeBatch = completedBatch([{
+                id: 'hb-helper-key-v1:0:refresh-game',
+                title: 'Refresh game',
+                key: null,
+                status: 'humble-key-retrieval-failed',
+                error: 'previous failure',
+            }], `active-${refreshState}`);
+            activeBatch.ownershipRefresh = refreshState === 'refreshing'
+                ? {
+                    state: 'refreshing',
+                    owner: 'refresh-owner',
+                    leaseExpiresAt: 60000,
+                    error: null,
+                }
+                : {
+                    state: 'pending',
+                    owner: null,
+                    leaseExpiresAt: null,
+                    error: null,
+                };
+            api.setChoiceActivationBatchForTest(activeBatch);
+            const originalSet = values.set.bind(values);
+            let writes = 0;
+            values.set = (name, value) => {
+                if (name === 'hb-helper-steam-activation-batch-v2') writes += 1;
+                return originalSet(name, value);
+            };
+            let revealCalls = 0;
+
+            const result = await api.runChoiceCollectionWork(
+                [{id: 'refresh-game', title: 'Refresh game'}],
+                {
+                    lockManager: immediateLockManager,
+                    owner: 'new-collector',
+                    revealKeys: async () => {
+                        revealCalls += 1;
+                        return [{keyIndex: 0, key: 'AAAAA-BBBBB-CCCCC'}];
+                    },
+                }
+            );
+
+            assert.equal(result.started, false);
+            assert.equal(result.busy, true);
+            assert.equal(revealCalls, 0);
+            assert.equal(writes, 0);
+            assert.deepEqual(api.getChoiceActivationBatchForTest(), activeBatch);
+        });
+    }
+});
+
+test('an in-flight Choice ownership refresh cannot interleave with a new collection batch', async () => {
+    const {api} = loadApi();
+    const oldBatch = completedBatch([{
+        id: 'hb-helper-key-v1:0:interleaved-game',
+        title: 'Interleaved game',
+        key: null,
+        status: 'humble-key-retrieval-failed',
+        error: 'previous failure',
+    }], 'old-refresh-batch');
+    oldBatch.ownershipRefresh.state = 'pending';
+    api.setChoiceActivationBatchForTest(oldBatch);
+    let signalRefreshStarted;
+    const refreshStarted = new Promise(resolve => { signalRefreshStarted = resolve; });
+    let releaseRefresh;
+    const refreshCanFinish = new Promise(resolve => { releaseRefresh = resolve; });
+    const refreshRun = api.reconcileChoiceActivationBatch(undefined, {
+        refreshBatch: async batch => {
+            const claimed = JSON.parse(JSON.stringify(batch));
+            claimed.ownershipRefresh = {
+                state: 'refreshing',
+                owner: 'old-refresh-owner',
+                leaseExpiresAt: 60000,
+                error: null,
+            };
+            api.setChoiceActivationBatchForTest(claimed);
+            signalRefreshStarted();
+            await refreshCanFinish;
+            const latest = api.getChoiceActivationBatchForTest();
+            if (latest?.id !== batch.id) return {refreshed: false, stopped: true};
+            const finished = JSON.parse(JSON.stringify(latest));
+            finished.ownershipRefresh = {
+                state: 'complete',
+                owner: null,
+                leaseExpiresAt: null,
+                error: null,
+            };
+            api.setChoiceActivationBatchForTest(finished);
+            return {refreshed: true};
+        },
+    });
+    await refreshStarted;
+    let revealCalls = 0;
+
+    const collection = await api.runChoiceCollectionWork(
+        [{id: 'interleaved-game', title: 'Interleaved game'}],
+        {
+            lockManager: immediateLockManager,
+            owner: 'new-collector',
+            revealKeys: async () => {
+                revealCalls += 1;
+                return [{keyIndex: 0, key: 'AAAAA-BBBBB-CCCCC'}];
+            },
+        }
+    );
+    releaseRefresh();
+    await refreshRun;
+
+    assert.equal(collection.started, false);
+    assert.equal(collection.busy, true);
+    assert.equal(revealCalls, 0);
+    assert.equal(api.getChoiceActivationBatchForTest().id, 'old-refresh-batch');
+    assert.equal(
+        api.getChoiceActivationBatchForTest().ownershipRefresh.state,
+        'complete'
+    );
+});
+
 test('an unsafe modal close discards buffered row outcomes and stops later tiles', async () => {
     const {api} = loadApi(createFastPolling());
     const persistedItemCounts = [];
@@ -1080,6 +1467,10 @@ test('same-game row labels use the highest decoded slot in results, copy feedbac
     );
 
     const signature = JSON.parse(api.getChoiceActivationResultsSignatureForTest(batch));
+    assert.deepEqual(signature.failures.map(failure => failure.id), [
+        'hb-helper-key-v1:0:label-game',
+        'hb-helper-key-v1:1:label-game',
+    ]);
     assert.deepEqual(signature.failures.map(failure => failure.title), [
         'Label game (key 1/3)',
         'Label game (key 2/3)',
@@ -1116,6 +1507,29 @@ test('same-game row labels use the highest decoded slot in results, copy feedbac
             api.getChoiceActivationDisplayLabelForTest(sparseBatch, item)
         ),
         ['Sparse game (key 1/3)', 'Sparse game (key 3/3)']
+    );
+});
+
+test('Choice result signatures distinguish identical failures by raw slot ID', () => {
+    const {api} = loadApi();
+    const createFailureBatch = id => completedBatch([{
+        id,
+        title: 'Same title',
+        key: null,
+        status: 'humble-key-retrieval-failed',
+        error: 'same failure',
+    }]);
+    const first = api.getChoiceActivationResultsSignatureForTest(
+        createFailureBatch('hb-helper-key-v1:0:first-game')
+    );
+    const second = api.getChoiceActivationResultsSignatureForTest(
+        createFailureBatch('hb-helper-key-v1:0:second-game')
+    );
+
+    assert.notEqual(first, second);
+    assert.equal(
+        JSON.parse(first).failures[0].id,
+        'hb-helper-key-v1:0:first-game'
     );
 });
 
@@ -1190,6 +1604,41 @@ test('Choice selection clears only when every decoded slot for that game activat
         },
     ]), completedSelection);
     assert.deepEqual([...completedSelection], []);
+});
+
+test('collecting Choice success markers never clear a selection', () => {
+    const {api} = loadApi();
+    const selection = new Set(['same-game']);
+    const collectingBatch = {
+        version: 2,
+        id: 'collecting-markers',
+        state: 'collecting',
+        runner: {
+            phase: 'collecting',
+            owner: 'collector',
+            leaseExpiresAt: 60000,
+        },
+        ownershipRefresh: {
+            state: 'waiting',
+            owner: null,
+            leaseExpiresAt: null,
+            error: null,
+        },
+        items: [{
+            id: 'hb-helper-key-v1:0:same-game',
+            title: 'Same game',
+            key: null,
+            status: 'activated',
+        }],
+    };
+
+    const changed = api.reconcileChoiceSelectionFromBatchForTest(
+        collectingBatch,
+        selection
+    );
+
+    assert.equal(changed, false);
+    assert.deepEqual([...selection], ['same-game']);
 });
 
 test('Choice activation UI is available only for an authenticated Steam snapshot', () => {
