@@ -153,7 +153,23 @@ Selecting an entry does not reveal its hidden Humble key. After you click
 then retrieves hidden keys as needed and submits Steam activations sequentially.
 An item-specific Humble retrieval or Steam activation failure does not stop
 later entries. Successful entries are cleared from the selection; failed
-entries remain selected for follow-up.
+entries remain selected for follow-up. If the helper successfully reveals at
+least one previously hidden key, it waits for the complete activation batch to
+be persisted and for selection reconciliation to finish, then reloads the same
+order once so Humble can render the revealed rows. This reload still occurs
+when Steam activation fails after a successful Humble reveal. It does not occur
+when every key was already visible, a Humble reveal fails without revealing a
+key, or the route or order changes before processing finishes.
+
+If you use Humble's native `Reveal` action, a newly visible valid key that is
+absent from the helper's canonical cached order triggers one coalesced,
+authoritative order reload. Selection and activation are disabled during that
+request, and the stale snapshot is not remapped. After a successful reload, the
+helper restores exact-key row mapping, region notices, and the persisted
+selection. A late response is discarded after navigation. If the current
+order cannot be reloaded, usable mappings and actions are cleared while the
+persisted selection is retained, and a localized order-loading error remains
+until a successful reinitialization or page reload.
 
 If the same order is refreshed or its rows are remapped during the mandatory
 Steam preflight, activation continues when the order, selection, and eligible
@@ -173,9 +189,10 @@ disabled or stopped without storing the raw key.
 
 If API entries cannot be mapped to page rows without ambiguity, including a
 duplicate-group count mismatch, the affected entries are disabled with a
-warning. A Humble reveal failure never falls back to clicking page controls. If
-a successful reveal response omits the key, the helper fetches the order once
-more and reconciles it by the exact `(machine_name,keyindex)` pair.
+warning; a native reveal does not weaken these strict mapping rules. A Humble
+reveal failure never falls back to clicking page controls. If a successful
+reveal response omits the key, the helper fetches the order once more and
+reconciles it by the exact `(machine_name,keyindex)` pair.
 
 Humble key reveal and Steam activation are live, irreversible actions and
 should be verified manually by you on the intended account. Automated coverage
