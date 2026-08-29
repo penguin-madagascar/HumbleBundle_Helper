@@ -3219,9 +3219,18 @@
         ].join(', ')));
     }
 
+    function isHelperUiMutation(mutation) {
+        if (isInsideHelperUi(mutation?.target)) return true;
+        const changedNodes = [
+            ...Array.from(mutation?.addedNodes || []),
+            ...Array.from(mutation?.removedNodes || []),
+        ];
+        return changedNodes.length > 0 && changedNodes.every(isInsideHelperUi);
+    }
+
     function observePageChanges() {
         const observer = new MutationObserver(mutations => {
-            if (mutations.some(mutation => !isInsideHelperUi(mutation.target))) {
+            if (mutations.some(mutation => !isHelperUiMutation(mutation))) {
                 schedulePageRefresh();
             }
         });
@@ -4383,6 +4392,27 @@
 
     const choiceRegionCatalogCache = new WeakMap();
 
+    function getStableChoiceGameSignature(value) {
+        if (Array.isArray(value)) {
+            return `[${value.map(getStableChoiceGameSignature).join(',')}]`;
+        }
+        if (value && typeof value === 'object') {
+            return `{${Object.keys(value).sort().map(key =>
+                `${JSON.stringify(key)}:${getStableChoiceGameSignature(value[key])}`
+            ).join(',')}}`;
+        }
+        return JSON.stringify(value);
+    }
+
+    function addChoiceRegionCatalogRecord(index, identifier, game, signature) {
+        if (typeof identifier !== 'string' || identifier.length === 0) return;
+        if (index.has(identifier)) {
+            index.set(identifier, {status: 'ambiguous'});
+            return;
+        }
+        index.set(identifier, {status: 'found', game, signature});
+    }
+
     function parseChoiceRegionCatalog(dataText) {
         let parsed;
         try {
@@ -4403,14 +4433,14 @@
                 : Object.entries(gameData);
         for (const [key, game] of entries) {
             if (!game || typeof game !== 'object' || Array.isArray(game) || !Array.isArray(game.tpkds)) continue;
-            if (typeof game.display_item_machine_name === 'string'
-                && game.display_item_machine_name.length > 0
-                && !catalog.byDisplayMachineName.has(game.display_item_machine_name)) {
-                catalog.byDisplayMachineName.set(game.display_item_machine_name, game);
-            }
-            if (typeof key === 'string' && key.length > 0 && !catalog.byChoiceIdentifier.has(key)) {
-                catalog.byChoiceIdentifier.set(key, game);
-            }
+            const signature = getStableChoiceGameSignature(game);
+            addChoiceRegionCatalogRecord(
+                catalog.byDisplayMachineName,
+                game.display_item_machine_name,
+                game,
+                signature
+            );
+            addChoiceRegionCatalogRecord(catalog.byChoiceIdentifier, key, game, signature);
         }
         return catalog;
     }
@@ -4425,17 +4455,24 @@
     }
 
     function findChoiceRegionGame(channel, identifier) {
-        if (typeof identifier !== 'string' || identifier.length === 0) return null;
+        if (typeof identifier !== 'string' || identifier.length === 0) return {status: 'missing'};
         const sources = [
             document.getElementById('webpack-subscriber-hub-data'),
             document.getElementById('webpack-monthly-product-data'),
         ];
+        let found = null;
         for (const source of sources) {
             const catalog = getChoiceRegionCatalog(source);
-            const game = catalog?.[channel]?.get(identifier);
-            if (game) return game;
+            const match = catalog?.[channel]?.get(identifier);
+            if (!match) continue;
+            if (match.status === 'ambiguous') return match;
+            if (!found) {
+                found = match;
+            } else if (found.signature !== match.signature) {
+                return {status: 'ambiguous'};
+            }
         }
-        return null;
+        return found || {status: 'missing'};
     }
 
     function removeChoiceRegionRestrictionPanels(modal) {
@@ -4463,8 +4500,10 @@
         const modal = getActiveChoiceModal()?.querySelector?.('.choice-modal');
         if (!modal) return;
         const identifier = getChoiceModalIdentifier(modal);
-        const game = findChoiceRegionGame('byDisplayMachineName', identifier)
-            || findChoiceRegionGame('byChoiceIdentifier', getChoiceHashIdentifier());
+        const match = identifier
+            ? findChoiceRegionGame('byDisplayMachineName', identifier)
+            : findChoiceRegionGame('byChoiceIdentifier', getChoiceHashIdentifier());
+        const game = match.status === 'found' ? match.game : null;
         const rows = Array.from(modal.querySelectorAll?.('.js-key-redeemer > .key-redeemer') || []);
         const fields = rows.map(row => row.querySelector?.('.giftfield'));
         if (!game || !Array.isArray(game.tpkds) || !rows.length
@@ -4563,6 +4602,7 @@
             normalizeRegionRestrictions,
             getRegionRestrictionVerdict,
             createRegionRestrictionPanel,
+            isHelperUiMutation,
             ensureChoiceRegionRestrictionsForTest: ensureChoiceRegionRestrictions,
             renderDownloadRegionRestrictionsForTest(products, disclaimers, steamCountryCode) {
                 const previousState = steamSessionState;

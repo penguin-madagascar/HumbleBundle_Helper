@@ -180,6 +180,15 @@ function setActiveChoiceModal(document, modal) {
     document.elements.set('site-modal', siteModal);
 }
 
+function makeMutationNode(isHelperUi = false) {
+    return {
+        nodeType: 1,
+        closest(selector) {
+            return isHelperUi && selector.includes('.hb-helper-region-restrictions') ? this : null;
+        },
+    };
+}
+
 function choicePayload(gameData) {
     return JSON.stringify({contentChoiceOptions: {contentChoiceData: {game_data: gameData}}});
 }
@@ -265,10 +274,10 @@ test('maps Choice rows by exact machine name and TPKD order, immediately after G
     assert.match(panelText(rows[1].giftField.nextElementSibling), /restricted/);
 });
 
-test('falls back to monthly data and an exact hash identifier, then restores replaced Choice panels idempotently', () => {
+test('falls back to monthly data and an exact hash identifier when the Choice title is missing', () => {
     const {api, document, context} = loadApi();
     const rows = [makeRow()];
-    document.choiceModal = makeChoiceModal('not-a-match', rows);
+    document.choiceModal = makeChoiceModal(undefined, rows);
     setActiveChoiceModal(document, document.choiceModal);
     context.location.hash = '#choice-beta';
     const source = makeElement('script');
@@ -379,7 +388,7 @@ test('does not use unrelated data-machine-name attributes outside the Choice tit
 test('falls through a subscriber catalog miss to monthly data using the final hash path segment', () => {
     const {api, document, context} = loadApi();
     const rows = [makeRow()];
-    document.choiceModal = makeChoiceModal('display-missing', rows);
+    document.choiceModal = makeChoiceModal(undefined, rows);
     setActiveChoiceModal(document, document.choiceModal);
     context.location.hash = '#/membership/choices/choice-beta';
     const subscriber = makeElement('script');
@@ -470,4 +479,151 @@ test('does not match a Choice hash identifier against a display machine name', (
     api.ensureChoiceRegionRestrictionsForTest();
 
     assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
+});
+
+test('ignores helper-only row mutations but refreshes mixed Humble mutations', () => {
+    const {api} = loadApi();
+    assert.ok(api.isHelperUiMutation, 'region mutation test API is missing');
+    const humbleRow = makeMutationNode(false);
+    const helperPanel = makeMutationNode(true);
+    const humbleNode = makeMutationNode(false);
+
+    assert.equal(api.isHelperUiMutation({
+        target: humbleRow,
+        addedNodes: [helperPanel],
+        removedNodes: [],
+    }), true);
+    assert.equal(api.isHelperUiMutation({
+        target: humbleRow,
+        addedNodes: [],
+        removedNodes: [helperPanel],
+    }), true);
+    assert.equal(api.isHelperUiMutation({
+        target: helperPanel,
+        addedNodes: [humbleNode],
+        removedNodes: [],
+    }), true);
+    assert.equal(api.isHelperUiMutation({
+        target: humbleRow,
+        addedNodes: [helperPanel, humbleNode],
+        removedNodes: [],
+    }), false);
+});
+
+test('clears stale panels when TPKD and Choice row counts differ', () => {
+    const {api, document} = loadApi();
+    const rows = [makeRow()];
+    document.choiceModal = makeChoiceModal('display-alpha', rows);
+    setActiveChoiceModal(document, document.choiceModal);
+    const stale = makeElement();
+    stale.className = 'hb-helper-region-restrictions';
+    rows[0].row.appendChild(stale);
+    const source = makeElement('script');
+    source.textContent = choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [
+                {exclusive_countries: ['US'], disallowed_countries: []},
+                {exclusive_countries: ['CA'], disallowed_countries: []},
+            ],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
+});
+
+test('clears stale panels when a Choice row has no Gift field', () => {
+    const {api, document} = loadApi();
+    const {row} = makeRow();
+    row.querySelector = () => null;
+    const stale = makeElement();
+    stale.className = 'hb-helper-region-restrictions';
+    row.appendChild(stale);
+    document.choiceModal = makeChoiceModal('display-alpha', [{row}]);
+    setActiveChoiceModal(document, document.choiceModal);
+    const source = makeElement('script');
+    source.textContent = choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
+});
+
+test('fails closed for ambiguous display machine names and does not fall through to hash', () => {
+    const {api, document, context} = loadApi();
+    const rows = [makeRow()];
+    document.choiceModal = makeChoiceModal('display-alpha', rows);
+    setActiveChoiceModal(document, document.choiceModal);
+    context.location.hash = '#/membership/choices/choice-fallback';
+    const source = makeElement('script');
+    source.textContent = choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+        beta: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['CA'], disallowed_countries: []}],
+        },
+        'choice-fallback': {
+            display_item_machine_name: 'display-fallback',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    document.elements.set('webpack-subscriber-hub-data', source);
+
+    api.ensureChoiceRegionRestrictionsForTest();
+
+    assert.equal(document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
+});
+
+test('fails closed for conflicting cross-source identity data but accepts identical duplicates', () => {
+    const conflicting = loadApi();
+    const conflictRows = [makeRow()];
+    conflicting.document.choiceModal = makeChoiceModal('display-alpha', conflictRows);
+    setActiveChoiceModal(conflicting.document, conflicting.document.choiceModal);
+    const subscriber = makeElement('script');
+    const monthly = makeElement('script');
+    subscriber.textContent = choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+        },
+    });
+    monthly.textContent = choicePayload({
+        alpha: {
+            display_item_machine_name: 'display-alpha',
+            tpkds: [{exclusive_countries: ['CA'], disallowed_countries: []}],
+        },
+    });
+    conflicting.document.elements.set('webpack-subscriber-hub-data', subscriber);
+    conflicting.document.elements.set('webpack-monthly-product-data', monthly);
+    conflicting.api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(conflicting.document.choiceModal.querySelectorAll('.hb-helper-region-restrictions').length, 0);
+
+    const identical = loadApi();
+    const identicalRows = [makeRow()];
+    identical.document.choiceModal = makeChoiceModal('display-alpha', identicalRows);
+    setActiveChoiceModal(identical.document, identical.document.choiceModal);
+    const identicalSubscriber = makeElement('script');
+    const identicalMonthly = makeElement('script');
+    const data = {
+        display_item_machine_name: 'display-alpha',
+        tpkds: [{exclusive_countries: ['US'], disallowed_countries: []}],
+    };
+    identicalSubscriber.textContent = choicePayload({alpha: data});
+    identicalMonthly.textContent = choicePayload({alpha: data});
+    identical.document.elements.set('webpack-subscriber-hub-data', identicalSubscriber);
+    identical.document.elements.set('webpack-monthly-product-data', identicalMonthly);
+    identical.api.ensureChoiceRegionRestrictionsForTest();
+    assert.equal(hasClass(identicalRows[0].giftField.nextElementSibling, 'hb-helper-region-restrictions'), true);
 });
