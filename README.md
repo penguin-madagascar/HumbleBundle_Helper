@@ -50,6 +50,10 @@ remain visible during later retained-account checks. The `Activate` action
 on Choice and Downloads stays disabled until the check settles as authenticated;
 local selection controls remain usable as described below.
 
+On redesigned Next.js pages, controls and game markings wait until their
+corresponding React components have finished hydration, so the helper does not
+change the initial HTML while React is still claiming it.
+
 When the first Steam Store check cannot verify a valid session, the helper
 attempts one background renewal through Steam's login server, then checks the
 Store session and account data again. It does not open a Steam tab
@@ -119,13 +123,18 @@ contexts.
 
 The price summary follows the active Bundle Filters. Its header shows the
 current all/unowned scope immediately before the existing `Show unowned` or
-`Show all` action. During a same-page refresh, the prior successful values and
-summary dimensions remain visible until the new result is ready to replace them
-atomically. If a background refresh fails, the previous totals remain and a
-localized warning appears beside the title. If an item cannot be priced, expand
+`Show all` action. If every identified Steam item is owned, the unowned scope
+shows only `All items are owned` or `已全部拥有` below its header; the all-items
+scope keeps its normal totals and counts. During a same-page refresh, the prior
+successful values and summary dimensions remain visible until the new result is
+ready to replace them atomically. If a background refresh fails, the previous
+totals remain and a localized warning appears beside the title. If an item
+cannot be priced, expand
 the matching details to see whether Steam identification or regional price
 history is missing. HB conversion uses the Humble Bundle account Location,
-defaulting to USD if that setting cannot be loaded.
+including the redesigned localized settings row. If the setting cannot be
+identified or loaded, Steam prices remain available and HB conversion is
+omitted instead of assuming a currency.
 
 ### Humble Choice activation
 
@@ -246,7 +255,7 @@ uses controlled tests rather than live Humble or Steam activation.
 - Steam's login server renews existing browser sessions when needed, following
   its [web session refresh flow](https://store.akamai.steamstatic.com/public/shared/javascript/auth_refresh.js).
 - Humble Bundle account settings provide the account Location used for HB
-  currency conversion, with USD as the fallback when settings cannot be loaded.
+  currency conversion; unavailable settings omit the conversion.
 - Humble Choice and order metadata provide advisory Steam activation country
   lists; the final availability decision comes from Steam during activation.
 - Xiaoheihe provides Steam regional price history.
@@ -261,7 +270,10 @@ unidentified items.
 
 ## Development
 
-Run `npm ci`, `npm test`, and `npm run check` to install the test-only DOM
-dependency, run the regression suite, and check userscript syntax. The
-userscript itself has no added runtime dependency. Redesign tests use reduced
-page markup and controlled data responses without revealing or activating keys.
+Run `npm ci`, `npm test`, and `npm run check` to install the test dependencies,
+run the regression suite, and check userscript syntax. The userscript itself
+has no added runtime dependency. Redesign tests use reduced page markup,
+controlled data responses, and real React hydration (including delayed
+Suspense boundaries) without revealing or activating keys. The hydration
+adapter uses `unsafeWindow` only to inspect React's committed DOM-node
+bookkeeping, without reading component props or account data.
