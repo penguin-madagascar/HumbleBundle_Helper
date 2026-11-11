@@ -7,8 +7,11 @@ const {parseHTML} = require('linkedom');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'HB_Helper.user.js'), 'utf8');
 
-function createPage(pathname, initialBody) {
-    const {window, document} = parseHTML('<html><head></head><body></body></html>');
+function createPage(pathname, initialBody, html = '') {
+    const {window, document} = parseHTML(`<html><head></head><body>${html}</body></html>`);
+    window.Element.prototype.getClientRects = function () {
+        return this.closest('[hidden]') ? [] : [{}];
+    };
     const body = document.body;
     let bodyReady = initialBody;
     Object.defineProperty(document, 'body', {get: () => bodyReady ? body : null});
@@ -57,6 +60,23 @@ function createPage(pathname, initialBody) {
         },
     };
 }
+
+test('production startup mounts the authenticated member grid toolbar', () => {
+    const page = createPage('/membership/home', true, `
+        <main id="main-content"><section class="page-content"><div>
+            <div><h1>2026年11月 Humble Choice</h1></div>
+            <div class="grid"><button><div data-testid="product-card">
+                <div data-testid="product-thumbnail"><img alt=""></div>
+                <div data-testid="product-card-footer"><div class="group/product-title">
+                    <div><div class="line-clamp-1">Member Game</div></div>
+                </div></div>
+            </div></button></div>
+        </div></section></main>`);
+    assert.doesNotThrow(() => vm.runInNewContext(source, page.context, {timeout: 1000}));
+    const controls = page.context.document.getElementById('hb-helper-controls');
+    assert.ok(controls, 'real startup adds the member toolbar');
+    assert.ok(controls.nextElementSibling === page.context.document.querySelector('main .grid'));
+});
 
 for (const pathname of ['/', '/membership/home']) {
     for (const initialBody of [true, false]) {

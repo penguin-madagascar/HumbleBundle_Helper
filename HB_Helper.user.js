@@ -45,6 +45,7 @@
       padding: 6px !important;
     }
     [data-testid="bundle-item-card"].owned,
+    main button > [data-testid="product-card"].owned,
     [data-media-index].owned {
       background: rgba(100,255,100,.35) !important;
       outline: 3px solid #64df64 !important;
@@ -52,6 +53,7 @@
       border-radius: 8px !important;
     }
     [data-testid="bundle-item-card"].wishlist,
+    main button > [data-testid="product-card"].wishlist,
     [data-media-index].wishlist {
       background: rgba(100,100,255,.35) !important;
       outline: 3px solid #8d9dff !important;
@@ -2334,6 +2336,8 @@
         }
 
         if (isChoicePage()) {
+            const memberGrid = getModernChoiceMemberGrid();
+            if (memberGrid) return {anchor: memberGrid, position: 'beforebegin'};
             const carousel = document.querySelector('section[aria-label="Media carousel"]');
             if (carousel && getModernChoiceGameEntries().length) {
                 return {anchor: carousel.parentElement, position: 'beforebegin'};
@@ -2349,7 +2353,16 @@
 
     function getChoicePeriod() {
         const heading = findTextAnchor(choiceMonthPattern);
-        return heading ? normalizedText(heading).replace(/\s+GAMES$/i, '') : '';
+        if (heading) return normalizedText(heading).replace(/\s+GAMES$/i, '');
+        const memberHeading = getModernChoiceMemberGrid()?.closest('section')?.querySelector('h1');
+        if (!memberHeading) return '';
+        const period = normalizedText(memberHeading).replace(/\s*Humble\s+Choice$/i, '').trim();
+        const chineseDate = period.match(/^(\d{4})年\s*(\d{1,2})月$/);
+        if (!chineseDate) return period;
+        const month = Number(chineseDate[2]);
+        if (month < 1 || month > 12) return '';
+        return new Intl.DateTimeFormat('en-US', {month: 'long', year: 'numeric', timeZone: 'UTC'})
+            .format(new Date(Date.UTC(Number(chineseDate[1]), month - 1, 1)));
     }
 
     function normalizeHumbleLocationText(value) {
@@ -2521,31 +2534,76 @@
         });
     }
 
+    function getModernChoiceMemberGrid() {
+        if (!isChoicePage() || !/^\/membership\/home(?:\/|$)/.test(location.pathname)) return null;
+        const grids = new Set();
+        for (const heading of document.querySelectorAll('main h1')) {
+            if (!/\bHumble\s+Choice\b/i.test(normalizedText(heading))) continue;
+            const section = heading.closest('section');
+            for (const grid of section?.querySelectorAll('.grid') || []) {
+                if (grid.getClientRects().length === 0) continue;
+                const children = Array.from(grid.children);
+                if (children.length && children.every(child => child.matches('button')
+                    && child.querySelectorAll('[data-testid="product-card"]').length === 1)) {
+                    grids.add(grid);
+                }
+            }
+        }
+        return grids.size === 1 ? grids.values().next().value : null;
+    }
+
     function getModernChoiceGameEntries() {
         if (!isChoicePage()) return [];
+        const seenProducts = new Set();
         const products = getNextPageData('subscriptionProducts')
             .filter(Array.isArray)
             .flat()
             .filter(item => item?.productType === 'humble-choice'
                 && typeof item.title === 'string' && item.title.trim()
-                && typeof item.thumbnail === 'string' && item.thumbnail);
+                && typeof item.thumbnail === 'string' && item.thumbnail)
+            .filter(item => {
+                if (typeof item.id !== 'string' || !item.id.trim()) return true;
+                const signature = JSON.stringify([
+                    item.id, item.title, item.thumbnail, item.deliveryMethods, item.platforms,
+                ]);
+                if (seenProducts.has(signature)) return false;
+                seenProducts.add(signature);
+                return true;
+            });
         if (!products.length) return [];
 
-        return Array.from(document.querySelectorAll(
+        const tiles = Array.from(document.querySelectorAll(
             'section[aria-label="Media carousel"] [data-media-index]'
-        )).flatMap(tile => {
-            const source = tile.querySelector('button img[src]')?.getAttribute('src');
-            if (!source) return [];
+        ));
+        const memberGrid = getModernChoiceMemberGrid();
+        if (memberGrid) tiles.push(...Array.from(memberGrid.children, button =>
+            button.querySelector('[data-testid="product-card"]')
+        ));
+        return tiles.flatMap(tile => {
+            const isMemberCard = tile.matches('[data-testid="product-card"]');
+            const titleElement = isMemberCard ? tile.querySelector(
+                '[data-testid="product-card-footer"] [class~="group/product-title"] .line-clamp-1'
+            ) : null;
+            const title = titleElement ? normalizedText(titleElement) : '';
+            const source = tile.querySelector(isMemberCard
+                ? '[data-testid="product-thumbnail"] img[src]' : 'button img[src]')?.getAttribute('src');
             let imageUrl;
-            try {
-                const url = new URL(source, location.origin);
-                imageUrl = url.pathname === '/_next/image'
-                    ? url.searchParams.get('url')
-                    : url.href;
-            } catch (_) {
-                return [];
+            if (source) {
+                try {
+                    const url = new URL(source, location.origin);
+                    imageUrl = url.pathname === '/_next/image'
+                        ? url.searchParams.get('url')
+                        : url.href;
+                } catch (_) {
+                    imageUrl = null;
+                }
             }
-            const matches = products.filter(item => item.thumbnail === imageUrl);
+            let matches = products.filter(item => item.thumbnail === imageUrl);
+            if (!matches.length && title) {
+                matches = products.filter(item => item.title.trim().replace(/\s+/g, ' ') === title);
+            }
+            if (title && matches.length === 1
+                && matches[0].title.trim().replace(/\s+/g, ' ') !== title) return [];
             return matches.length === 1
                 ? [{tile, title: matches[0].title.trim(), item: matches[0]}]
                 : [];
@@ -2556,7 +2614,7 @@
         const entries = getModernChoiceGameEntries();
         const sections = new Set(entries.map(entry =>
             entry.tile.closest('section[aria-label="Media carousel"]')
-        ));
+        ).filter(Boolean));
         const targets = [];
         for (const section of sections) {
             const games = entries.filter(entry => section.contains(entry.tile));
@@ -5943,7 +6001,8 @@
         const activationCurrent = choiceActivationInProgress
             && isActivationUiContextCurrent(choiceActivationContext);
         if (!isChoicePage()
-            || (getModernChoiceGameEntries().length > 0 && getVisibleChoiceTiles().length === 0)
+            || ((getModernChoiceMemberGrid() || getModernChoiceGameEntries().length > 0)
+                && getVisibleChoiceTiles().length === 0)
             || (!hasSteamAccountData() && !activationCurrent)) {
             choiceControls?.remove();
             return;
@@ -6272,14 +6331,15 @@
                     : container.querySelector('.steam-rating') || titleEl,
             });
         });
-        if (isGamesBundlePage()) {
+        if (isGamesBundlePage() || isChoicePage()) {
             const entries = getModernGameEntries();
             document.querySelectorAll('[role="dialog"]').forEach(container => {
                 if (container.id === 'site-modal') return;
                 const titleEl = container.querySelector('h1, h2, h3');
                 const title = titleEl ? normalizedText(titleEl) : '';
-                if (!entries.some(entry => normalizeSteamTitle(entry.title) === normalizeSteamTitle(title)
-                    && isSteamBundleItem(entry.item))) return;
+                const matches = entries.filter(entry =>
+                    normalizeSteamTitle(entry.title) === normalizeSteamTitle(title));
+                if (matches.length !== 1 || !isSteamBundleItem(matches[0].item)) return;
                 const platformPanel = container.querySelector('[data-testid="platform-icons"]');
                 targets.push({container, title, after: platformPanel || titleEl});
             });
@@ -8613,6 +8673,7 @@
                 satisfyDeferredChoiceOwnershipRefresh,
             setChoiceActivationBatchForTest,
             getChoiceActivationBatchForTest: getChoiceActivationBatch,
+            getModernChoiceMemberGrid,
             getModernChoiceGameEntries,
             getModernChoiceSteamLinkTargets,
             reconcileChoiceActivationBatch,
