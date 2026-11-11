@@ -50,6 +50,20 @@ remain visible during later retained-account checks. The `Activate` action
 on Choice and Downloads stays disabled until the check settles as authenticated;
 local selection controls remain usable as described below.
 
+When the first Steam Store check cannot verify a valid session, the helper
+attempts one background renewal through Steam's login server, then checks the
+Store session and account data again. It does not open a Steam tab
+automatically. Concurrent checks share their pending work; a newer forced check
+waits for an outstanding renewal to finish before reading the account, so its
+snapshot reflects the browser's latest Steam cookies.
+
+Missing login markers, network failures, and Steam service errors are not
+treated as a confirmed logout. If recovery cannot verify the session, use
+`Open Steam to refresh session`, return to Humble, or choose `Check again`.
+The login link appears only after Steam reports no renewable login session and
+a second Store check explicitly reports logged out. Activation stays disabled
+until the complete authenticated check succeeds.
+
 During a retained-account Steam session check, Choice and Downloads keep their
 controls, results, selection mode, and selected presentation. Local selection
 remains usable while `Activate` is temporarily disabled. A settled logout or
@@ -227,6 +241,8 @@ uses controlled tests rather than live Humble or Steam activation.
 
 - Steam provides account ownership, wishlist, app matching, store region, and
   game-key activation.
+- Steam's login server renews existing browser sessions when needed, following
+  its [web session refresh flow](https://store.akamai.steamstatic.com/public/shared/javascript/auth_refresh.js).
 - Humble Bundle account settings provide the account Location used for HB
   currency conversion, with USD as the fallback when settings cannot be loaded.
 - Humble Choice and order metadata provide advisory Steam activation country
