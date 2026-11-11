@@ -79,9 +79,10 @@ the language in the settings dialog.
 
 On redesigned game bundle pages, the controls appear above the game grid and
 the price totals follow the currently selected bundle tier. On redesigned
-Humble Choice, the controls appear above the current month's game carousel;
-non-Steam products are excluded from Steam totals and highlights. Steam links
-follow the currently displayed game details. On older pages, controls remain
+Humble Choice, the controls appear above the game grid on the member home page
+at `/membership/home`, including localized month headings, or above the public
+game carousel. Non-Steam products are excluded from Steam totals and highlights.
+Steam links follow the currently displayed game details. On older pages, controls remain
 above `Pay at least [price] for these [number] items` or below `YOUR GAMES`.
 
 On the Humble Games, Bundles, Books, and Software landing pages, sorting
@@ -128,9 +129,10 @@ defaulting to USD if that setting cannot be loaded.
 
 ### Humble Choice activation
 
-The redesigned public Choice carousel supports highlights, price totals, and
-Steam links. Its new Library redemption flow is not yet supported; the helper
-only shows activation controls on the older Choice redemption tiles described
+The redesigned public Choice carousel and authenticated member grid support
+highlights, price totals, and Steam links. The new Library redemption flow is
+not yet supported; the helper only shows activation controls on the older
+Choice redemption tiles described
 below. Purchased order activation still uses `/downloads?key=...`.
 
 On Humble Choice, use `Select` or `选择` to enter selection mode. In that mode,
