@@ -6,6 +6,8 @@ download pages.
 ## Features
 
 - Highlights Steam-owned games in green and wishlisted games in blue.
+- Highlights non-Steam games and miscellaneous products in blue, with platform
+  or item icons at the right of their title rows.
 - Adds Steam Store links to expanded game details.
 - Adds a SteamGifts discussion search for potential region-lock reports.
 - Shows the total Steam current price, original price, and historical low for
@@ -90,6 +92,16 @@ at `/membership/home`, including localized month headings, or above the public
 game carousel. Non-Steam products are excluded from Steam totals and highlights.
 Steam links follow the currently displayed game details. On older pages, controls remain
 above `Pay at least [price] for these [number] items` or below `YOUR GAMES`.
+
+Non-Steam delivery platforms and miscellaneous products, including IGN Plus
+subscriptions and coupons, receive blue card highlights and small title-row
+icons without requiring a Steam login. Hover an icon to see its platform or
+item name. Battle.net, Epic Games, GOG, and IGN have embedded brand icons;
+other platforms use a generic icon with their name. On the public Choice
+carousel, which has image-only slides, the icon appears beside the selected
+game's detail heading. Games offering Steam alongside another platform keep
+their normal Steam ownership and wishlist behavior. Missing platform metadata
+is left unmarked, and Windows, Mac, and Linux are treated as operating systems.
 
 On the Humble Games, Bundles, Books, and Software landing pages, sorting
 controls appear next to each bundle section heading. Use `Default` to restore
@@ -265,6 +277,9 @@ uses controlled tests rather than live Humble or Steam activation.
 - Xiaoheihe provides Steam regional price history.
 - [Frankfurter](https://frankfurter.dev/) provides exchange rates when Steam
   and Humble Bundle use different currencies.
+- Embedded Battle.net, Epic Games, GOG, and IGN SVG paths come from
+  [Simple Icons](https://github.com/simple-icons/simple-icons), whose project
+  is released under [CC0](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md).
 
 Game matching normalizes punctuation, accents, trademark symbols, and numeric
 separators, but still requires an exact normalized Steam title. Bundle coupons
