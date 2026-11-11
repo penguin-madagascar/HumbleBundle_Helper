@@ -2,7 +2,7 @@
 // @name         HumbleBundle Helper
 // @name:zh-CN   Humble Bundle 助手
 // @namespace    https://github.com/penguin-madagascar/HumbleBundle_Helper
-// @version      0.1.2
+// @version      0.1.3
 // @description  Highlight Steam games and summarize regional prices on Humble Bundle
 // @description:zh-CN 在 Humble Bundle 上标记 Steam 游戏并汇总区域价格
 // @icon         https://raw.githubusercontent.com/penguin-madagascar/HumbleBundle_Helper/main/assets/icon-32.png
@@ -7386,8 +7386,6 @@
         run();
     }
 
-    if (!globalThis.__HB_HELPER_TEST__) startHelper();
-
     function gmRequest(url, responseType = 'json', options = {}) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -8620,5 +8618,8 @@
             reconcileChoiceActivationBatch,
         };
     }
+
+    // Start after every page-state binding has been initialized.
+    if (!globalThis.__HB_HELPER_TEST__) startHelper();
 
 })();
