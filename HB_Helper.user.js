@@ -21,6 +21,7 @@
 // @connect      www.humblebundle.com
 // @connect      api.steampowered.com
 // @connect      store.steampowered.com
+// @connect      login.steampowered.com
 // @connect      steamcommunity.com
 // @connect      api.xiaoheihe.cn
 // @connect      api.frankfurter.dev
@@ -1248,6 +1249,58 @@
 
     function getSteamStoreUrl(appId) {
         return `https://store.steampowered.com/app/${appId}/`;
+    }
+
+    async function refreshSteamSession({request = gmRequest, isCurrent = () => true} = {}) {
+        if (!isCurrent()) return false;
+        const storeUrl = 'https://store.steampowered.com/';
+        const postOptions = {
+            ...steamRequestOptions,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                Origin: 'https://store.steampowered.com',
+                Referer: storeUrl,
+            },
+        };
+        const response = await request(
+            'https://login.steampowered.com/jwt/ajaxrefresh',
+            'json',
+            {...postOptions, data: new URLSearchParams({redir: storeUrl}).toString()}
+        );
+        if (!isCurrent()) return false;
+        // EResult.NotLoggedOn; other refusals can be transient service failures.
+        if ((response?.success === false || response?.success === 0) && response.error === 21) return false;
+        if ((response?.success !== true && response?.success !== 1)
+            || !['steamID', 'nonce', 'auth'].every(key => isNonEmptyString(response[key]))) {
+            throw new Error(t('steamInvalidAccountData'));
+        }
+        let exchangeUrl;
+        try {
+            exchangeUrl = new URL(response.login_url);
+        } catch (_) {
+            throw new Error(t('steamInvalidAccountData'));
+        }
+        if (exchangeUrl.origin !== 'https://store.steampowered.com'
+            || exchangeUrl.pathname.replace(/\/$/, '') !== '/login/settoken'
+            || exchangeUrl.username || exchangeUrl.password || exchangeUrl.search || exchangeUrl.hash) {
+            throw new Error(t('steamInvalidAccountData'));
+        }
+        const result = await request(exchangeUrl.href, 'json', {
+            ...postOptions,
+            data: new URLSearchParams({
+                steamID: response.steamID,
+                nonce: response.nonce,
+                auth: response.auth,
+                redir: storeUrl,
+            }).toString(),
+        });
+        if (!isCurrent()) return false;
+        if (result?.result === 21) return false;
+        if (result?.result !== 1 || !isNonEmptyString(result.token)) {
+            throw new Error(t('steamInvalidAccountData'));
+        }
+        return true;
     }
 
     function isSteamAccountData(data) {
@@ -8481,6 +8534,7 @@
             applyLandingSortForTest: applyLandingSort,
             ensureLandingSortControls,
             parseSteamSession,
+            refreshSteamSession,
             normalizeRegionRestrictions,
             getRegionRestrictionVerdict,
             createRegionRestrictionPanel,
