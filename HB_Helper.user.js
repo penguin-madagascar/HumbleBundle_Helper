@@ -512,12 +512,20 @@
     }
     #hb-helper-settings-dialog {
       box-sizing: border-box !important;
+      position: fixed !important;
+      inset: 0 !important;
+      margin: auto !important;
+      background: #fff !important;
+      color-scheme: light !important;
       border: 0 !important;
       border-radius: 8px !important;
       box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28) !important;
       color: #222 !important;
       font: 14px/1.4 Arial, sans-serif !important;
+      height: fit-content !important;
+      max-height: calc(100dvh - 32px) !important;
       max-width: min(420px, calc(100vw - 32px)) !important;
+      overflow-y: auto !important;
       padding: 20px !important;
       width: 420px !important;
     }
@@ -525,7 +533,9 @@
       background: rgba(0, 0, 0, 0.38) !important;
     }
     #hb-helper-settings-dialog h2 {
+      color: inherit !important;
       font-size: 18px !important;
+      font-weight: 700 !important;
       line-height: 1.3 !important;
       margin: 0 0 16px !important;
     }
@@ -539,6 +549,10 @@
     }
     #hb-helper-settings-dialog select {
       box-sizing: border-box !important;
+      background: #fff !important;
+      border: 1px solid #b8bec4 !important;
+      border-radius: 4px !important;
+      color: #222 !important;
       font: inherit !important;
       min-height: 36px !important;
       padding: 6px 8px !important;
@@ -551,10 +565,29 @@
     }
     #hb-helper-settings-dialog button {
       box-sizing: border-box !important;
+      background: #fff !important;
+      border: 1px solid #b8bec4 !important;
+      border-radius: 4px !important;
+      color: #222 !important;
       cursor: pointer !important;
       font: inherit !important;
       min-height: 34px !important;
       padding: 6px 12px !important;
+    }
+    #hb-helper-settings-dialog button:hover {
+      background: #edf3f8 !important;
+    }
+    #hb-helper-settings-dialog button[type="submit"] {
+      background: #1b75bb !important;
+      border-color: #1b75bb !important;
+      color: #fff !important;
+    }
+    #hb-helper-settings-dialog button[type="submit"]:hover {
+      background: #155f98 !important;
+    }
+    #hb-helper-settings-dialog :is(button, select):focus-visible {
+      outline: 2px solid #1b75bb !important;
+      outline-offset: 2px !important;
     }`;
     (document.head || document.documentElement).appendChild(style);
 
@@ -832,11 +865,13 @@
     function createSettingsDialog() {
         const dialog = document.createElement('dialog');
         dialog.id = 'hb-helper-settings-dialog';
+        dialog.setAttribute('aria-labelledby', 'hb-helper-settings-title');
 
         const form = document.createElement('form');
         form.addEventListener('submit', saveSettingsDialog);
 
         const title = document.createElement('h2');
+        title.id = 'hb-helper-settings-title';
         title.textContent = t('settingsTitle');
 
         const row = document.createElement('div');
