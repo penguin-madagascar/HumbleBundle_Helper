@@ -1605,6 +1605,166 @@
         return !isDownloadTpkdExpired(tpkd) && tpkd.sold_out !== true;
     }
 
+    let nextPageDataCache;
+    const nextPageScriptDataCache = new WeakMap();
+    const nextPageSourceLoads = new Map();
+
+    function loadNextPageDataFromSource(
+        routeFingerprint = getHelperRouteFingerprint(),
+        {requestPage = url => fetch(url, {credentials: 'include'})} = {}
+    ) {
+        if (routeFingerprint !== getHelperRouteFingerprint()) {
+            return Promise.resolve({stale: true});
+        }
+        const generation = helperRouteTransitionGeneration;
+        const cached = nextPageSourceLoads.get(routeFingerprint);
+        if (cached && (cached.document || cached.generation === generation)) {
+            return cached.promise;
+        }
+        const requestUrl = new URL(location.href);
+        requestUrl.hash = '';
+        if (requestUrl.origin !== location.origin) {
+            return Promise.reject(new Error('Invalid Humble page source origin.'));
+        }
+        const state = {generation, document: null, promise: null};
+        state.promise = Promise.resolve()
+            .then(() => requestPage(requestUrl.href))
+            .then(async response => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (response.url && new URL(response.url).origin !== requestUrl.origin) {
+                    throw new Error('Invalid Humble page source origin.');
+                }
+                const html = await response.text();
+                if (routeFingerprint !== getHelperRouteFingerprint()
+                    || generation !== helperRouteTransitionGeneration) {
+                    if (nextPageSourceLoads.get(routeFingerprint) === state) {
+                        nextPageSourceLoads.delete(routeFingerprint);
+                    }
+                    return {stale: true};
+                }
+                state.document = new DOMParser().parseFromString(html, 'text/html');
+                return {loaded: true};
+            });
+        nextPageSourceLoads.set(routeFingerprint, state);
+        return state.promise;
+    }
+
+    function readNextPageRecords(source) {
+        const bytes = new TextEncoder().encode(source);
+        const decoder = new TextDecoder();
+        const records = new Map();
+        let offset = 0;
+        while (offset < bytes.length) {
+            const header = decoder.decode(bytes.subarray(offset, offset + 80))
+                .match(/^([\da-f]*):([TAOobUSsLlGgMmV])?([\da-f]+,)?/);
+            if (!header) break;
+            offset += header[0].length;
+            if (header[2]) {
+                if (!header[3]) break;
+                const end = offset + parseInt(header[3], 16);
+                if (end > bytes.length) break;
+                if (header[2] === 'T') {
+                    records.set(header[1], decoder.decode(bytes.subarray(offset, end)));
+                }
+                offset = end;
+                continue;
+            }
+            const end = bytes.indexOf(10, offset);
+            if (end < 0) break;
+            const text = decoder.decode(bytes.subarray(offset, end));
+            if (/^[\[{"\d-]|^(?:null|true|false)$/.test(text)) {
+                try {
+                    records.set(header[1], JSON.parse(text));
+                } catch (_) {
+                    // Ignore non-JSON protocol rows; never evaluate page scripts.
+                }
+            }
+            offset = end + 1;
+        }
+        return records;
+    }
+
+    function resolveNextPageValue(value, records, ancestors = new Set(), references = new Set()) {
+        if (typeof value === 'string') {
+            if (value.startsWith('$$')) return value.slice(1);
+            const reference = value.match(/^\$([\da-f]+)(?::(.*))?$/);
+            if (!reference) return value.startsWith('$') ? undefined : value;
+            if (references.has(value)) return undefined;
+            const nextReferences = new Set(references).add(value);
+            let target = records.get(reference[1]);
+            for (const property of reference[2]?.split(':') || []) {
+                if (typeof target === 'string') {
+                    target = resolveNextPageValue(target, records, ancestors, nextReferences);
+                }
+                const key = property === 'props' && Array.isArray(target) && target[0] === '$'
+                    ? 3
+                    : property;
+                target = target && Object.prototype.hasOwnProperty.call(target, key)
+                    ? target[key]
+                    : undefined;
+            }
+            return resolveNextPageValue(target, records, ancestors, nextReferences);
+        }
+        if (!value || typeof value !== 'object') return value;
+        if (ancestors.has(value)) return undefined;
+        const nextAncestors = new Set(ancestors).add(value);
+        if (Array.isArray(value)) {
+            return value.map(item => resolveNextPageValue(item, records, nextAncestors, references));
+        }
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+            key,
+            resolveNextPageValue(item, records, nextAncestors, references),
+        ]));
+    }
+
+    function getNextPageData(propertyName) {
+        const sourceState = nextPageSourceLoads.get(getHelperRouteFingerprint());
+        const sourceDocument = sourceState ? sourceState.document : document;
+        if (!sourceDocument) return [];
+        const chunks = [];
+        for (const script of sourceDocument.querySelectorAll('script')) {
+            const text = script.textContent;
+            const cached = nextPageScriptDataCache.get(script);
+            if (cached?.text === text) {
+                chunks.push(...cached.chunks);
+                continue;
+            }
+            const scriptChunks = [];
+            const pattern = /self\.__next_f\.push\(\s*(\[\s*1\s*,\s*"(?:[^"\\]|\\.)*"\s*\])\s*\)/g;
+            for (const match of text.matchAll(pattern)) {
+                try {
+                    scriptChunks.push(JSON.parse(match[1])[1]);
+                } catch (_) {
+                    // A script still being streamed may not contain complete JSON yet.
+                }
+            }
+            nextPageScriptDataCache.set(script, {text, chunks: scriptChunks});
+            chunks.push(...scriptChunks);
+        }
+        const source = chunks.join('');
+        if (!source) return [];
+        if (!nextPageDataCache || nextPageDataCache.source !== source) {
+            nextPageDataCache = {source, records: readNextPageRecords(source), properties: new Map()};
+        }
+        const {records, properties} = nextPageDataCache;
+        if (!properties.has(propertyName)) {
+            const values = [];
+            const visit = value => {
+                if (!value || typeof value !== 'object') return;
+                for (const [key, item] of Object.entries(value)) {
+                    if (key === propertyName) {
+                        const resolved = resolveNextPageValue(item, records);
+                        if (resolved !== undefined) values.push(resolved);
+                    }
+                    visit(item);
+                }
+            };
+            for (const record of records.values()) visit(record);
+            properties.set(propertyName, values);
+        }
+        return properties.get(propertyName);
+    }
+
     function normalizedText(element) {
         return element.textContent.replace(/\s+/g, ' ').trim();
     }
@@ -8020,6 +8180,8 @@
         }
 
         globalThis.__HB_HELPER_TEST_API__ = {
+            getNextPageData,
+            loadNextPageDataFromSource,
             getDownloadsOrderKey,
             isDownloadsPage,
             getHelperPageMode,
