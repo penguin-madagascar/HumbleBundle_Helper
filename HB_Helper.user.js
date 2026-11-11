@@ -430,6 +430,23 @@
     #hb-helper-price-summary .hb-helper-price-value {
       font-weight: bold !important;
     }
+    #hb-helper-price-summary .hb-helper-all-owned-state {
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+    #hb-helper-price-summary .hb-helper-all-owned-state > * {
+      grid-area: 1 / 1 !important;
+    }
+    #hb-helper-price-summary .hb-helper-all-owned-sizing {
+      visibility: hidden !important;
+    }
+    #hb-helper-price-summary .hb-helper-all-owned {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      text-align: center !important;
+      font-weight: 700 !important;
+    }
     #hb-helper-price-summary .hb-helper-match-details {
       margin-top: 4px !important;
     }
@@ -649,7 +666,7 @@
             originalPrice: 'Original',
             historicalLow: 'Historical low',
             matchedItems: '{matched}/{selected} Steam items identified ({scope})',
-            allSteamItemsOwned: 'All items are owned',
+            allSteamItemsOwned: '🎉 All items are owned 🎉',
             pricedItems: '{priced}/{matched} identified items have price history',
             choiceActivate: 'Activate',
             choiceSelectUnowned: 'Select unowned',
@@ -762,7 +779,7 @@
             originalPrice: '原价',
             historicalLow: '史低价格',
             matchedItems: '已识别 {matched}/{selected} 个 Steam 项目（{scope}）',
-            allSteamItemsOwned: '已全部拥有',
+            allSteamItemsOwned: '🎉 已全部拥有 🎉',
             pricedItems: '{matched} 个已识别项目中有 {priced} 个包含价格历史',
             choiceActivate: '激活',
             choiceSelectUnowned: '选择未拥有',
@@ -7790,9 +7807,10 @@
             ? games.filter(game => !game.appId || !ownedApps.has(game.appId))
             : games;
         const allItemsOwned = priceScope === 'unowned' && games.length > 0 && selectedGames.length === 0;
-        const matchedGames = selectedGames.filter(game => game.appId);
-        const pricedGames = selectedGames.filter(game => game.price);
-        const unmatchedGames = selectedGames.filter(game => !game.appId);
+        const bodyGames = allItemsOwned ? games : selectedGames;
+        const matchedGames = bodyGames.filter(game => game.appId);
+        const pricedGames = bodyGames.filter(game => game.price);
+        const unmatchedGames = bodyGames.filter(game => !game.appId);
         const unpricedGames = matchedGames.filter(game => !game.price);
         const totals = pricedGames.reduce((total, game) => ({
             current: total.current + game.price.current,
@@ -7843,20 +7861,14 @@
             priceScope = priceScope === 'all' ? 'unowned' : 'all';
             renderPriceTotals();
         });
-        if (allItemsOwned) {
-            const notice = document.createElement('div');
-            notice.textContent = t('allSteamItemsOwned');
-            content.appendChild(notice);
-            return content;
-        }
-
+        const body = allItemsOwned ? document.createElement('div') : content;
         const addPriceLine = (label, value) => {
             const row = document.createElement('div');
             const price = document.createElement('span');
             price.className = 'hb-helper-price-value';
             price.textContent = value;
             row.append(`${label}: `, price);
-            content.appendChild(row);
+            body.appendChild(row);
         };
         addPriceLine(t('currentPrice'), formatTotal(totals.current));
         addPriceLine(t('originalPrice'), formatTotal(totals.original));
@@ -7865,16 +7877,28 @@
         const matchedLine = document.createElement('div');
         matchedLine.textContent = t('matchedItems', {
             matched: matchedGames.length,
-            selected: selectedGames.length,
-            scope,
+            selected: bodyGames.length,
+            scope: allItemsOwned ? t('allItems') : scope,
         });
         const pricedLine = document.createElement('div');
         pricedLine.textContent = t('pricedItems', {
             priced: pricedGames.length,
             matched: matchedGames.length,
         });
-        content.append(matchedLine, pricedLine);
-        appendMatchDetails(content, unmatchedGames, unpricedGames, detailsOpen);
+        body.append(matchedLine, pricedLine);
+        appendMatchDetails(body, unmatchedGames, unpricedGames, detailsOpen);
+        if (allItemsOwned) {
+            const state = document.createElement('div');
+            state.className = 'hb-helper-all-owned-state';
+            body.className = 'hb-helper-all-owned-sizing';
+            body.setAttribute('aria-hidden', 'true');
+            body.setAttribute('inert', '');
+            const notice = document.createElement('div');
+            notice.className = 'hb-helper-all-owned';
+            notice.textContent = t('allSteamItemsOwned');
+            state.append(body, notice);
+            content.appendChild(state);
+        }
         return content;
     }
 

@@ -568,8 +568,22 @@ function loadUnownedPriceTotals({ownedApps = [], language = 'en'} = {}) {
 }
 
 function visiblePriceValues(summary) {
-    return summary.children.map(row => row.querySelector('.hb-helper-price-value')?.textContent)
-        .filter(value => value !== undefined);
+    const values = [];
+    const visit = element => {
+        if (element.getAttribute?.('aria-hidden') === 'true') return;
+        if (element.className?.split(/\s+/).includes('hb-helper-price-value')) {
+            values.push(element.textContent);
+        }
+        element.children?.forEach(visit);
+    };
+    visit(summary);
+    return values;
+}
+
+function visibleText(element) {
+    if (element.getAttribute?.('aria-hidden') === 'true') return '';
+    return element.children?.length
+        ? element.children.map(visibleText).join('') : element.textContent;
 }
 
 for (const language of ['en', 'zh-CN']) {
@@ -581,16 +595,22 @@ for (const language of ['en', 'zh-CN']) {
             findApp: async title => ({appid: Number(title.split(' ')[1]), name: title}),
         }));
         assert.deepEqual(visiblePriceValues(loaded.summary), []);
-        assert.equal(loaded.summary.children.length, 2, 'only the header and ownership notice remain');
-        assert.doesNotMatch(loaded.summary.textContent, /0\/0|Unavailable|不可用/);
-        assert.equal(loaded.summary.children[1].textContent,
-            language === 'en' ? 'All items are owned' : '已全部拥有');
+        assert.equal(loaded.summary.children.length, 2, 'the header and all-owned state remain');
+        assert.doesNotMatch(visibleText(loaded.summary), /0\/0|Unavailable|不可用/);
+        assert.equal(visibleText(loaded.summary.children[1]),
+            language === 'en' ? '🎉 All items are owned 🎉' : '🎉 已全部拥有 🎉');
+        const sizing = loaded.summary.querySelector('.hb-helper-all-owned-sizing');
+        assert.equal(sizing.getAttribute('aria-hidden'), 'true');
+        assert.equal(sizing.getAttribute('inert'), '');
+        const sizingText = sizing.textContent;
 
         loaded.summary.querySelector('#hb-helper-price-scope').click();
         assert.match(loaded.summary.textContent, /7\/7/);
         assert.ok(visiblePriceValues(loaded.summary).some(price => /700\.00/.test(price)));
+        assert.equal(loaded.summary.children.slice(1).map(row => row.textContent).join(''), sizingText,
+            'the invisible sizing body matches the complete all-items body, including localized wrapping');
         loaded.summary.querySelector('#hb-helper-price-scope').click();
-        assert.doesNotMatch(loaded.summary.textContent, /0\/0|Unavailable|不可用/);
+        assert.doesNotMatch(visibleText(loaded.summary), /0\/0|Unavailable|不可用/);
     });
 }
 
@@ -600,8 +620,8 @@ test('the all-owned notice does not depend on available price currency', async (
         fetchPriceHistory: async () => { throw new Error('price unavailable'); },
     }));
     assert.deepEqual(visiblePriceValues(loaded.summary), []);
-    assert.equal(loaded.summary.children[1].textContent, 'All items are owned');
-    assert.doesNotMatch(loaded.summary.textContent, /0\/0|Unavailable/);
+    assert.equal(visibleText(loaded.summary.children[1]), '🎉 All items are owned 🎉');
+    assert.doesNotMatch(visibleText(loaded.summary), /0\/0|Unavailable/);
 });
 
 test('mixed ownership keeps unowned prices and matching counts', async () => {
