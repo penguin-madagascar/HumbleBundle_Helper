@@ -615,6 +615,7 @@
             originalPrice: 'Original',
             historicalLow: 'Historical low',
             matchedItems: '{matched}/{selected} Steam items identified ({scope})',
+            allSteamItemsOwned: 'All items are owned',
             pricedItems: '{priced}/{matched} identified items have price history',
             choiceActivate: 'Activate',
             choiceSelectUnowned: 'Select unowned',
@@ -727,6 +728,7 @@
             originalPrice: '原价',
             historicalLow: '史低价格',
             matchedItems: '已识别 {matched}/{selected} 个 Steam 项目（{scope}）',
+            allSteamItemsOwned: '已全部拥有',
             pricedItems: '{matched} 个已识别项目中有 {priced} 个包含价格历史',
             choiceActivate: '激活',
             choiceSelectUnowned: '选择未拥有',
@@ -7665,6 +7667,7 @@
         const selectedGames = priceScope === 'unowned'
             ? games.filter(game => !game.appId || !ownedApps.has(game.appId))
             : games;
+        const allItemsOwned = priceScope === 'unowned' && games.length > 0 && selectedGames.length === 0;
         const matchedGames = selectedGames.filter(game => game.appId);
         const pricedGames = selectedGames.filter(game => game.price);
         const unmatchedGames = selectedGames.filter(game => !game.appId);
@@ -7714,6 +7717,17 @@
         header.append(title, staleMarker, scopeControls);
         content.appendChild(header);
 
+        scopeButton.addEventListener('click', () => {
+            priceScope = priceScope === 'all' ? 'unowned' : 'all';
+            renderPriceTotals();
+        });
+        if (allItemsOwned) {
+            const notice = document.createElement('div');
+            notice.textContent = t('allSteamItemsOwned');
+            content.appendChild(notice);
+            return content;
+        }
+
         const addPriceLine = (label, value) => {
             const row = document.createElement('div');
             const price = document.createElement('span');
@@ -7739,11 +7753,6 @@
         });
         content.append(matchedLine, pricedLine);
         appendMatchDetails(content, unmatchedGames, unpricedGames, detailsOpen);
-
-        scopeButton.addEventListener('click', () => {
-            priceScope = priceScope === 'all' ? 'unowned' : 'all';
-            renderPriceTotals();
-        });
         return content;
     }
 

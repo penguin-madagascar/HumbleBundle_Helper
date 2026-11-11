@@ -558,3 +558,79 @@ test('Chinese stale marker and current-scope label use localized copy', async ()
     assert.equal(loaded.summary.querySelector('#hb-helper-price-scope').textContent,
         '显示未拥有');
 });
+
+function loadUnownedPriceTotals({ownedApps = [], language = 'en'} = {}) {
+    const loaded = loadPriceTotalsApi({language});
+    loaded.api.setSteamDerivedStateForTest({
+        countryCode: 'UA', ownedApps, wishlistApps: [], sessionId: 'session',
+    });
+    return loaded;
+}
+
+function visiblePriceValues(summary) {
+    return summary.children.map(row => row.querySelector('.hb-helper-price-value')?.textContent)
+        .filter(value => value !== undefined);
+}
+
+for (const language of ['en', 'zh-CN']) {
+    test(`${language}: all-owned unowned scope replaces every body line with one ownership notice`, async () => {
+        const ownedApps = [10, 11, 12, 13, 14, 15, 16];
+        const loaded = loadUnownedPriceTotals({ownedApps, language});
+        const titles = ownedApps.map(id => `Owned ${id}`);
+        await loaded.api.loadPriceTotalsForTest(titles, priceDependencies({
+            findApp: async title => ({appid: Number(title.split(' ')[1]), name: title}),
+        }));
+        assert.deepEqual(visiblePriceValues(loaded.summary), []);
+        assert.equal(loaded.summary.children.length, 2, 'only the header and ownership notice remain');
+        assert.doesNotMatch(loaded.summary.textContent, /0\/0|Unavailable|不可用/);
+        assert.equal(loaded.summary.children[1].textContent,
+            language === 'en' ? 'All items are owned' : '已全部拥有');
+
+        loaded.summary.querySelector('#hb-helper-price-scope').click();
+        assert.match(loaded.summary.textContent, /7\/7/);
+        assert.ok(visiblePriceValues(loaded.summary).some(price => /700\.00/.test(price)));
+        loaded.summary.querySelector('#hb-helper-price-scope').click();
+        assert.doesNotMatch(loaded.summary.textContent, /0\/0|Unavailable|不可用/);
+    });
+}
+
+test('the all-owned notice does not depend on available price currency', async () => {
+    const loaded = loadUnownedPriceTotals({ownedApps: [10]});
+    await loaded.api.loadPriceTotalsForTest(['Owned'], priceDependencies({
+        fetchPriceHistory: async () => { throw new Error('price unavailable'); },
+    }));
+    assert.deepEqual(visiblePriceValues(loaded.summary), []);
+    assert.equal(loaded.summary.children[1].textContent, 'All items are owned');
+    assert.doesNotMatch(loaded.summary.textContent, /0\/0|Unavailable/);
+});
+
+test('mixed ownership keeps unowned prices and matching counts', async () => {
+    const loaded = loadUnownedPriceTotals({ownedApps: [10]});
+    await loaded.api.loadPriceTotalsForTest(['Owned', 'Unowned'], priceDependencies({
+        findApp: async title => ({appid: title === 'Owned' ? 10 : 20, name: title}),
+    }));
+    assert.match(loaded.summary.textContent, /1\/1 Steam items identified/);
+    assert.ok(visiblePriceValues(loaded.summary).some(price => /100\.00/.test(price)));
+    assert.doesNotMatch(loaded.summary.textContent, /All items are owned/);
+});
+
+test('unidentified items remain in the unowned scope and are not reported as owned', async () => {
+    const loaded = loadUnownedPriceTotals({ownedApps: [10]});
+    await loaded.api.loadPriceTotalsForTest(['Owned', 'Unknown'], priceDependencies({
+        findApp: async title => title === 'Owned' ? {appid: 10, name: title} : null,
+    }));
+    assert.match(loaded.summary.textContent, /0\/1 Steam items identified/);
+    assert.match(loaded.summary.textContent, /Unknown/);
+    assert.deepEqual(visiblePriceValues(loaded.summary), ['Unavailable', 'Unavailable', 'Unavailable']);
+    assert.doesNotMatch(loaded.summary.textContent, /All items are owned/);
+});
+
+test('an unowned game without price history remains unavailable rather than zero', async () => {
+    const loaded = loadUnownedPriceTotals();
+    await loaded.api.loadPriceTotalsForTest(['Unowned'], priceDependencies({
+        fetchPriceHistory: async () => { throw new Error('price unavailable'); },
+    }));
+    assert.match(loaded.summary.textContent, /1\/1 Steam items identified/);
+    assert.deepEqual(visiblePriceValues(loaded.summary), ['Unavailable', 'Unavailable', 'Unavailable']);
+    assert.doesNotMatch(loaded.summary.textContent, /All items are owned/);
+});
