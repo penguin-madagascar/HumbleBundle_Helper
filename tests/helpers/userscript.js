@@ -12,7 +12,7 @@ function flightScript(records) {
     return `<script>self.__next_f.push(${JSON.stringify([1, stream])})</script>`;
 }
 
-function loadUserscript({html = '', pathname = '/games/test-bundle', values = new Map()} = {}) {
+function loadUserscript({html = '', pathname = '/games/test-bundle', values = new Map(), logger = console} = {}) {
     const {document, window} = parseHTML(`<!doctype html><html><head></head><body>${html}</body></html>`);
     window.Element.prototype.getClientRects = function () {
         return this.closest('[hidden], [style*="display: none"], [style*="display:none"]') ? [] : [{}];
@@ -27,7 +27,7 @@ function loadUserscript({html = '', pathname = '/games/test-bundle', values = ne
         navigator: {language: 'en', languages: ['en']},
         DOMParser: window.DOMParser,
         MutationObserver: window.MutationObserver,
-        console,
+        console: logger,
         GM_getValue: (key, fallback) => values.has(key) ? values.get(key) : fallback,
         GM_setValue: (key, value) => values.set(key, value),
         GM_deleteValue: key => values.delete(key),

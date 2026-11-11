@@ -2424,6 +2424,13 @@
     }
 
     function findHumbleAccountCurrencyCode(settingsPage) {
+        for (const heading of settingsPage.querySelectorAll('h3')) {
+            if (!/^(?:Location|位置)\s*[:：]?$/i.test(normalizedText(heading))) continue;
+            const value = heading.parentElement?.nextElementSibling;
+            if (value?.matches('p')) {
+                return getHumbleCurrencyCodeForLocation(normalizedText(value));
+            }
+        }
         const candidates = [];
         const addCandidate = value => {
             const text = normalizeHumbleLocationText(value);
@@ -2497,18 +2504,16 @@
                 const currencyCode = findHumbleAccountCurrencyCode(settingsPage);
                 if (!currencyCode) throw new Error('Humble account location not found');
                 return currencyCode;
-            })();
+            })().catch(error => {
+                console.warn('[HB-Helper] Humble account currency unavailable; skipping HB conversion:', error);
+                return null;
+            });
         }
         return humbleAccountCurrencyPromise;
     }
 
-    async function resolveHumbleCurrencyCode() {
-        try {
-            return await fetchHumbleAccountCurrencyCode();
-        } catch (error) {
-            console.warn('[HB-Helper] Fetch Humble account currency failed, using USD:', error);
-            return 'USD';
-        }
+    function resolveHumbleCurrencyCode() {
+        return fetchHumbleAccountCurrencyCode();
     }
 
     function buildSteamGiftsSearchUrl() {
@@ -8649,6 +8654,8 @@
             createSteamSessionSyncTrigger,
             getLiveSteamAccount,
             getSteamCountryCode,
+            findHumbleAccountCurrencyCode,
+            resolveHumbleCurrencyCode,
             applySteamSessionState,
             clearSteamAccountDerivedState,
             getSteamDerivedStateForTest,
