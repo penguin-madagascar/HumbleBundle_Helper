@@ -7225,8 +7225,24 @@
         if (!force && routeFingerprint === helperRouteFingerprint) {
             return helperRouteTransitionPromise;
         }
+        const previousRoute = helperRouteFingerprint;
         helperRouteFingerprint = routeFingerprint;
         const generation = ++helperRouteTransitionGeneration;
+        if (previousRoute !== undefined && previousRoute !== routeFingerprint) {
+            landingPageDataCache = undefined;
+            landingPageDataSourcePromise = undefined;
+            if (['landing', 'price-totals'].includes(getHelperPageMode())
+                && document.querySelector('script[src*="/_next/"]')) {
+                const loadPage = helperRouteDependencies.loadNextPage || loadNextPageDataFromSource;
+                Promise.resolve(loadPage(routeFingerprint)).then(result => {
+                    if (result?.loaded && routeFingerprint === getHelperRouteFingerprint()) {
+                        schedulePageRefresh(true);
+                    }
+                }).catch(() => {
+                    console.warn('[HB-Helper] Failed to load current page data.');
+                });
+            }
+        }
         choiceRegionDisclosureState = undefined;
         const transition = synchronizeHelperRoute(generation, routeFingerprint);
         helperRouteTransitionPromise = Promise.resolve(transition).catch(() => {
