@@ -1847,7 +1847,7 @@ test('initial unknown Choice sync stays blank and terminal unauthenticated state
     const retry = reminder.querySelector('button');
     assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
     assert.match(treeText(reminder), /Could not synchronize/);
-    assert.equal(reminder.querySelector('a'), null);
+    assert.equal(reminder.querySelector('a').href, 'https://store.steampowered.com/');
     api.applySteamSessionState({status: 'syncing', account: null, error: new Error('failed')});
     assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
     assert.match(treeText(reminder), /Could not synchronize/);

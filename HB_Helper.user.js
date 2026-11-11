@@ -578,8 +578,10 @@
             loginSteamLoadAccountData: 'Log in to Steam, then return to this Humble page to synchronize account data automatically.',
             steamInvalidAccountData: 'Steam returned invalid account data',
             steamSyncLoggedOut: 'Log in to Steam, then return to Humble Bundle. Your Steam session will synchronize automatically.',
-            steamSyncError: 'Could not synchronize your Steam session. Check that you are logged in, then retry.',
-            steamSyncRetry: 'Retry synchronization',
+            steamSyncError: 'Could not synchronize your Steam session. Open Steam to refresh it, then return and check again.',
+            steamSyncRetry: 'Check again',
+            steamRefreshLink: 'Open Steam to refresh session',
+            steamSessionRefreshing: 'Refreshing Steam session…',
             steamSessionChecking: 'Checking Steam login status…',
             steamSessionRechecking: 'Rechecking Steam session; activation becomes available when complete.',
             steamGiftsSearch: 'Search SteamGifts discussions (for potential region lock)',
@@ -689,8 +691,10 @@
             loginSteamLoadAccountData: '登录 Steam 后返回此 Humble 页面，助手会自动同步账号数据。',
             steamInvalidAccountData: 'Steam 返回了无效的账号数据',
             steamSyncLoggedOut: '登录 Steam 后返回 Humble Bundle，助手会自动同步 Steam 会话。',
-            steamSyncError: '无法同步 Steam 会话。请确认已登录后重试。',
-            steamSyncRetry: '重新同步',
+            steamSyncError: '无法同步 Steam 会话。可打开 Steam 刷新会话，返回后重新检测。',
+            steamSyncRetry: '重新检测',
+            steamRefreshLink: '打开 Steam 刷新会话',
+            steamSessionRefreshing: '正在刷新 Steam 会话…',
             steamSessionChecking: '正在检查 Steam 登录状态…',
             steamSessionRechecking: '正在重新检查 Steam 会话；完成后即可激活。',
             steamGiftsSearch: '搜索 SteamGifts 讨论（查看可能的区域限制）',
@@ -1320,7 +1324,7 @@
             /\bg_sessionID\s*=\s*["']([^"']+)["']/
         )?.[1] || '';
         return {
-            loggedIn: userInfo.logged_in === true,
+            loggedIn: typeof userInfo.logged_in === 'boolean' ? userInfo.logged_in : null,
             countryCode: typeof userInfo.country_code === 'string'
                 ? userInfo.country_code.toUpperCase()
                 : '',
@@ -1331,12 +1335,23 @@
     function createSteamSessionSynchronizer({
         request = gmRequest,
         parseSession = parseSteamSession,
+        refreshSession = refreshSteamSession,
         onStateChange = () => {},
         onClearDerivedState = () => {},
     } = {}) {
         let state = {status: 'syncing', account: null, error: null};
         let generation = 0;
         let pendingSync;
+        let pendingRefresh;
+
+        const hasAuthenticatedSession = session => session.loggedIn === true
+            && /^[A-Z]{2}$/.test(session.countryCode)
+            && isNonEmptyString(session.sessionId);
+        const readSession = async () => parseSession(await request(
+            `https://store.steampowered.com/?l=english&_=${Date.now()}`,
+            'text',
+            {...steamRequestOptions, headers: {'Cache-Control': 'no-cache'}}
+        ));
 
         const updateState = nextState => {
             state = nextState;
@@ -1354,19 +1369,40 @@
             updateState({status: 'syncing', account: retainedAccount, error: retainedError});
             const task = (async () => {
                 try {
-                    const html = await request(
-                        `https://store.steampowered.com/?l=english&_=${Date.now()}`,
-                        'text',
-                        steamRequestOptions
-                    );
+                    // A dispatched token exchange can still update cookies after its generation expires.
+                    if (pendingRefresh) await pendingRefresh.catch(() => {});
                     if (requestGeneration !== generation) return state;
-                    const session = parseSession(html);
-                    if (!session.loggedIn) {
-                        return updateState({status: 'logged-out', account: null, error: null});
-                    }
-                    if (!/^[A-Z]{2}$/.test(session.countryCode)
-                        || !isNonEmptyString(session.sessionId)) {
-                        throw new Error(t('steamInvalidAccountData'));
+                    let session = await readSession();
+                    if (requestGeneration !== generation) return state;
+                    if (!hasAuthenticatedSession(session)) {
+                        updateState({
+                            status: 'syncing', account: retainedAccount, error: retainedError,
+                            phase: 'refreshing',
+                        });
+                        let refreshed = false;
+                        let refreshError;
+                        let refreshWork;
+                        try {
+                            refreshWork = Promise.resolve().then(() => refreshSession({
+                                request,
+                                isCurrent: () => requestGeneration === generation,
+                            }));
+                            pendingRefresh = refreshWork;
+                            refreshed = await refreshWork;
+                        } catch (error) {
+                            refreshError = error;
+                        } finally {
+                            if (pendingRefresh === refreshWork) pendingRefresh = undefined;
+                        }
+                        if (requestGeneration !== generation) return state;
+                        session = await readSession();
+                        if (requestGeneration !== generation) return state;
+                        if (session.loggedIn === false && refreshed === false && !refreshError) {
+                            return updateState({status: 'logged-out', account: null, error: null});
+                        }
+                        if (!hasAuthenticatedSession(session)) {
+                            throw refreshError || new Error(t('steamInvalidAccountData'));
+                        }
                     }
                     const userData = await request(
                         `https://store.steampowered.com/dynamicstore/userdata/?_=${Date.now()}`,
@@ -2991,9 +3027,20 @@
         }
         const errorPresentation = steamSessionState.status === 'error'
             || (steamSessionState.status === 'syncing' && steamSessionState.error);
-        if (errorPresentation) {
-            link?.remove();
-            message.textContent = t('steamSyncError');
+        const loggedOut = steamSessionState.status === 'logged-out';
+        const refreshing = steamSessionState.status === 'syncing'
+            && steamSessionState.phase === 'refreshing';
+        if (errorPresentation || loggedOut) {
+            if (!link) {
+                link = document.createElement('a');
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                reminder.insertBefore(link, reminder.firstChild);
+            }
+            link.href = loggedOut ? 'https://store.steampowered.com/login/' : 'https://store.steampowered.com/';
+            link.textContent = t(loggedOut ? 'loginSteamCheckOwned' : 'steamRefreshLink');
+            message.textContent = t(refreshing ? 'steamSessionRefreshing'
+                : loggedOut ? loggedOutMessageKey : 'steamSyncError');
             let retryButton = reminder.querySelector('button');
             if (!retryButton) {
                 retryButton = document.createElement('button');
@@ -3011,22 +3058,9 @@
             return;
         }
         reminder.querySelector('button')?.remove();
-        if (steamSessionState.status === 'logged-out') {
-            if (!link) {
-                link = document.createElement('a');
-                link.href = 'https://store.steampowered.com/login/';
-                link.target = '_blank';
-                link.rel = 'noopener noreferrer';
-                reminder.insertBefore(link, reminder.firstChild);
-            }
-            link.textContent = t('loginSteamCheckOwned');
-            message.textContent = t(loggedOutMessageKey);
-            return;
-        }
         link?.remove();
-        message.textContent = hasSteamAccountData()
-            ? t('steamSessionRechecking')
-            : t('steamSessionChecking');
+        message.textContent = t(refreshing ? 'steamSessionRefreshing'
+            : hasSteamAccountData() ? 'steamSessionRechecking' : 'steamSessionChecking');
     }
 
     function ensureDownloadLoginReminder(controls) {
@@ -6301,7 +6335,8 @@
         ensureSteamStoreLinks();
         if (!controls) return;
         if (['logged-out', 'error'].includes(steamSessionState.status)
-            || (steamSessionState.status === 'syncing' && steamSessionState.error)) {
+            || (steamSessionState.status === 'syncing'
+                && (steamSessionState.error || steamSessionState.phase === 'refreshing'))) {
             ensureSteamLoginReminder();
         } else if (hasSteamAccountData()) {
             document.getElementById('hb-helper-login-reminder')?.remove();
@@ -8528,6 +8563,7 @@
             renderChoiceActivationResultsForTest: renderChoiceActivationResults,
             shouldRefreshForPageMutationsForTest: shouldRefreshForPageMutations,
             getStyleTextForTest: () => style.textContent,
+            renderSteamSessionReminderForTest: renderSteamSessionReminder,
             getLandingSortMode,
             getLandingSortStateForTest: getLandingSortState,
             refreshLandingSortPageForTest: refreshLandingSortPage,

@@ -3305,6 +3305,9 @@ test('pending Choice sync preserves its initiating controls and leaks no title a
         'hb-helper-choice-selected-games-v1': ['id:pending-choice-route'],
     });
     let pendingRequest;
+    let rootRequests = 0;
+    let refreshRequests = 0;
+    const loggedOutHtml = '<div id="application_config" data-userinfo=\'{"logged_in":false}\'></div>';
     let requestStarted;
     const started = new Promise(resolve => { requestStarted = resolve; });
     const loaded = loadApi({
@@ -3312,11 +3315,33 @@ test('pending Choice sync preserves its initiating controls and leaks no title a
         search: '',
         gmBus,
         onRequest(request) {
-            pendingRequest = request;
-            requestStarted();
+            const url = new URL(request.url);
+            if (url.origin === 'https://store.steampowered.com' && url.pathname === '/') {
+                rootRequests += 1;
+                if (rootRequests === 1) {
+                    pendingRequest = request;
+                    requestStarted();
+                } else {
+                    request.onload({status: 200, responseText: loggedOutHtml});
+                }
+            } else if (url.href === 'https://login.steampowered.com/jwt/ajaxrefresh') {
+                refreshRequests += 1;
+                request.onload({status: 200, response: {success: false, error: 21}});
+            }
         },
     });
     const {api, context, document} = loaded;
+    context.DOMParser = class {
+        parseFromString(html) {
+            return {
+                querySelector(selector) {
+                    return selector === '#application_config' && html === loggedOutHtml
+                        ? {getAttribute() { return '{"logged_in":false}'; }}
+                        : null;
+                },
+            };
+        }
+    };
     const privateChoiceTitle = 'Pending Choice private route title';
     const heading = document.createElement('h2');
     heading.textContent = 'YOUR GAMES';
@@ -3384,6 +3409,8 @@ test('pending Choice sync preserves its initiating controls and leaks no title a
     );
 
     assert.equal(controlsPreservedDuringSync, true);
+    assert.equal(rootRequests, 2);
+    assert.equal(refreshRequests, 1);
     assert.equal(result.stale, true);
     assert.equal(api.getChoiceActivationBatchForTest(), null);
     assert.equal(treeText(downloadsControls).includes(privateChoiceTitle), false);
@@ -5377,7 +5404,7 @@ test('Downloads Steam session card follows every non-authenticated state', () =>
     api.applySteamSessionState({status: 'error', account: null, error: new Error('failed')});
     assert.equal(document.getElementById('hb-helper-login-reminder'), reminder);
     assert.match(treeText(reminder), /Could not synchronize/);
-    assert.equal(reminder.querySelector('a'), null);
+    assert.equal(reminder.querySelector('a').href, 'https://store.steampowered.com/');
     const retry = reminder.querySelector('button');
     assert.ok(retry);
     api.applySteamSessionState({status: 'syncing', account: null, error: new Error('failed')});

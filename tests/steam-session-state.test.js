@@ -110,6 +110,7 @@ test('parses Steam user info and session ID from one HTML response', () => {
 test('does not request dynamic store data for logged-out Steam responses', async () => {
     const requests = [];
     const sync = api.createSteamSessionSynchronizer({
+        refreshSession: async () => false,
         request: async url => {
             requests.push(url);
             return '<div id="application_config" data-userinfo=\'{"logged_in":false}\'></div>';
@@ -118,12 +119,14 @@ test('does not request dynamic store data for logged-out Steam responses', async
 
     const state = await sync.sync();
     assert.equal(state.status, 'logged-out');
-    assert.equal(requests.length, 1);
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every(url => !url.includes('/dynamicstore/userdata/')));
 });
 
 test('releases a settled non-forced synchronization request', async () => {
     let rootRequests = 0;
     const sync = api.createSteamSessionSynchronizer({
+        refreshSession: async () => false,
         request: async (url, responseType) => {
             if (responseType === 'text') rootRequests += 1;
             return '<div id="application_config" data-userinfo=\'{"logged_in":false}\'></div>';
@@ -132,7 +135,7 @@ test('releases a settled non-forced synchronization request', async () => {
 
     await sync.sync();
     await sync.sync();
-    assert.equal(rootRequests, 2);
+    assert.equal(rootRequests, 4);
 });
 
 test('creates authenticated snapshots with country, app lists, and an ephemeral session ID', async () => {
@@ -216,8 +219,10 @@ test('clears derived UI state after logged-out and error transitions', async () 
     const cleared = [];
     const responses = [steamHtml, {rgOwnedApps: [1], rgWishlist: [2]},
         '<div id="application_config" data-userinfo=\'{"logged_in":false}\'></div>',
+        '<div id="application_config" data-userinfo=\'{"logged_in":false}\'></div>',
         steamHtml, {rgOwnedApps: []}];
     const sync = api.createSteamSessionSynchronizer({
+        refreshSession: async () => false,
         request: async () => responses.shift(),
         onClearDerivedState: state => cleared.push(state.status),
     });
@@ -291,9 +296,10 @@ test('coalesces adjacent focus and visibility synchronization triggers', async (
     let syncCalls = 0;
     let release;
     const sync = api.createSteamSessionSynchronizer({
+        refreshSession: async () => false,
         request: async (url, responseType) => {
             syncCalls += responseType === 'text' ? 1 : 0;
-            await new Promise(resolve => { release = resolve; });
+            if (syncCalls === 1) await new Promise(resolve => { release = resolve; });
             return responseType === 'text'
                 ? '<div id="application_config" data-userinfo=\'{"logged_in":false}\'></div>'
                 : null;
@@ -305,5 +311,5 @@ test('coalesces adjacent focus and visibility synchronization triggers', async (
     const visibility = trigger();
     release();
     await Promise.all([focus, visibility]);
-    assert.equal(syncCalls, 1);
+    assert.equal(syncCalls, 2);
 });
