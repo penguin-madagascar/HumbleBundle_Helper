@@ -43,6 +43,13 @@
       border-radius: 8px !important;
       padding: 6px !important;
     }
+    .hb-helper-landing-sort-header[data-hb-helper-sort-layout="grid"] {
+      margin-bottom: 0 !important;
+    }
+    .hb-helper-landing-sort-controls button:disabled {
+      cursor: default !important;
+      opacity: .5 !important;
+    }
     .choice-content.js-open-choice-modal.owned {
       background: rgba(100,255,100,.35) !important;
     }
@@ -550,6 +557,7 @@
             landingEndingTitle: 'Sort bundles by nearest end date',
             landingNewestLabel: 'Newly Added',
             landingNewestTitle: 'Sort bundles by newest start date',
+            landingNewestUnavailableTitle: 'Humble does not provide bundle start dates on this page',
             landingSortAria: 'Sort {heading} bundles',
             loginSteamLoadAccountData: 'Log in to Steam, then return to this Humble page to synchronize account data automatically.',
             steamInvalidAccountData: 'Steam returned invalid account data',
@@ -660,6 +668,7 @@
             landingEndingTitle: '按最近结束时间排序慈善包',
             landingNewestLabel: '最新添加',
             landingNewestTitle: '按最新开始时间排序慈善包',
+            landingNewestUnavailableTitle: 'Humble 未在此页面提供慈善包开始时间',
             landingSortAria: '排序 {heading} 慈善包',
             loginSteamLoadAccountData: '登录 Steam 后返回此 Humble 页面，助手会自动同步账号数据。',
             steamInvalidAccountData: 'Steam 返回了无效的账号数据',
@@ -1839,14 +1848,21 @@
 
     function getLandingPageData() {
         const pageData = readLandingPageDataElement() || landingPageDataCache || null;
-        if (!pageData && isLandingSortPage()) loadLandingPageDataFromSource();
+        if (!pageData && isLandingSortPage()
+            && !document.querySelector('script[src^="/_next/"]')) {
+            loadLandingPageDataFromSource();
+        }
         return pageData;
     }
 
     function observeLandingPageDataElement() {
-        if (!isLandingSortPage() || readLandingPageDataElement()) return;
+        if (!isLandingSortPage() || readLandingPageDataElement()
+            || getNextPageData('feedItems').length) return;
         const observer = new MutationObserver(() => {
-            if (readLandingPageDataElement()) observer.disconnect();
+            if (readLandingPageDataElement() || getNextPageData('feedItems').length) {
+                observer.disconnect();
+                scheduleLandingSortPageRefresh();
+            }
         });
         observer.observe(document.documentElement || document, {
             childList: true,
@@ -1858,6 +1874,28 @@
     observeLandingPageDataElement();
 
     function getLandingSortProductData(config) {
+        const nextProducts = new Map();
+        for (const feed of getNextPageData('feedItems')) {
+            if (!Array.isArray(feed)) continue;
+            for (const item of feed) {
+                const product = item?.value || item;
+                if (product?.productType !== 'humble-bundle'
+                    || product.category !== config.dataKey
+                    || !String(product.url || '').startsWith(config.pathPrefix)) {
+                    continue;
+                }
+                const productUrl = normalizeHumblePath(product.url);
+                if (nextProducts.has(productUrl)) continue;
+                nextProducts.set(productUrl, {
+                    productUrl,
+                    originalIndex: nextProducts.size,
+                    startTime: parseHumbleDateTime(product.startDate),
+                    endTime: parseHumbleDateTime(product.endDate),
+                });
+            }
+        }
+        if (nextProducts.size > 1) return [...nextProducts.values()];
+
         const sections = getLandingPageData()?.data?.[config.dataKey]?.mosaic;
         if (!Array.isArray(sections)) return null;
 
@@ -1882,20 +1920,42 @@
     }
 
     function findLandingSortSection(config) {
-        return Array.from(document.querySelectorAll('.landing-mosaic-section'))
+        const legacySection = Array.from(document.querySelectorAll('.landing-mosaic-section'))
             .find(section => findLandingSortHeading(section, config)
                 && section.querySelector(`.landing-page-mosaic ${config.mosaicSelector}`)) || null;
+        if (legacySection) return legacySection;
+
+        for (const heading of document.querySelectorAll('main h2')) {
+            if (normalizedText(heading) !== config.heading) continue;
+            for (let section = heading.parentElement; section; section = section.parentElement) {
+                if (section.matches('main')) break;
+                const cards = Array.from(section.querySelectorAll('[data-testid="product-card"]'));
+                if (cards.length < 2) continue;
+                const grid = cards[0].parentElement;
+                if (grid?.classList.contains('grid')
+                    && cards.every(card => card.parentElement === grid
+                        && card.querySelector(`a[data-testid="product-link"][href^="${config.pathPrefix}"]`))) {
+                    return section;
+                }
+                break;
+            }
+        }
+        return null;
     }
 
     function findLandingSortHeading(section, config) {
         return Array.from(section.querySelectorAll(
             ':scope > h3, :scope > .hb-helper-landing-sort-header > h3'
-        ))
-            .find(heading => normalizedText(heading) === config.heading) || null;
+        )).find(heading => normalizedText(heading) === config.heading)
+            || Array.from(section.querySelectorAll('h2'))
+                .find(heading => normalizedText(heading) === config.heading) || null;
     }
 
     function getLandingSortTileEntries(section, productByUrl) {
-        return Array.from(section.querySelectorAll('.tile-holder.js-tile-holder'))
+        const nextCards = Array.from(section.querySelectorAll('[data-testid="product-card"]'));
+        const holders = nextCards.length ? nextCards
+            : Array.from(section.querySelectorAll('.tile-holder.js-tile-holder'));
+        return holders
             .map((holder, domIndex) => {
                 if (!holder.dataset.hbHelperLandingOriginalIndex) {
                     holder.dataset.hbHelperLandingOriginalIndex = String(domIndex);
@@ -1919,8 +1979,8 @@
 
         const productByUrl = new Map(products.map(product => [product.productUrl, product]));
         const entries = getLandingSortTileEntries(section, productByUrl);
-
-        return {config, section, products, entries};
+        const layout = entries[0]?.holder.matches('[data-testid="product-card"]') ? 'grid' : 'mosaic';
+        return {config, section, products, entries, layout};
     }
 
     function compareOptionalTime(a, b, direction) {
@@ -1937,10 +1997,13 @@
     }
 
     function setLandingSortMode(config, mode) {
+        const state = getLandingSortState(config);
+        if (mode === 'newest' && state?.layout === 'grid'
+            && !state.products.some(product => Number.isFinite(product.startTime))) return;
         landingSortModeBySection.set(config.sectionKey, mode);
         GM_setValue(landingSortModeStorageKey, mode);
-        renderLandingSortControls(config);
-        applyLandingSort(getLandingSortState(config));
+        renderLandingSortControls(config, state);
+        applyLandingSort(state);
     }
 
     function compareLandingSortEntries(a, b, mode) {
@@ -1961,10 +2024,12 @@
     }
 
     function getLandingSortDesiredEntries(state) {
-        const mode = getLandingSortMode(state.config.sectionKey);
+        const mode = getEffectiveLandingSortMode(state);
         if (mode === 'default') {
             return [...state.entries].sort((a, b) =>
-                getDefaultLandingSortIndex(a) - getDefaultLandingSortIndex(b)
+                (state.layout === 'grid'
+                    ? a.originalDomIndex - b.originalDomIndex
+                    : getDefaultLandingSortIndex(a) - getDefaultLandingSortIndex(b))
                 || a.originalDomIndex - b.originalDomIndex
             );
         }
@@ -1978,24 +2043,34 @@
         return matchedEntries.concat(unmatchedEntries);
     }
 
-    function renderLandingSortControls(config) {
+    function getEffectiveLandingSortMode(state) {
+        const mode = getLandingSortMode(state.config.sectionKey);
+        return mode === 'newest' && state.layout === 'grid'
+            && !state.products.some(product => Number.isFinite(product.startTime))
+            ? 'default' : mode;
+    }
+
+    function renderLandingSortControls(config, state = getLandingSortState(config)) {
         const controls = document.querySelector(
             `.hb-helper-landing-sort-controls[data-hb-helper-sort-section="${config.sectionKey}"]`
         );
         if (!controls) return;
 
-        const activeMode = getLandingSortMode(config.sectionKey);
+        const activeMode = state ? getEffectiveLandingSortMode(state) : getLandingSortMode(config.sectionKey);
         landingSortModes.forEach(mode => {
             const button = controls.querySelector(`[data-hb-helper-sort="${mode.key}"]`);
             if (!button) return;
             const isActive = mode.key === activeMode;
             button.classList.toggle('hb-helper-landing-sort-active', isActive);
             button.setAttribute('aria-pressed', String(isActive));
+            button.disabled = mode.key === 'newest' && state?.layout === 'grid'
+                && !state.products.some(product => Number.isFinite(product.startTime));
+            button.title = t(button.disabled ? 'landingNewestUnavailableTitle' : mode.titleKey);
         });
     }
 
     function ensureLandingSortControls(state) {
-        const {config, section} = state;
+        const {config, section, layout} = state;
         const heading = findLandingSortHeading(section, config);
         if (!heading) return null;
 
@@ -2006,9 +2081,14 @@
             header = document.createElement('div');
             header.className = 'hb-helper-landing-sort-header';
             header.dataset.hbHelperSortSection = config.sectionKey;
-            heading.insertAdjacentElement('beforebegin', header);
-            header.appendChild(heading);
-        } else if (heading.parentElement !== header) {
+            if (layout === 'grid') {
+                header.dataset.hbHelperSortLayout = 'grid';
+                heading.insertAdjacentElement('afterend', header);
+            } else {
+                heading.insertAdjacentElement('beforebegin', header);
+                header.appendChild(heading);
+            }
+        } else if (layout !== 'grid' && heading.parentElement !== header) {
             header.insertBefore(heading, header.firstChild);
         }
 
@@ -2036,7 +2116,7 @@
         if (controls.parentElement !== header) {
             header.appendChild(controls);
         }
-        renderLandingSortControls(config);
+        renderLandingSortControls(config, state.products ? state : undefined);
         return controls;
     }
 
@@ -2063,6 +2143,14 @@
         if (!state) return;
 
         const desiredHolders = getLandingSortDesiredEntries(state).map(entry => entry.holder);
+        if (state.layout === 'grid') {
+            const isDefault = getEffectiveLandingSortMode(state) === 'default';
+            desiredHolders.forEach((holder, index) => {
+                const order = isDefault ? '' : String(index);
+                if (holder.style.order !== order) holder.style.order = order;
+            });
+            return;
+        }
         const currentHolders = state.entries.map(entry => entry.holder);
         if (desiredHolders.every((holder, index) => holder === currentHolders[index])) return;
 
@@ -8226,6 +8314,9 @@
             shouldRefreshForPageMutationsForTest: shouldRefreshForPageMutations,
             getStyleTextForTest: () => style.textContent,
             getLandingSortMode,
+            getLandingSortStateForTest: getLandingSortState,
+            refreshLandingSortPageForTest: refreshLandingSortPage,
+            applyLandingSortForTest: applyLandingSort,
             ensureLandingSortControls,
             parseSteamSession,
             normalizeRegionRestrictions,
