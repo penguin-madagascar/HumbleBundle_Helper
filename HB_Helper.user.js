@@ -18,6 +18,7 @@
 // @grant        GM_setClipboard
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      www.humblebundle.com
 // @connect      api.steampowered.com
 // @connect      store.steampowered.com
@@ -2064,7 +2065,7 @@
             : Array.from(section.querySelectorAll('.tile-holder.js-tile-holder'));
         return holders
             .map((holder, domIndex) => {
-                if (!holder.dataset.hbHelperLandingOriginalIndex) {
+                if (!holder.dataset.hbHelperLandingOriginalIndex && canModifyHelperTarget(holder)) {
                     holder.dataset.hbHelperLandingOriginalIndex = String(domIndex);
                 }
                 const link = holder.matches('a[href]') ? holder : holder.querySelector('a[href]');
@@ -2179,7 +2180,8 @@
     function ensureLandingSortControls(state) {
         const {config, section, layout} = state;
         const heading = findLandingSortHeading(section, config);
-        if (!heading) return null;
+        if (!heading || !canModifyHelperTarget(heading)
+            || !canModifyHelperTarget(heading.parentElement)) return null;
 
         let header = section.querySelector(
             `.hb-helper-landing-sort-header[data-hb-helper-sort-section="${config.sectionKey}"]`
@@ -2248,6 +2250,7 @@
 
     function applyLandingSort(state) {
         if (!state) return;
+        if (!state.entries.every(entry => canModifyHelperTarget(entry.holder))) return;
 
         const desiredHolders = getLandingSortDesiredEntries(state).map(entry => entry.holder);
         if (state.layout === 'grid') {
@@ -2301,6 +2304,7 @@
                 removeLandingSortControls(config);
                 continue;
             }
+            if (!canModifyHelperTarget(findLandingSortHeading(state.section, config))) continue;
             ensureLandingSortControls(state);
             applyLandingSort(state);
         }
@@ -2316,6 +2320,70 @@
         landingSortPageChangesObserved = true;
         const observer = new MutationObserver(() => scheduleLandingSortPageRefresh());
         observer.observe(document.body, {childList: true, subtree: true});
+    }
+
+    let hydratedHelperTargets = new WeakSet();
+    let hydrationRetryTimer;
+    let hydrationRetryDeadline = 0;
+
+    function resetHelperHydration() {
+        clearTimeout(hydrationRetryTimer);
+        hydrationRetryTimer = undefined;
+        hydrationRetryDeadline = 0;
+        hydratedHelperTargets = new WeakSet();
+    }
+
+    function deferHelperHydration() {
+        if (!hydrationRetryDeadline) hydrationRetryDeadline = Date.now() + 10000;
+        if (hydrationRetryTimer || Date.now() >= hydrationRetryDeadline) return;
+        const route = getHelperRouteFingerprint();
+        hydrationRetryTimer = setTimeout(() => {
+            hydrationRetryTimer = undefined;
+            if (route === getHelperRouteFingerprint()) schedulePageRefresh();
+        }, 100);
+    }
+
+    function retryHelperHydrationAfterPageEvent() {
+        if (hydrationRetryDeadline && Date.now() < hydrationRetryDeadline) return;
+        hydrationRetryDeadline = 0;
+        schedulePageRefresh();
+    }
+
+    function isCommittedReactHost(target) {
+        try {
+            const page = typeof unsafeWindow === 'undefined' ? window : unsafeWindow;
+            const keys = (page.Object || Object).getOwnPropertyNames(target);
+            const key = keys.find(name => name.startsWith('__reactFiber$') || name.startsWith('__reactContainer$'));
+            let fiber = key && (page.Reflect || Reflect).get(target, key);
+            for (let depth = 0; fiber?.return && depth < 1000; depth += 1) fiber = fiber.return;
+            const current = fiber?.stateNode?.current;
+            if (!current || current.memoizedState?.isDehydrated) return false;
+            if (key.startsWith('__reactContainer$')) return true;
+            const pending = [current];
+            for (let count = 0; pending.length && count < 20000; count += 1) {
+                const node = pending.pop();
+                if (node.stateNode?.nodeType === target.nodeType
+                    && node.stateNode.isSameNode(target)) return true;
+                if (node.child) pending.push(node.child);
+                if (node.sibling) pending.push(node.sibling);
+            }
+        } catch (_) {
+            // An unavailable page-realm adapter must never force a pre-hydration write.
+        }
+        return false;
+    }
+
+    function canModifyHelperTarget(target) {
+        if (!target) return false;
+        if (!document.querySelector('script[src*="/_next/"]')) return true;
+        if (!target.isConnected) return false;
+        if (hydratedHelperTargets.has(target)) return true;
+        if (isCommittedReactHost(target)) {
+            hydratedHelperTargets.add(target);
+            return true;
+        }
+        deferHelperHydration();
+        return false;
     }
 
     function findTextAnchor(pattern) {
@@ -6089,6 +6157,8 @@
         if (!isPriceTotalsPage()) return null;
         const insertionPoint = findHelperInsertionPoint();
         if (!insertionPoint) return null;
+        if (!canModifyHelperTarget(insertionPoint.anchor)
+            || !canModifyHelperTarget(insertionPoint.anchor.parentNode)) return null;
 
         let controls = document.getElementById('hb-helper-controls');
         if (!controls) {
@@ -6237,6 +6307,8 @@
 
         const app = await findSteamApp(title);
         if (!container.isConnected) return;
+        if (!canModifyHelperTarget(container)
+            || !canModifyHelperTarget(target.placementContainer || target.after || target.before || container)) return;
         if (!getSteamStoreLinkTargets().some(target => target.container === container
             && normalizeSteamTitle(target.title) === normalizedTitle)) return;
 
@@ -7382,6 +7454,7 @@
         }
         const previousRoute = helperRouteFingerprint;
         helperRouteFingerprint = routeFingerprint;
+        if (previousRoute !== routeFingerprint) resetHelperHydration();
         const generation = ++helperRouteTransitionGeneration;
         if (previousRoute !== undefined && previousRoute !== routeFingerprint) {
             landingPageDataCache = undefined;
@@ -7414,6 +7487,15 @@
         helperRouteLifecycleInstalled = true;
         helperRouteDependencies = {...options};
         observePageChanges();
+        window.addEventListener('pagehide', () => {
+            resetHelperHydration();
+            clearTimeout(pageRefreshTimer);
+            clearTimeout(landingSortRefreshTimer);
+        });
+        window.addEventListener('focus', retryHelperHydrationAfterPageEvent);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') retryHelperHydrationAfterPageEvent();
+        });
 
         for (const methodName of ['pushState', 'replaceState']) {
             const original = window.history?.[methodName];
@@ -7884,6 +7966,7 @@
     }
 
     async function markGame(viewEl, appSet, className, findApp = findSteamApp) {
+        if (!canModifyHelperTarget(viewEl)) return;
         const titleEl = viewEl.querySelector('.item-title, .content-choice-title');
         const modernEntry = titleEl ? null : getModernGameEntries().find(entry => entry.tile === viewEl);
         const title = titleEl?.textContent.trim() || modernEntry?.title;
@@ -7896,6 +7979,7 @@
             return;
         }
         const app = await findApp(title);
+        if (!canModifyHelperTarget(viewEl)) return;
         if (modernEntry && !getModernGameEntries().some(entry =>
             entry.tile === viewEl && entry.title === title && isSteamBundleItem(entry.item))) return;
         viewEl.classList.toggle(className, Boolean(app && appSet.has(app.appid)));
@@ -8635,6 +8719,10 @@
             renderChoiceActivationResultsForTest: renderChoiceActivationResults,
             shouldRefreshForPageMutationsForTest: shouldRefreshForPageMutations,
             getStyleTextForTest: () => style.textContent,
+            resetHelperHydrationForTest: resetHelperHydration,
+            getHelperHydrationStateForTest: () => ({
+                retryPending: Boolean(hydrationRetryTimer), deadline: hydrationRetryDeadline,
+            }),
             renderSteamSessionReminderForTest: renderSteamSessionReminder,
             getLandingSortMode,
             getLandingSortStateForTest: getLandingSortState,

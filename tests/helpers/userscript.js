@@ -46,7 +46,7 @@ function loadUserscript({html = '', pathname = '/games/test-bundle', values = ne
         TextDecoder,
     };
     vm.runInNewContext(source, context, {filename: 'HB_Helper.user.js'});
-    return {api: context.__HB_HELPER_TEST_API__, document, window, location, values, requests};
+    return {api: context.__HB_HELPER_TEST_API__, document, window, location, values, requests, context};
 }
 
 module.exports = {flightScript, loadUserscript};
