@@ -43,6 +43,20 @@
       border-radius: 8px !important;
       padding: 6px !important;
     }
+    [data-testid="bundle-item-card"].owned,
+    [data-media-index].owned {
+      background: rgba(100,255,100,.35) !important;
+      outline: 3px solid #64df64 !important;
+      outline-offset: -3px !important;
+      border-radius: 8px !important;
+    }
+    [data-testid="bundle-item-card"].wishlist,
+    [data-media-index].wishlist {
+      background: rgba(100,100,255,.35) !important;
+      outline: 3px solid #8d9dff !important;
+      outline-offset: -3px !important;
+      border-radius: 8px !important;
+    }
     .hb-helper-landing-sort-header[data-hb-helper-sort-layout="grid"] {
       margin-bottom: 0 !important;
     }
@@ -138,6 +152,7 @@
     }
     #hb-helper-price-summary .hb-helper-price-header {
       display: flex !important;
+      flex-wrap: wrap !important;
       align-items: center !important;
       justify-content: space-between !important;
       gap: 12px !important;
@@ -931,7 +946,6 @@
     const steamRequestOptions = {
         cookiePartition: {topLevelSite: 'https://store.steampowered.com'},
     };
-    let bundleItemsByTitle;
     let humbleAccountCurrencyPromise;
     let steamSessionSynchronizer;
     let steamSessionSyncTrigger;
@@ -2222,6 +2236,8 @@
 
     function findHelperInsertionPoint() {
         if (isGamesBundlePage()) {
+            const itemSection = document.querySelector('[data-bundle-section="games"]');
+            if (itemSection) return {anchor: itemSection, position: 'beforebegin'};
             const anchor = findTextAnchor(
                 /^Pay at least .+ for (?:these )?\d+ items?[.!]?$/i
             );
@@ -2229,6 +2245,10 @@
         }
 
         if (isChoicePage()) {
+            const carousel = document.querySelector('section[aria-label="Media carousel"]');
+            if (carousel && getModernChoiceGameEntries().length) {
+                return {anchor: carousel.parentElement, position: 'beforebegin'};
+            }
             const yourGamesHeading = findTextAnchor(/^YOUR GAMES$/i);
             if (yourGamesHeading) return {anchor: yourGamesHeading, position: 'afterend'};
             if (!document.querySelector('.choice-content.js-open-choice-modal')) return null;
@@ -2410,6 +2430,70 @@
                 }
             }, interval);
         });
+    }
+
+    function getModernChoiceGameEntries() {
+        if (!isChoicePage()) return [];
+        const products = getNextPageData('subscriptionProducts')
+            .filter(Array.isArray)
+            .flat()
+            .filter(item => item?.productType === 'humble-choice'
+                && typeof item.title === 'string' && item.title.trim()
+                && typeof item.thumbnail === 'string' && item.thumbnail);
+        if (!products.length) return [];
+
+        return Array.from(document.querySelectorAll(
+            'section[aria-label="Media carousel"] [data-media-index]'
+        )).flatMap(tile => {
+            const source = tile.querySelector('button img[src]')?.getAttribute('src');
+            if (!source) return [];
+            let imageUrl;
+            try {
+                const url = new URL(source, location.origin);
+                imageUrl = url.pathname === '/_next/image'
+                    ? url.searchParams.get('url')
+                    : url.href;
+            } catch (_) {
+                return [];
+            }
+            const matches = products.filter(item => item.thumbnail === imageUrl);
+            return matches.length === 1
+                ? [{tile, title: matches[0].title.trim(), item: matches[0]}]
+                : [];
+        });
+    }
+
+    function getModernChoiceSteamLinkTargets() {
+        const entries = getModernChoiceGameEntries();
+        const sections = new Set(entries.map(entry =>
+            entry.tile.closest('section[aria-label="Media carousel"]')
+        ));
+        const targets = [];
+        for (const section of sections) {
+            const games = entries.filter(entry => section.contains(entry.tile));
+            const matches = Array.from(section.parentElement.children)
+                .filter(container => container !== section)
+                .flatMap(container => Array.from(container.querySelectorAll('h3'))
+                    .flatMap(heading => {
+                        const matchingGames = games.filter(entry =>
+                            normalizedText(heading) === entry.title.replace(/\s+/g, ' ')
+                        );
+                        return matchingGames.length === 1
+                            && Array.isArray(matchingGames[0].item.deliveryMethods)
+                            && matchingGames[0].item.deliveryMethods.includes('steam')
+                            ? [{container, heading, game: matchingGames[0]}]
+                            : [];
+                    }));
+            if (matches.length !== 1) continue;
+            const {container, heading, game} = matches[0];
+            targets.push({
+                container,
+                title: game.title,
+                placementContainer: heading.parentElement.parentElement,
+                after: heading.parentElement,
+            });
+        }
+        return targets;
     }
 
     function getVisibleChoiceTiles() {
@@ -5772,6 +5856,7 @@
         const activationCurrent = choiceActivationInProgress
             && isActivationUiContextCurrent(choiceActivationContext);
         if (!isChoicePage()
+            || (getModernChoiceGameEntries().length > 0 && getVisibleChoiceTiles().length === 0)
             || (!hasSteamAccountData() && !activationCurrent)) {
             choiceControls?.remove();
             return;
@@ -5999,6 +6084,8 @@
 
         const app = await findSteamApp(title);
         if (!container.isConnected) return;
+        if (!getSteamStoreLinkTargets().some(target => target.container === container
+            && normalizeSteamTitle(target.title) === normalizedTitle)) return;
 
         if (!app) {
             removeDuplicateSteamStoreLinks(container, null);
@@ -6098,11 +6185,31 @@
                     : container.querySelector('.steam-rating') || titleEl,
             });
         });
+        if (isGamesBundlePage()) {
+            const entries = getModernGameEntries();
+            document.querySelectorAll('[role="dialog"]').forEach(container => {
+                if (container.id === 'site-modal') return;
+                const titleEl = container.querySelector('h1, h2, h3');
+                const title = titleEl ? normalizedText(titleEl) : '';
+                if (!entries.some(entry => normalizeSteamTitle(entry.title) === normalizeSteamTitle(title)
+                    && isSteamBundleItem(entry.item))) return;
+                const platformPanel = container.querySelector('[data-testid="platform-icons"]');
+                targets.push({container, title, after: platformPanel || titleEl});
+            });
+        }
+        targets.push(...getModernChoiceSteamLinkTargets());
         return targets;
     }
 
     function ensureSteamStoreLinks() {
-        getSteamStoreLinkTargets().forEach(target => {
+        const targets = getSteamStoreLinkTargets();
+        document.querySelectorAll('.hb-helper-steam-store-link').forEach(link => {
+            if (!targets.some(target => target.container.contains(link)
+                && normalizeSteamTitle(target.title) === link.dataset.hbHelperTitle)) {
+                removeSteamStoreLink(link);
+            }
+        });
+        targets.forEach(target => {
             ensureSteamStoreLink(target);
         });
     }
@@ -6114,6 +6221,7 @@
         const elements = Array.from(
             document.querySelectorAll('.tier-item-view, .choice-content.js-open-choice-modal')
         );
+        elements.push(...getModernGameEntries().map(entry => entry.tile));
         await Promise.all(elements.flatMap(element => [
             markOne(element, nextOwnedApps || new Set()),
             markWishlistOne(element, nextWishlistApps || new Set()),
@@ -7277,22 +7385,27 @@
 
     function getBundleItemsByTitle() {
         if (!isGamesBundlePage()) return null;
-        if (bundleItemsByTitle) return bundleItemsByTitle;
-
         const dataElement = document.getElementById('webpack-bundle-page-data');
-        if (!dataElement) return null;
-        const itemData = JSON.parse(dataElement.textContent).bundleData?.tier_item_data;
-        if (!itemData) return null;
-
-        bundleItemsByTitle = new Map(
-            Object.values(itemData)
+        if (dataElement) {
+            const itemData = JSON.parse(dataElement.textContent).bundleData?.tier_item_data;
+            if (itemData) return new Map(Object.values(itemData)
                 .filter(item => item.human_name)
-                .map(item => [normalizeSteamTitle(item.human_name), item])
+                .map(item => [normalizeSteamTitle(item.human_name), item]));
+        }
+        const bundlePage = getNextPageData('bundlePage').find(page =>
+            page?.slug && `/games/${page.slug}` === getCurrentPath()
         );
-        return bundleItemsByTitle;
+        if (!bundlePage) return null;
+        return new Map((bundlePage.tiers || []).flatMap(tier => tier.bundleItems || [])
+            .filter(item => item?.title)
+            .map(item => [normalizeSteamTitle(item.title), item]));
     }
 
     function isSteamBundleItem(item) {
+        if (Array.isArray(item.deliveryMethods)) {
+            return !/^coupons?$/i.test(item.bundleType || '')
+                && item.deliveryMethods.includes('steam');
+        }
         return item.cta_badge?.badge !== 'coupon'
             && Boolean(item.availability_icons?.delivery_to_platform?.['hb-steam']);
     }
@@ -7302,14 +7415,35 @@
         return !item || isSteamBundleItem(item);
     }
 
+    function getModernGameEntries() {
+        if (isChoicePage()) return getModernChoiceGameEntries();
+        if (!isGamesBundlePage()) return [];
+        const items = getBundleItemsByTitle();
+        return Array.from(document.querySelectorAll('[data-testid="bundle-item-card"]'))
+            .map(tile => {
+                const title = tile.querySelector('[data-testid="bundle-item-native-image"] img')
+                    ?.getAttribute('alt')?.trim() || '';
+                const item = items?.get(normalizeSteamTitle(title)) || {
+                    bundleType: tile.getAttribute('data-bundle-type'),
+                    deliveryMethods: tile.querySelector('[data-testid="platform-icons"] [aria-label="Steam"]')
+                        ? ['steam'] : [],
+                };
+                return {tile, title, item};
+            }).filter(entry => entry.title);
+    }
+
     function getVisibleGameTitles() {
-        return Array.from(document.querySelectorAll(
+        const legacyTitles = Array.from(document.querySelectorAll(
             '.tier-item-view .item-title, '
             + '.choice-content.js-open-choice-modal .content-choice-title'
         ))
             .filter(title => title.getClientRects().length > 0)
             .map(title => title.textContent.trim())
             .filter(title => title && shouldMatchSteamTitle(title));
+        const modernTitles = getModernGameEntries()
+            .filter(({tile, item}) => tile.getClientRects().length > 0 && isSteamBundleItem(item))
+            .map(({title}) => title);
+        return [...legacyTitles, ...modernTitles];
     }
 
     function formatPrice(value, currencyCode) {
@@ -7575,16 +7709,19 @@
 
     async function markGame(viewEl, appSet, className, findApp = findSteamApp) {
         const titleEl = viewEl.querySelector('.item-title, .content-choice-title');
-        if (!titleEl) {
+        const modernEntry = titleEl ? null : getModernGameEntries().find(entry => entry.tile === viewEl);
+        const title = titleEl?.textContent.trim() || modernEntry?.title;
+        if (!title) {
             viewEl.classList.toggle(className, false);
             return;
         }
-        const title = titleEl.textContent.trim();
-        if (!shouldMatchSteamTitle(title)) {
+        if (modernEntry ? !isSteamBundleItem(modernEntry.item) : !shouldMatchSteamTitle(title)) {
             viewEl.classList.toggle(className, false);
             return;
         }
         const app = await findApp(title);
+        if (modernEntry && !getModernGameEntries().some(entry =>
+            entry.tile === viewEl && entry.title === title && isSteamBundleItem(entry.item))) return;
         viewEl.classList.toggle(className, Boolean(app && appSet.has(app.appid)));
     }
 
@@ -8268,8 +8405,17 @@
         }
 
         globalThis.__HB_HELPER_TEST_API__ = {
-            getNextPageData,
             loadNextPageDataFromSource,
+            getNextPageData,
+            findHelperInsertionPoint,
+            getVisibleGameTitles,
+            getSteamStoreLinkTargets,
+            ensureSteamStoreLink,
+            ensureSteamStoreLinks,
+            getBundleItemsByTitle,
+            shouldMatchSteamTitle,
+            markGame,
+            ensureHelperControls,
             getDownloadsOrderKey,
             isDownloadsPage,
             getHelperPageMode,
@@ -8363,6 +8509,8 @@
                 satisfyDeferredChoiceOwnershipRefresh,
             setChoiceActivationBatchForTest,
             getChoiceActivationBatchForTest: getChoiceActivationBatch,
+            getModernChoiceGameEntries,
+            getModernChoiceSteamLinkTargets,
             reconcileChoiceActivationBatch,
         };
     }
