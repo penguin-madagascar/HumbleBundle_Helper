@@ -1,0 +1,11 @@
+{
+  "name": "humble-bundle-helper",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check HB_Helper.user.js"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.12"
+  }
+}
