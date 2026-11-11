@@ -26,6 +26,8 @@ download pages.
   activating keys sequentially.
 - Supports game bundle pages, the Humble Choice membership page, and individual
   purchased bundle order pages.
+- Supports the redesigned Next.js bundle listings, game bundle cards, and Choice
+  carousel, including navigation between pages without a full reload.
 - Shows Humble-provided Steam activation restrictions before reveal in Choice
   game dialogs and with the same presentation on Humble download pages.
 - Supports English and Chinese script UI.
@@ -61,9 +63,12 @@ The script follows your browser language by default. Open the Tampermonkey
 script menu on a Humble Bundle page, choose `Settings` or `设置`, and change
 the language in the settings dialog.
 
-On a game bundle page, the controls appear above
-`Pay at least [price] for these [number] items`. On Humble Choice, they appear
-below `YOUR GAMES` and above the current month's game heading.
+On redesigned game bundle pages, the controls appear above the game grid and
+the price totals follow the currently selected bundle tier. On redesigned
+Humble Choice, the controls appear above the current month's game carousel;
+non-Steam products are excluded from Steam totals and highlights. Steam links
+follow the currently displayed game details. On older pages, controls remain
+above `Pay at least [price] for these [number] items` or below `YOUR GAMES`.
 
 On the Humble Games, Bundles, Books, and Software landing pages, sorting
 controls appear next to each bundle section heading. Use `Default` to restore
@@ -71,6 +76,11 @@ Humble's original order, `Ending Soon` to show bundles closest to ending first,
 and `Newly Added` to show the newest bundles first. A click changes only that
 section immediately, while the last clicked mode initializes every landing
 section on the next page load.
+
+Redesigned listings use Humble's supplied end dates for `Ending Soon` and keep
+the original grid order for `Default`. `Newly Added` is disabled when Humble
+does not supply bundle start dates; a previously saved `Newly Added` preference
+then displays the default order. Sorting preserves the page's grid elements.
 
 When Humble provides activation metadata that can be mapped reliably, a
 restriction card appears at the end of the Choice redemption container in both
@@ -103,6 +113,11 @@ history is missing. HB conversion uses the Humble Bundle account Location,
 defaulting to USD if that setting cannot be loaded.
 
 ### Humble Choice activation
+
+The redesigned public Choice carousel supports highlights, price totals, and
+Steam links. Its new Library redemption flow is not yet supported; the helper
+only shows activation controls on the older Choice redemption tiles described
+below. Purchased order activation still uses `/downloads?key=...`.
 
 On Humble Choice, use `Select` or `选择` to enter selection mode. In that mode,
 clicking a game tile toggles whether it is selected instead of opening the
@@ -225,3 +240,10 @@ separators, but still requires an exact normalized Steam title. Bundle coupons
 and items not delivered through Steam are excluded. Items identified on Steam
 without Xiaoheihe regional price history remain listed separately from
 unidentified items.
+
+## Development
+
+Run `npm ci`, `npm test`, and `npm run check` to install the test-only DOM
+dependency, run the regression suite, and check userscript syntax. The
+userscript itself has no added runtime dependency. Redesign tests use reduced
+page markup and controlled data responses without revealing or activating keys.
