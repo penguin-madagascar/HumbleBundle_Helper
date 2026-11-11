@@ -61,6 +61,67 @@
       outline-offset: -3px !important;
       border-radius: 8px !important;
     }
+    .tier-item-view.hb-helper-non-steam,
+    .choice-content.js-open-choice-modal.hb-helper-non-steam,
+    [data-testid="bundle-item-card"].hb-helper-non-steam,
+    main button > [data-testid="product-card"].hb-helper-non-steam,
+    [data-media-index].hb-helper-non-steam {
+      background: rgba(59, 130, 246, 0.3) !important;
+      outline: 3px solid #51adff !important;
+      outline-offset: -3px !important;
+      border-radius: 8px !important;
+    }
+    .hb-helper-platform-title-row {
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: center !important;
+      gap: 8px !important;
+      min-width: 0 !important;
+    }
+    .hb-helper-platform-title-row > :first-child:not(.hb-helper-platform-badges) {
+      flex: 1 1 auto !important;
+      min-width: 0 !important;
+    }
+    .hb-helper-platform-title-details {
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) auto !important;
+      align-items: center !important;
+      column-gap: 8px !important;
+    }
+    .hb-helper-platform-title-details > h3 {
+      grid-area: 1 / 1 !important;
+    }
+    .hb-helper-platform-title-details > :not(h3):not(.hb-helper-platform-badges) {
+      grid-column: 1 / -1 !important;
+    }
+    .hb-helper-platform-badges {
+      display: inline-flex !important;
+      flex: 0 0 auto !important;
+      align-items: center !important;
+      gap: 6px !important;
+      margin-left: auto !important;
+      color: #bfe3ff !important;
+    }
+    .hb-helper-platform-title-details > .hb-helper-platform-badges {
+      grid-area: 1 / 2 !important;
+    }
+    .hb-helper-platform-badge {
+      box-sizing: border-box !important;
+      display: inline-flex !important;
+      width: 24px !important;
+      height: 24px !important;
+      align-items: center !important;
+      justify-content: center !important;
+      background: #164d7a !important;
+      border-radius: 4px !important;
+      color: #fff !important;
+      padding: 2px !important;
+    }
+    .hb-helper-platform-badge svg {
+      width: 100% !important;
+      height: 100% !important;
+      fill: currentColor !important;
+    }
     .hb-helper-landing-sort-header[data-hb-helper-sort-layout="grid"] {
       margin-bottom: 0 !important;
     }
@@ -667,6 +728,11 @@
             historicalLow: 'Historical low',
             matchedItems: '{matched}/{selected} Steam items identified ({scope})',
             allSteamItemsOwned: '🎉 All items are owned 🎉',
+            otherRedemption: 'Other redemption platform',
+            miscellaneousItem: 'Miscellaneous item',
+            subscriptionItem: 'Subscription',
+            couponItem: 'Coupon',
+            drmFreeItem: 'DRM-free download',
             pricedItems: '{priced}/{matched} identified items have price history',
             choiceActivate: 'Activate',
             choiceSelectUnowned: 'Select unowned',
@@ -780,6 +846,11 @@
             historicalLow: '史低价格',
             matchedItems: '已识别 {matched}/{selected} 个 Steam 项目（{scope}）',
             allSteamItemsOwned: '🎉 已全部拥有 🎉',
+            otherRedemption: '其他兑换平台',
+            miscellaneousItem: '杂项',
+            subscriptionItem: '订阅',
+            couponItem: '优惠券',
+            drmFreeItem: '无 DRM 下载',
             pricedItems: '{matched} 个已识别项目中有 {priced} 个包含价格历史',
             choiceActivate: '激活',
             choiceSelectUnowned: '选择未拥有',
@@ -6521,6 +6592,7 @@
             resetDownloadOrderPage();
         }
         if (!isPriceTotalsPage()) return;
+        refreshNonSteamGameMarkers();
         ensureChoiceRegionRestrictions();
         const controls = ensureHelperControls();
         ensureSteamStoreLinks();
@@ -6625,6 +6697,7 @@
             '.hb-helper-region-restrictions',
             '.hb-helper-steam-store-link',
             '.hb-helper-steam-store-row',
+            '.hb-helper-platform-badges',
             '.hb-helper-download-mapping-warning',
             '.hb-helper-download-mapping-summary-warning',
             '.hb-helper-download-region-warning',
@@ -7402,6 +7475,7 @@
     }
 
     function clearPriceHelperUi() {
+        refreshNonSteamGameMarkers();
         clearChoiceRegionRestrictionPanels();
         choiceRegionDisclosureState = undefined;
         priceTotalsRunId += 1;
@@ -7686,6 +7760,193 @@
         }
     }
 
+    // Simple Icons brand paths: https://github.com/simple-icons/simple-icons (CC0).
+    const platformIconPaths = {
+        gogdotcom: 'M7.15 15.24H4.36a.4.4 0 0 0-.4.4v2c0 .21.18.4.4.4h2.8v1.32h-3.5c-.56 0-1.02-.46-1.02-1.03v-3.39c0-.56.46-1.02 1.03-1.02h3.48v1.32zM8.16 11.54c0 .58-.47 1.05-1.05 1.05H2.63v-1.35h3.78a.4.4 0 0 0 .4-.4V6.39a.4.4 0 0 0-.4-.4H4.39a.4.4 0 0 0-.41.4v2.02c0 .23.18.4.4.4H6v1.35H3.68c-.58 0-1.05-.46-1.05-1.04V5.68c0-.57.47-1.04 1.05-1.04H7.1c.58 0 1.05.47 1.05 1.04v5.86zM21.36 19.36h-1.32v-4.12h-.93a.4.4 0 0 0-.4.4v3.72h-1.33v-4.12h-.93a.4.4 0 0 0-.4.4v3.72h-1.33v-4.42c0-.56.46-1.02 1.03-1.02h5.61v5.44zM21.37 11.54c0 .58-.47 1.05-1.05 1.05h-4.48v-1.35h3.78a.4.4 0 0 0 .4-.4V6.39a.4.4 0 0 0-.4-.4h-2.03a.4.4 0 0 0-.4.4v2.02c0 .23.18.4.4.4h1.62v1.35H16.9c-.58 0-1.05-.46-1.05-1.04V5.68c0-.57.47-1.04 1.05-1.04h3.43c.58 0 1.05.47 1.05 1.04v5.86zM13.72 4.64h-3.44c-.58 0-1.04.47-1.04 1.04v3.44c0 .58.46 1.04 1.04 1.04h3.44c.57 0 1.04-.46 1.04-1.04V5.68c0-.57-.47-1.04-1.04-1.04m-.3 1.75v2.02a.4.4 0 0 1-.4.4h-2.03a.4.4 0 0 1-.4-.4V6.4c0-.22.17-.4.4-.4H13c.23 0 .4.18.4.4zM12.63 13.92H9.24c-.57 0-1.03.46-1.03 1.02v3.39c0 .57.46 1.03 1.03 1.03h3.39c.57 0 1.03-.46 1.03-1.03v-3.39c0-.56-.46-1.02-1.03-1.02m-.3 1.72v2a.4.4 0 0 1-.4.4v-.01H9.94a.4.4 0 0 1-.4-.4v-1.99c0-.22.18-.4.4-.4h2c.22 0 .4.18.4.4zM23.49 1.1a1.74 1.74 0 0 0-1.24-.52H1.75A1.74 1.74 0 0 0 0 2.33v19.34a1.74 1.74 0 0 0 1.75 1.75h20.5A1.74 1.74 0 0 0 24 21.67V2.33c0-.48-.2-.92-.51-1.24m0 20.58a1.23 1.23 0 0 1-1.24 1.24H1.75A1.23 1.23 0 0 1 .5 21.67V2.33a1.23 1.23 0 0 1 1.24-1.24h20.5a1.24 1.24 0 0 1 1.24 1.24v19.34z',
+        ign: 'M5.38 7.66c.59-.9 1.359-1.67 2.26-2.26.13-1.18.31-2.26.52-3.21a10.602 10.602 0 0 0-6 6c.95-.22 2.03-.39 3.21-.52m10.97-2.3v.02c.9.59 1.67 1.37 2.27 2.27 1.18.13 2.26.31 3.21.52a10.632 10.632 0 0 0-6.02-6.01c.22.95.4 2.02.54 3.2m-8.7 13.26c-.9-.59-1.67-1.37-2.27-2.27h-.03c-1.19-.14-2.26-.32-3.19-.54 1.07 2.75 3.26 4.95 6.01 6.02-.22-.95-.39-2.03-.52-3.21m11-2.27h-.03c-.59.9-1.37 1.67-2.27 2.27v.03c-.14 1.17-.32 2.25-.54 3.19a10.593 10.593 0 0 0 6.03-6.03c-.94.22-2 .4-3.19.54M10.04.01h3.9c.85 1.85 1.2 4.59 1.3 5.52.04.22.06.43.06.63L12 9.12 8.7 6.16c0-.17.02-.35.05-.55.1-.95.43-3.75 1.29-5.61M8.7 17.84c0 .17.02.35.05.55.1.95.43 3.75 1.29 5.61h3.9c.85-1.84 1.2-4.59 1.3-5.52.04-.22.06-.43.06-.64L12 14.88l-3.3 2.96ZM6.16 8.69c-.17 0-.35.02-.55.05-.95.12-3.75.45-5.61 1.31v3.9c1.84.85 4.59 1.19 5.52 1.3.22.04.43.06.64.06l2.95-3.3-2.95-3.3v-.02ZM24 10.03c-1.86-.86-4.66-1.19-5.61-1.29-.2-.03-.38-.05-.55-.05l-2.96 3.3 2.96 3.3c.2 0 .41-.02.64-.06.93-.11 3.68-.45 5.52-1.3v-3.9Z',
+        epicgames: 'M3.537 0C2.165 0 1.66.506 1.66 1.879V18.44a4.262 4.262 0 00.02.433c.031.3.037.59.316.92.027.033.311.245.311.245.153.075.258.13.43.2l8.335 3.491c.433.199.614.276.928.27h.002c.314.006.495-.071.928-.27l8.335-3.492c.172-.07.277-.124.43-.2 0 0 .284-.211.311-.243.28-.33.285-.621.316-.92a4.261 4.261 0 00.02-.434V1.879c0-1.373-.506-1.88-1.878-1.88zm13.366 3.11h.68c1.138 0 1.688.553 1.688 1.696v1.88h-1.374v-1.8c0-.369-.17-.54-.523-.54h-.235c-.367 0-.537.17-.537.539v5.81c0 .369.17.54.537.54h.262c.353 0 .523-.171.523-.54V8.619h1.373v2.143c0 1.144-.562 1.71-1.7 1.71h-.694c-1.138 0-1.7-.566-1.7-1.71V4.82c0-1.144.562-1.709 1.7-1.709zm-12.186.08h3.114v1.274H6.117v2.603h1.648v1.275H6.117v2.774h1.74v1.275h-3.14zm3.816 0h2.198c1.138 0 1.7.564 1.7 1.708v2.445c0 1.144-.562 1.71-1.7 1.71h-.799v3.338h-1.4zm4.53 0h1.4v9.201h-1.4zm-3.13 1.235v3.392h.575c.354 0 .523-.171.523-.54V4.965c0-.368-.17-.54-.523-.54zm-3.74 10.147a1.708 1.708 0 01.591.108 1.745 1.745 0 01.49.299l-.452.546a1.247 1.247 0 00-.308-.195.91.91 0 00-.363-.068.658.658 0 00-.28.06.703.703 0 00-.224.163.783.783 0 00-.151.243.799.799 0 00-.056.299v.008a.852.852 0 00.056.31.7.7 0 00.157.245.736.736 0 00.238.16.774.774 0 00.303.058.79.79 0 00.445-.116v-.339h-.548v-.565H7.37v1.255a2.019 2.019 0 01-.524.307 1.789 1.789 0 01-.683.123 1.642 1.642 0 01-.602-.107 1.46 1.46 0 01-.478-.3 1.371 1.371 0 01-.318-.455 1.438 1.438 0 01-.115-.58v-.008a1.426 1.426 0 01.113-.57 1.449 1.449 0 01.312-.46 1.418 1.418 0 01.474-.309 1.58 1.58 0 01.598-.111 1.708 1.708 0 01.045 0zm11.963.008a2.006 2.006 0 01.612.094 1.61 1.61 0 01.507.277l-.386.546a1.562 1.562 0 00-.39-.205 1.178 1.178 0 00-.388-.07.347.347 0 00-.208.052.154.154 0 00-.07.127v.008a.158.158 0 00.022.084.198.198 0 00.076.066.831.831 0 00.147.06c.062.02.14.04.236.061a3.389 3.389 0 01.43.122 1.292 1.292 0 01.328.17.678.678 0 01.207.24.739.739 0 01.071.337v.008a.865.865 0 01-.081.382.82.82 0 01-.229.285 1.032 1.032 0 01-.353.18 1.606 1.606 0 01-.46.061 2.16 2.16 0 01-.71-.116 1.718 1.718 0 01-.593-.346l.43-.514c.277.223.578.335.9.335a.457.457 0 00.236-.05.157.157 0 00.082-.142v-.008a.15.15 0 00-.02-.077.204.204 0 00-.073-.066.753.753 0 00-.143-.062 2.45 2.45 0 00-.233-.062 5.036 5.036 0 01-.413-.113 1.26 1.26 0 01-.331-.16.72.72 0 01-.222-.243.73.73 0 01-.082-.36v-.008a.863.863 0 01.074-.359.794.794 0 01.214-.283 1.007 1.007 0 01.34-.185 1.423 1.423 0 01.448-.066 2.006 2.006 0 01.025 0zm-9.358.025h.742l1.183 2.81h-.825l-.203-.499H8.623l-.198.498h-.81zm2.197.02h.814l.663 1.08.663-1.08h.814v2.79h-.766v-1.602l-.711 1.091h-.016l-.707-1.083v1.593h-.754zm3.469 0h2.235v.658h-1.473v.422h1.334v.61h-1.334v.442h1.493v.658h-2.255zm-5.3.897l-.315.793h.624zm-1.145 5.19h8.014l-4.09 1.348z',
+        battledotnet: 'M18.94 8.296C15.9 6.892 11.534 6 7.426 6.332c.206-1.36.714-2.308 1.548-2.508 1.148-.275 2.4.48 3.594 1.854.782.102 1.71.28 2.355.429C12.747 2.013 9.828-.282 7.607.565c-1.688.644-2.553 2.97-2.448 6.094-2.2.468-3.915 1.3-5.013 2.495-.056.065-.181.227-.137.305.034.058.146-.008.194-.04 1.274-.89 2.904-1.373 5.027-1.676.303 3.333 1.713 7.56 4.055 10.952-1.28.502-2.356.536-2.946-.087-.812-.856-.784-2.318-.19-4.04a26.764 26.764 0 0 1-.807-2.254c-2.459 3.934-2.986 7.61-1.143 9.11 1.402 1.14 3.847.725 6.502-.926 1.505 1.672 3.083 2.74 4.667 3.094.084.015.287.043.332-.034.034-.06-.08-.124-.131-.149-1.408-.657-2.64-1.828-3.964-3.515 2.735-1.929 5.691-5.263 7.457-8.988 1.076.86 1.64 1.773 1.398 2.595-.336 1.131-1.615 1.84-3.403 2.185a27.697 27.697 0 0 1-1.548 1.826c4.634.16 8.08-1.22 8.458-3.565.286-1.786-1.295-3.696-4.053-5.17.696-2.139.832-4.04.346-5.588-.029-.08-.106-.27-.196-.27-.068 0-.067.13-.063.187.135 1.547-.263 3.2-1.062 5.19zm-8.533 9.869c-1.96-3.145-3.09-6.849-3.082-10.594 3.702-.124 7.474.748 10.714 2.627-1.743 3.269-4.385 6.1-7.633 7.966h.001z',
+        other: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z M3.3 7 12 12l8.7-5 M12 22V12',
+    };
+
+    const deliveryPlatformAliases = {
+        steam: 'steam', steamkey: 'steam',
+        blizzard: 'battlenet', battlenet: 'battlenet',
+        epic: 'epic', epicgames: 'epic', epicgamesstore: 'epic',
+        gog: 'gog', gogcom: 'gog',
+        uplay: 'ubisoft', ubisoft: 'ubisoft', ubisoftconnect: 'ubisoft',
+        origin: 'ea', ea: 'ea', eaapp: 'ea',
+        itch: 'itch', itchio: 'itch',
+        rockstar: 'rockstar', rockstargames: 'rockstar', rockstarsocialclub: 'rockstar',
+        oculus: 'meta', metaquest: 'meta',
+        drmfree: 'download', download: 'download', directdownload: 'download',
+        externalkey: 'external', external: 'external',
+    };
+    const deliveryPlatformLabels = {
+        battlenet: ['Battle.net', 'battledotnet'], epic: ['Epic Games', 'epicgames'],
+        gog: ['GOG', 'gogdotcom'], ubisoft: ['Ubisoft Connect', 'other'],
+        ea: ['EA app', 'other'], itch: ['itch.io', 'other'],
+        rockstar: ['Rockstar Games', 'other'], meta: ['Meta Quest', 'other'],
+    };
+
+    function normalizeDeliveryMethod(value) {
+        return typeof value === 'string'
+            ? value.trim().toLowerCase().replace(/^hb[-_]/, '').replace(/[^a-z0-9]/g, '')
+            : '';
+    }
+
+    function getNonSteamPlatformBadges({item, title, tile}) {
+        const type = item?.bundleType || item?.cta_badge?.badge || '';
+        if (/^coupons?$/i.test(type) || item?.cta_badge?.badge === 'coupon') {
+            return [{id: 'coupon', label: t('couponItem'), icon: 'other'}];
+        }
+        if (/^(misc|miscellaneous|extras?)$/i.test(type)) {
+            return [{id: 'misc', label: t('miscellaneousItem'), icon: 'other'}];
+        }
+        const methods = [
+            ...(Array.isArray(item?.deliveryMethods) ? item.deliveryMethods : []),
+            ...Object.entries(item?.availability_icons?.delivery_to_platform || {})
+                .filter(([, available]) => available).map(([method]) => method),
+            ...(Array.isArray(item?.tpkds) ? item.tpkds.map(key => key.key_type || key.key_type_human_name) : []),
+            ...Array.from(tile.querySelectorAll('[data-testid="platform-icons"] [aria-label]'))
+                .map(icon => icon.getAttribute('aria-label'))
+                .filter(label => deliveryPlatformAliases[normalizeDeliveryMethod(label)]),
+        ].flatMap(method => {
+            const normalized = normalizeDeliveryMethod(method);
+            if (!normalized || /^(windows|mac|macos|osx|linux|android|ios)$/.test(normalized)) return [];
+            return [{id: deliveryPlatformAliases[normalized] || normalized, label: method.trim()}];
+        });
+        const subscription = /^subscriptions?$/i.test(type);
+        if (!subscription && methods.some(method => method.id === 'steam')) return [];
+        if (subscription || (methods.length && /\bIGN\s*(?:Plus|Subscription)\b/i.test(title))) {
+            return /\bIGN\b/i.test(title)
+                ? [{id: 'ign', label: `IGN Plus · ${t('subscriptionItem')}`, icon: 'ign'}]
+                : [{id: 'subscription', label: t('subscriptionItem'), icon: 'other'}];
+        }
+        return [...new Map(methods.map(method => {
+            const [label, icon] = deliveryPlatformLabels[method.id]
+                || [method.id === 'download' ? t('drmFreeItem')
+                    : method.id === 'external' ? t('otherRedemption') : method.label, 'other'];
+            return [method.id, {id: method.id, label, icon}];
+        })).values()];
+    }
+
+    function getLegacyChoicePlatformRecords() {
+        if (!isChoicePage()) return [];
+        return choiceRegionSourceIds.flatMap(id => {
+            const source = document.getElementById(id);
+            if (!source) return [];
+            let data;
+            try {
+                data = JSON.parse(source.textContent)?.contentChoiceOptions?.contentChoiceData?.game_data;
+            } catch (_) {
+                return [];
+            }
+            if (!data || typeof data !== 'object') return [];
+            return (Array.isArray(data) ? data.map(game => [null, game])
+                : Array.isArray(data.tpkds) ? [[null, data]] : Object.entries(data))
+                .filter(([, game]) => game && typeof game === 'object');
+        });
+    }
+
+    function getNonSteamGameEntries() {
+        const items = getBundleItemsByTitle();
+        const choiceRecords = getLegacyChoicePlatformRecords();
+        const legacy = Array.from(document.querySelectorAll('.tier-item-view, .choice-content.js-open-choice-modal'))
+            .flatMap(tile => {
+                const heading = tile.querySelector('.item-title, .content-choice-title, .human-name-title');
+                const title = heading ? normalizedText(heading) : '';
+                if (!title) return [];
+                let item = items?.get(normalizeSteamTitle(title));
+                if (isChoicePage()) {
+                    const id = getChoiceTileId(tile).split(':').slice(1).join(':');
+                    const matches = choiceRecords.filter(([identifier, game]) => identifier === id
+                        || game.display_item_machine_name === id
+                        || normalizeSteamTitle(game.human_name || game.title || '') === normalizeSteamTitle(title));
+                    const unique = new Map(matches.map(([, game]) => [JSON.stringify([
+                        game.display_item_machine_name, game.deliveryMethods, game.availability_icons,
+                        game.tpkds?.map(key => key.key_type || key.key_type_human_name),
+                    ]), game]));
+                    if (unique.size === 1) item = unique.values().next().value;
+                }
+                return [{tile, title, item, heading, titleHost: heading}];
+            });
+        return [...getModernGameEntries().map(entry => {
+            const memberRow = entry.tile.querySelector('[data-testid="product-card-footer"] [class~="group/product-title"]');
+            const bundleTitle = entry.tile.querySelector('.line-clamp-2');
+            return {...entry, titleHost: memberRow || bundleTitle?.parentElement};
+        }), ...legacy];
+    }
+
+    function createPlatformBadges(badges) {
+        const group = document.createElement('span');
+        group.className = 'hb-helper-platform-badges';
+        group.dataset.hbHelperPlatforms = JSON.stringify(badges);
+        for (const {label, icon} of badges) {
+            const badge = document.createElement('span');
+            badge.className = 'hb-helper-platform-badge';
+            badge.title = label;
+            badge.setAttribute('role', 'img');
+            badge.setAttribute('aria-label', label);
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.setAttribute('aria-hidden', 'true');
+            svg.setAttribute('focusable', 'false');
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', platformIconPaths[icon]);
+            if (icon === 'other') {
+                path.setAttribute('fill', 'none');
+                path.setAttribute('stroke', 'currentColor');
+                path.setAttribute('stroke-width', '1.8');
+                path.setAttribute('stroke-linejoin', 'round');
+            }
+            svg.appendChild(path);
+            badge.appendChild(svg);
+            group.appendChild(badge);
+        }
+        return group;
+    }
+
+    function refreshNonSteamGameMarkers() {
+        const entries = isPriceTotalsPage() ? getNonSteamGameEntries() : [];
+        const markedTiles = new Set();
+        const desiredBadges = new Map();
+        for (const entry of entries) {
+            const badges = getNonSteamPlatformBadges(entry);
+            if (!badges.length) continue;
+            markedTiles.add(entry.tile);
+            if (canModifyHelperTarget(entry.tile)) {
+                entry.tile.classList.add('hb-helper-non-steam');
+                entry.tile.classList.remove('owned', 'wishlist');
+            }
+            if (entry.titleHost) desiredBadges.set(entry.titleHost, {badges, details: false});
+            const section = entry.tile.closest('section[aria-label="Media carousel"]');
+            if (!section) continue;
+            const headings = Array.from(section.parentElement.querySelectorAll('h3'))
+                .filter(heading => !section.contains(heading) && normalizedText(heading) === entry.title);
+            if (headings.length === 1 && entries.filter(other => other.title === entry.title).length === 1) {
+                desiredBadges.set(headings[0].parentElement, {badges, details: true});
+            }
+        }
+        document.querySelectorAll('.hb-helper-non-steam').forEach(tile => {
+            if (!markedTiles.has(tile) && canModifyHelperTarget(tile)) tile.classList.remove('hb-helper-non-steam');
+        });
+        document.querySelectorAll('.hb-helper-platform-badges').forEach(group => {
+            const host = group.parentElement;
+            if (desiredBadges.has(host) || !canModifyHelperTarget(host)) return;
+            group.remove();
+            host.classList.remove('hb-helper-platform-title-row', 'hb-helper-platform-title-details');
+        });
+        for (const [host, {badges, details}] of desiredBadges) {
+            if (!canModifyHelperTarget(host)) continue;
+            const previous = Array.from(host.children).find(child => child.classList.contains('hb-helper-platform-badges'));
+            host.classList.add(details ? 'hb-helper-platform-title-details' : 'hb-helper-platform-title-row');
+            if (previous?.dataset.hbHelperPlatforms === JSON.stringify(badges)) continue;
+            previous?.remove();
+            host.appendChild(createPlatformBadges(badges));
+        }
+    }
+
     function getBundleItemsByTitle() {
         if (!isGamesBundlePage()) return null;
         const dataElement = document.getElementById('webpack-bundle-page-data');
@@ -7705,12 +7966,12 @@
     }
 
     function isSteamBundleItem(item) {
+        if (/^(coupons?|subscriptions?|misc|miscellaneous|extras?)$/i.test(item.bundleType || '')
+            || item.cta_badge?.badge === 'coupon') return false;
         if (Array.isArray(item.deliveryMethods)) {
-            return !/^coupons?$/i.test(item.bundleType || '')
-                && item.deliveryMethods.includes('steam');
+            return item.deliveryMethods.includes('steam');
         }
-        return item.cta_badge?.badge !== 'coupon'
-            && Boolean(item.availability_icons?.delivery_to_platform?.['hb-steam']);
+        return Boolean(item.availability_icons?.delivery_to_platform?.['hb-steam']);
     }
 
     function shouldMatchSteamTitle(title) {
@@ -7740,7 +8001,7 @@
             '.tier-item-view .item-title, '
             + '.choice-content.js-open-choice-modal .content-choice-title'
         ))
-            .filter(title => title.getClientRects().length > 0)
+            .filter(title => title.getClientRects().length > 0 && !title.closest?.('.hb-helper-non-steam'))
             .map(title => title.textContent.trim())
             .filter(title => title && shouldMatchSteamTitle(title));
         const modernTitles = getModernGameEntries()
@@ -8026,6 +8287,10 @@
 
     async function markGame(viewEl, appSet, className, findApp = findSteamApp) {
         if (!canModifyHelperTarget(viewEl)) return;
+        if (viewEl.classList.contains('hb-helper-non-steam')) {
+            viewEl.classList.toggle(className, false);
+            return;
+        }
         const titleEl = viewEl.querySelector('.item-title, .content-choice-title');
         const modernEntry = titleEl ? null : getModernGameEntries().find(entry => entry.tile === viewEl);
         const title = titleEl?.textContent.trim() || modernEntry?.title;
@@ -8039,6 +8304,7 @@
         }
         const app = await findApp(title);
         if (!canModifyHelperTarget(viewEl)) return;
+        if (viewEl.classList.contains('hb-helper-non-steam')) return;
         if (modernEntry && !getModernGameEntries().some(entry =>
             entry.tile === viewEl && entry.title === title && isSteamBundleItem(entry.item))) return;
         viewEl.classList.toggle(className, Boolean(app && appSet.has(app.appid)));
@@ -8734,6 +9000,7 @@
             getBundleItemsByTitle,
             shouldMatchSteamTitle,
             markGame,
+            refreshNonSteamGameMarkersForTest: refreshNonSteamGameMarkers,
             ensureHelperControls,
             getDownloadsOrderKey,
             isDownloadsPage,

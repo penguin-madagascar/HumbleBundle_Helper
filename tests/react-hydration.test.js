@@ -203,3 +203,74 @@ test('hydration retries stop at the deadline and unrelated mutations do not rest
     window.dispatchEvent(new window.Event('pagehide'));
     assert.equal(timers.size, 0);
 });
+
+for (const delayed of [false, true]) {
+    test(`non-Steam member badges wait for React${delayed ? ' through delayed Suspense' : ''}`, async () => {
+        let available = true;
+        let release;
+        const suspended = new Promise(resolve => { release = resolve; });
+        function Inner() {
+            if (!available) throw suspended;
+            return content('member');
+        }
+        function Announcer() {
+            React.useEffect(() => {
+                const node = document.createElement('next-route-announcer');
+                document.body.appendChild(node);
+                return () => node.remove();
+            }, []);
+            return null;
+        }
+        function App() {
+            return h(React.Fragment, null,
+                h(React.Suspense, {fallback: h('p', null, 'Loading')}, h(Inner)), h(Announcer));
+        }
+        const {api, document, window} = loadUserscript({pathname: '/membership/home', html:
+            `${marker}<div id="root">${renderToString(h(App))}</div>${flightScript({
+                e: {subscriptionProducts: [{...product, deliveryMethods: ['blizzard']}]},
+            })}`});
+        global.window = window;
+        global.document = document;
+        global.navigator = {userAgent: 'Node'};
+        const {hydrateRoot} = require('react-dom/client');
+        const errors = [];
+        const card = document.querySelector('[data-testid="product-card"]');
+        const badge = () => card.querySelector('.hb-helper-platform-badges');
+        let root;
+        try {
+            api.refreshNonSteamGameMarkersForTest();
+            assert.equal(card.classList.contains('hb-helper-non-steam'), false);
+            assert.equal(badge(), null);
+            available = !delayed;
+            root = hydrateRoot(document.getElementById('root'), h(App), {
+                onRecoverableError: error => errors.push(error),
+                onUncaughtError: error => errors.push(error),
+            });
+            await waitFor(() => document.querySelector('next-route-announcer'));
+            if (delayed) {
+                api.refreshNonSteamGameMarkersForTest();
+                assert.equal(card.classList.contains('hb-helper-non-steam'), false);
+                assert.equal(badge(), null, 'a root commit cannot bypass an unhydrated title boundary');
+                available = true;
+                release();
+            }
+            await waitFor(() => {
+                api.refreshNonSteamGameMarkersForTest();
+                return badge();
+            });
+            assert.equal(card.classList.contains('hb-helper-non-steam'), true);
+            assert.equal(card.querySelector('.line-clamp-1').textContent, product.title);
+            assert.equal(badge().querySelector('[role="img"]').getAttribute('aria-label'), 'Battle.net');
+            root.render(h(App));
+            await tick();
+            api.refreshNonSteamGameMarkersForTest();
+            assert.equal(card.querySelectorAll('.hb-helper-platform-badges').length, 1);
+            root.render(h('main', null, 'Next route'));
+            await tick();
+            assert.deepEqual(errors, []);
+        } finally {
+            api.resetHelperHydrationForTest();
+            root?.unmount();
+        }
+    });
+}
