@@ -80,6 +80,8 @@ data.
 The script follows your browser language by default. Open the Tampermonkey
 script menu on a Humble Bundle page, choose `Settings` or `设置`, and change
 the language in the settings dialog.
+The settings dialog stays centered and uses a light background with dark text
+on both light and dark Humble pages.
 
 On redesigned game bundle pages, the controls appear above the game grid and
 the price totals follow the currently selected bundle tier. On redesigned
@@ -124,8 +126,10 @@ contexts.
 The price summary follows the active Bundle Filters. Its header shows the
 current all/unowned scope immediately before the existing `Show unowned` or
 `Show all` action. If every identified Steam item is owned, the unowned scope
-shows only `All items are owned` or `已全部拥有` below its header; the all-items
-scope keeps its normal totals and counts. During a same-page refresh, the prior
+shows only a centered, bold `🎉 All items are owned 🎉` or `🎉 已全部拥有 🎉`
+below its header while retaining the full price body's size, including when
+rows wrap on narrow screens. The all-items scope keeps its normal totals and
+counts. During a same-page refresh, the prior
 successful values and summary dimensions remain visible until the new result is
 ready to replace them atomically. If a background refresh fails, the previous
 totals remain and a localized warning appears beside the title. If an item
