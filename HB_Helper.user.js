@@ -1072,6 +1072,9 @@
     const communityAppSearchCache = new Map();
     const storeAppSearchCache = new Map();
     const steamAppMatchCache = new Map();
+    const librarySteamSearchConcurrency = 3;
+    let librarySteamSearchActive = 0;
+    const librarySteamSearchQueue = [];
     const priceHistoryCache = new Map();
     const exchangeRateCache = new Map();
     const choiceSelectionCacheKey = 'hb-helper-choice-selected-games-v1';
@@ -1332,7 +1335,7 @@
         'i'
     );
 
-    function searchSteamCommunity(keyword) {
+    function searchSteamCommunity(keyword, timeout) {
         if (communityAppSearchCache.has(keyword)) {
             return communityAppSearchCache.get(keyword);
         }
@@ -1342,6 +1345,7 @@
                 method: 'GET',
                 url: 'https://steamcommunity.com/actions/SearchApps/' + encodeURIComponent(keyword),
                 responseType: 'json',
+                ...(timeout ? {timeout, ontimeout: () => resolve([])} : {}),
                 onload: ({status, response}) => {
                     if (status === 200 && Array.isArray(response)) resolve(response);
                     else resolve([]);
@@ -1353,7 +1357,7 @@
         return request;
     }
 
-    function searchSteamStore(keyword) {
+    function searchSteamStore(keyword, timeout) {
         if (storeAppSearchCache.has(keyword)) return storeAppSearchCache.get(keyword);
 
         const params = new URLSearchParams({
@@ -1369,6 +1373,7 @@
                 method: 'GET',
                 url: `https://store.steampowered.com/search/suggest?${params}`,
                 responseType: 'text',
+                ...(timeout ? {timeout, ontimeout: () => resolve([])} : {}),
                 onload: ({status, response, responseText}) => {
                     if (status !== 200) {
                         resolve([]);
@@ -1407,10 +1412,28 @@
         const cacheKey = normalizeSteamTitle(title);
         if (steamAppMatchCache.has(cacheKey)) return steamAppMatchCache.get(cacheKey);
 
+        const librarySearch = getLibraryView().kind !== 'unsupported';
         const request = (async () => {
-            const storeMatch = findExactSteamApp(title, await searchSteamStore(title));
-            if (storeMatch) return storeMatch;
-            return findExactSteamApp(title, await searchSteamCommunity(title));
+            if (librarySearch) {
+                if (librarySteamSearchActive >= librarySteamSearchConcurrency) {
+                    await new Promise(resolve => librarySteamSearchQueue.push(resolve));
+                } else {
+                    librarySteamSearchActive += 1;
+                }
+            }
+            try {
+                const timeout = librarySearch ? gmRequestTimeoutMs : undefined;
+                const storeMatch = findExactSteamApp(title, await searchSteamStore(title, timeout));
+                if (storeMatch) return storeMatch;
+                return findExactSteamApp(title, await searchSteamCommunity(title, timeout));
+            } finally {
+                if (librarySearch) {
+                    const next = librarySteamSearchQueue.shift();
+                    // Transfer the occupied slot directly to the next queued lookup.
+                    if (next) next();
+                    else librarySteamSearchActive -= 1;
+                }
+            }
         })();
         request.then(() => schedulePageRefresh(), () => schedulePageRefresh());
         steamAppMatchCache.set(cacheKey, request);
