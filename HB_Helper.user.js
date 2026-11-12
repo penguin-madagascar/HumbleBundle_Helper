@@ -1740,6 +1740,82 @@
         return getDownloadsOrderKey() !== null;
     }
 
+    // Read-only view descriptors; route UUIDs are not entitlement or key-slot identities.
+    function getLibraryView() {
+        const unsupported = {kind: 'unsupported', routeId: null, heading: null, form: null, featuredRegion: null};
+        const route = location.pathname.match(/^\/home\/library(?:\/(content\/)?([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}))?\/?$/i);
+        const main = document.querySelector('main, [role="main"]');
+        if (!route || !main) return unsupported;
+        if (route[2]) {
+            const heading = Array.from(main.querySelectorAll('h1')).find(node => !node.closest('aside, nav')) || null;
+            return {kind: route[1] ? 'content' : 'bundle', routeId: route[2], heading, form: null, featuredRegion: null};
+        }
+        const tablist = Array.from(main.querySelectorAll('[role="tablist"]')).find(node =>
+            !node.closest('aside, nav') && node.nextElementSibling?.tagName === 'FORM'
+        );
+        const selected = tablist?.querySelectorAll('[role="tab"][aria-selected="true"]');
+        if (selected?.length !== 1) return unsupported;
+        const label = normalizedText(selected[0]);
+        if (!['Purchased', 'Bundles', 'Vault'].includes(label)) return unsupported;
+        const kind = label.toLowerCase();
+        const heading = Array.from(main.querySelectorAll('h2')).find(node =>
+            !node.closest('aside, nav') && ['您的游戏库', 'Your Library'].includes(normalizedText(node))
+        ) || null;
+        const featuredRegion = heading ? Array.from(main.querySelectorAll('[role="region"][aria-label]')).find(node =>
+            node.getAttribute('aria-label') === normalizedText(heading) && !node.closest('aside, nav')
+        ) || null : null;
+        return {kind, routeId: null, heading, form: tablist.nextElementSibling, featuredRegion};
+    }
+
+    function getLibraryDomEntries() {
+        const view = getLibraryView();
+        if (!['purchased', 'bundle', 'content'].includes(view.kind)) return [];
+        const entries = [];
+        if (view.kind === 'purchased' && view.featuredRegion) {
+            for (const card of view.featuredRegion.querySelectorAll('[role="group"] > button > [data-testid="product-card"]')) {
+                const footer = card.querySelector('[data-testid="product-card-footer"]');
+                const titleElement = footer?.firstElementChild?.firstElementChild?.firstElementChild
+                    || footer?.querySelector('.line-clamp-1');
+                const title = titleElement ? normalizedText(titleElement) : '';
+                const actionHost = card.closest('[role="group"]');
+                if (title && card.querySelector('img')
+                    && actionHost && !actionHost.closest('a, button')) {
+                    entries.push({element: card, titleElement, title, platformLabels: [], actionHost});
+                }
+            }
+        }
+        const root = view.kind === 'purchased' ? view.form : document.querySelector('main, [role="main"]');
+        if (!root || (view.kind !== 'purchased' && !view.heading)) return entries;
+        for (const element of root.querySelectorAll('div.flex.flex-col.border-0')) {
+            if (element.closest('aside, nav') || (view.form && element.closest('form') !== view.form)) continue;
+            const header = element.firstElementChild;
+            if (!header || !header.nextElementSibling?.matches('div.overflow-hidden')) continue;
+            let routeContentId;
+            if (view.kind === 'purchased') {
+                const link = header.tagName === 'A' && header.getAttribute('href')?.match(/^\/home\/library\/content\/([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})$/i);
+                if (!link) continue;
+                routeContentId = link[1];
+            } else {
+                if (!header.matches('div.flex.flex-wrap.items-center.justify-between')
+                    || header.querySelectorAll(':scope > div:last-child > button').length !== 2) continue;
+            }
+            const titleColumn = header.querySelector('div.flex.flex-1.flex-col.justify-center');
+            const titleElement = titleColumn?.firstElementChild;
+            const title = titleElement ? normalizedText(titleElement) : '';
+            if (!title || titleElement.tagName !== 'DIV') continue;
+            const platformLabels = [...new Set(Array.from(titleColumn.parentElement.children)
+                .filter(node => node !== titleColumn)
+                .flatMap(node => [node, ...node.querySelectorAll('[aria-label]')])
+                .map(node => node.getAttribute('aria-label')?.trim()).filter(Boolean))];
+            const actionHost = view.kind === 'purchased' ? element : titleColumn;
+            if (actionHost.closest('a, button')) continue;
+            entries.push({element, titleElement, title, platformLabels, actionHost,
+                ...(routeContentId ? {routeContentId} : {})});
+        }
+        if (view.kind === 'content' && entries.length === 1) entries[0].routeContentId = view.routeId;
+        return entries;
+    }
+
     function isPriceTotalsPage() {
         return isGamesBundlePage() || isChoicePage();
     }
@@ -9109,6 +9185,8 @@
             ensureHelperControls,
             getDownloadsOrderKey,
             isDownloadsPage,
+            getLibraryView,
+            getLibraryDomEntries,
             getHelperPageMode,
             isPriceTotalsPageForTest: isPriceTotalsPage,
             validateDownloadOrder,
