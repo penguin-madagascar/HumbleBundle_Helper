@@ -322,7 +322,7 @@ uses controlled tests rather than live Humble or Steam activation.
 - Xiaoheihe provides Steam regional price history.
 - [Frankfurter](https://frankfurter.dev/) provides exchange rates when Steam
   and Humble Bundle use different currencies.
-- Embedded Battle.net, Epic Games, GOG, and IGN SVG paths come from
+- Embedded Steam, Battle.net, Epic Games, GOG, and IGN SVG paths come from
   [Simple Icons](https://github.com/simple-icons/simple-icons), whose project
   is released under [CC0](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md).
 
