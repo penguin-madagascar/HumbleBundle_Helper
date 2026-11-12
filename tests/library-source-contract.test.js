@@ -172,17 +172,17 @@ test('rejects HTML, JSON, non-JavaScript types, invalid final URLs and failed re
     assert.ok(!JSON.stringify(result).includes('PRIVATE_'));
 });
 
-test('bounds requests to twenty and concurrency to two', async () => {
+test('bounds requests to sixty and concurrency to two', async () => {
     let active = 0, maxActive = 0, calls = 0;
-    const result = await collect(page(Array.from({length: 30}, (_, index) => `/assets/${index}.js`)), async () => {
+    const result = await collect(page(Array.from({length: 70}, (_, index) => `/assets/${index}.js`)), async () => {
         calls++; active++; maxActive = Math.max(maxActive, active);
         await new Promise(resolve => setImmediate(resolve));
         active--;
         return response();
     });
-    assert.equal(calls, 20);
+    assert.equal(calls, 60);
     assert.equal(maxActive, 2);
-    assert.equal(result.assetPaths.length, 20);
+    assert.equal(result.assetPaths.length, 60);
     assert.ok(result.candidates.length <= 10);
     assert.ok(result.candidates.every(item => !('source' in item)));
     assert.ok(JSON.stringify(result).length <= 14000);
@@ -245,7 +245,25 @@ test('console entry point performs only the bounded scan and logs one compact re
     vm.runInNewContext(fs.readFileSync(probePath, 'utf8'), context);
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(logs.length, 1);
-    assert.equal(JSON.parse(logs[0]).candidates.length, 1);
+    const report = JSON.parse(logs[0]);
+    assert.equal(report.candidates.length, 1);
+    assert.equal(report.schemaVersion, 3);
+    assert.ok(!('assetPaths' in report));
+    assert.deepEqual(report.assetStates, []);
+});
+
+test('console output preserves only non-inspected anonymous asset states', async () => {
+    const logs = [];
+    const context = {document: page(['/assets/a.js', '/assets/b.js']), location, URL, TextDecoder,
+        console: {log: value => logs.push(value)}, fetch: async url => response(url.endsWith('/a.js') ? 'PRIVATE_HTML' : transport,
+            url.endsWith('/a.js') ? {headers: {'content-type': 'text/html'}} : {})};
+    vm.runInNewContext(fs.readFileSync(probePath, 'utf8'), context);
+    await new Promise(resolve => setImmediate(resolve));
+    const report = JSON.parse(logs[0]);
+    assert.equal(report.stats.inspected, 1);
+    assert.deepEqual(report.assetStates, [{assetPath: '/assets/[asset-2].js', state: 'mime-rejected'}]);
+    assert.ok(!('assetPaths' in report));
+    assert.ok(!logs[0].includes('PRIVATE_'));
 });
 
 test('reports anonymous scan coverage and distinguishes rejection from an inspected empty asset', async () => {
@@ -257,25 +275,39 @@ test('reports anonymous scan coverage and distinguishes rejection from an inspec
         if (value instanceof Error) throw value;
         return value;
     });
-    assert.equal(result.schemaVersion, 2);
+    assert.equal(result.schemaVersion, 3);
     assert.deepEqual(result.stats, {eligible: 6, selected: 6, attempted: 6, inspected: 1, omitted: 0, byteBudgetReached: false});
     assert.deepEqual(result.assetStates.map(item => item.state), ['inspected', 'mime-rejected', 'http-rejected', 'html-rejected', 'json-rejected', 'request-failed']);
     assert.ok(result.assetStates.every((item, index) => item.assetPath === result.assetPaths[index]));
     assert.ok(!JSON.stringify(result).includes('PRIVATE_'));
 });
 
-test('prioritizes the last twenty eligible assets and reports omitted inventory', async () => {
+test('prioritizes the last sixty eligible assets and reports omitted inventory', async () => {
     const requests = [];
-    const result = await collect(page(Array.from({length: 21}, (_, index) => `/assets/${index}.js`)), async url => {
+    const result = await collect(page(Array.from({length: 70}, (_, index) => `/assets/${index}.js`)), async url => {
         requests.push(url);
-        return response(url.endsWith('/20.js') ? transport : 'const plain=1;');
+        return response(url.endsWith('/69.js') ? transport : 'const plain=1;');
     });
-    assert.equal(requests.length, 20);
+    assert.equal(requests.length, 60);
     assert.ok(!requests.some(url => url.endsWith('/0.js')));
-    assert.ok(requests.some(url => url.endsWith('/20.js')));
-    assert.ok(requests[0].endsWith('/20.js'));
+    assert.ok(requests.some(url => url.endsWith('/69.js')));
+    assert.ok(requests[0].endsWith('/69.js'));
     assert.equal(result.candidates.length, 1);
-    assert.deepEqual(result.stats, {eligible: 21, selected: 20, attempted: 20, inspected: 20, omitted: 1, byteBudgetReached: false});
+    assert.deepEqual(result.stats, {eligible: 70, selected: 60, attempted: 60, inspected: 60, omitted: 10, byteBudgetReached: false});
+});
+
+test('covers all forty-three eligible assets without omitting an early route contract', async () => {
+    const requests = [];
+    const result = await collect(page(Array.from({length: 43}, (_, index) => `/assets/${index}.js`)), async url => {
+        requests.push(url);
+        return response(url.endsWith('/0.js') ? transport : 'const plain=1;');
+    });
+    assert.equal(requests.length, 43);
+    assert.ok(requests[0].endsWith('/42.js'));
+    assert.ok(requests.at(-1).endsWith('/0.js'));
+    assert.equal(result.candidates.length, 1);
+    assert.deepEqual(result.stats, {eligible: 43, selected: 43, attempted: 43, inspected: 43, omitted: 0, byteBudgetReached: false});
+    assert.ok(result.assetStates.every(item => item.state === 'inspected'));
 });
 
 test('allows valid array or block JavaScript prefixes while rejecting actual JSON', async () => {
@@ -297,7 +329,7 @@ test('counts fixed server-action framework signals without emitting action ident
 
 test('reports empty inventory, URL rejection, missing readers, read failures and byte-budget truncation safely', async () => {
     const empty = await collect(page(['/outside.js']), () => { throw new Error('must not request'); });
-    assert.equal(empty.schemaVersion, 2);
+    assert.equal(empty.schemaVersion, 3);
     assert.deepEqual(empty.stats, {eligible: 0, selected: 0, attempted: 0, inspected: 0, omitted: 0, byteBudgetReached: false});
     const redirect = response();
     Object.defineProperty(redirect, 'url', {value: 'https://www.humblebundle.com/login'});

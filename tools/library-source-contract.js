@@ -1,5 +1,5 @@
 /* Paste into the Library console to GET already loaded public static JavaScript.
- * Last 20 eligible assets first, two requests at once, 4 MiB each / 8 MiB total.
+ * Last 60 eligible assets first, two requests at once, 4 MiB each / 8 MiB total.
  * Reads external script src attributes only, never inline scripts, page state,
  * storage, cookies or handlers. Source is inspected as text and never executed.
  * Prints only allowlisted contract vocabulary, never raw source or unknown values.
@@ -23,9 +23,9 @@
         };
         const eligible = [...new Map(Array.from(document.scripts || [], script => assetURL(script.getAttribute('src')))
             .filter(Boolean).map(url => [url.href, url])).values()];
-        const assets = eligible.slice(-20).reverse();
+        const assets = eligible.slice(-60).reverse();
         const assetPaths = assets.map((url, index) => `${url.pathname.startsWith('/_next/static/') ? '/_next/static/' : '/assets/'}[asset-${index + 1}].${/\.mjs$/i.test(url.pathname) ? 'mjs' : 'js'}`);
-        const report = {schemaVersion: 2, assetPaths,
+        const report = {schemaVersion: 3, assetPaths,
             assetStates: assetPaths.map(assetPath => ({assetPath, state: 'budget-skipped'})),
             stats: {eligible: eligible.length, selected: assets.length, attempted: 0,
                 inspected: 0, omitted: eligible.length - assets.length, byteBudgetReached: false},
@@ -163,6 +163,7 @@
         return report;
     }
     if (typeof module === 'object' && module.exports) module.exports = {collectLibrarySourceContract};
-    else collectLibrarySourceContract(document, location, fetch).then(report => console.log(JSON.stringify(report)),
-        () => console.log(JSON.stringify({assetPaths: [], reason: 'static source scan failed'})));
+    else collectLibrarySourceContract(document, location, fetch).then(({assetPaths, assetStates, ...report}) =>
+        console.log(JSON.stringify({...report, assetStates: assetStates.filter(item => item.state !== 'inspected')})),
+        () => console.log(JSON.stringify({schemaVersion: 3, reason: 'static source scan failed'})));
 })();
