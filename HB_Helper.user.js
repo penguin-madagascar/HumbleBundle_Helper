@@ -2978,7 +2978,9 @@
 
     function canModifyHelperTarget(target) {
         if (!target) return false;
-        if (!document.querySelector('script[src*="/_next/"]')) return true;
+        const reactPage = document.querySelector('script[src*="/_next/"]')
+            || (getLibraryView().kind !== 'unsupported' && document.querySelector('script[src]'));
+        if (!reactPage) return true;
         if (!target.isConnected) return false;
         if (hydratedHelperTargets.has(target)) return true;
         if (isCommittedReactHost(target)) {

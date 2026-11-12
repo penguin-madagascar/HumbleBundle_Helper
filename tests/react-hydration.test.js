@@ -90,7 +90,7 @@ for (const kind of ['bundle', 'landing', 'member', 'carousel', 'library']) {
             const pathname = kind === 'landing' ? '/games' : kind === 'member' ? '/membership/home'
                 : kind === 'carousel' ? '/membership' : kind === 'library' ? `/home/library/${libraryBundleId}` : '/games/test';
             const page = loadUserscript({pathname,
-                html: `${marker}<div id="root">${renderToString(h(App))}</div>${flightScript({e: metadata})}`});
+                html: `${kind === 'library' ? '<script src="/assets/library-client.js"></script>' : marker}<div id="root">${renderToString(h(App))}</div>${flightScript({e: metadata})}`});
             const {api, document, window} = page;
             global.window = window;
             global.document = document;
