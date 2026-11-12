@@ -162,10 +162,10 @@ omitted instead of assuming a currency.
 ### Humble Choice activation
 
 The redesigned public Choice carousel and authenticated member grid support
-highlights, price totals, and Steam links. The new Library redemption flow is
-not yet supported; the helper only shows activation controls on the older
-Choice redemption tiles described
-below. Purchased order activation still uses `/downloads?key=...`.
+highlights, price totals, and Steam links. Choice activation controls remain
+limited to the older redemption tiles described below. New Library support is
+described separately below. Purchased order activation also remains available
+through `/downloads?key=...`.
 
 On Humble Choice, use `Select` or `选择` to enter selection mode. In that mode,
 clicking a game tile toggles whether it is selected instead of opening the
@@ -198,6 +198,44 @@ successful by the previous completed batch and retries the failed slots without
 retaining the successful key text. After each completed batch, the script
 synchronizes Steam ownership and wishlist data so highlights, selection, and
 price totals reflect the latest account state.
+
+### Redesigned Library
+
+The helper recognizes Purchased, bundle details, and individual content details
+under `/home/library`. Purchased has selection and activation controls below
+the Library heading, including eligible entries in the featured Choice block.
+Bundle and content details also show Steam price totals, other platforms,
+SteamGifts region discussions, and native key disclaimers. Missing region data
+is labelled as not provided. Owned, wishlisted, and non-Steam indicators and
+independent Steam links follow the verified delivery platform.
+
+Selections exist only in memory and clear when navigating, switching tabs,
+searching, filtering, sorting, or changing pagination. Duplicate appearances of
+the same purchased entitlement share a selection; separate purchases keep
+separate identities even when they deliver the same Steam app. Public Choice
+product metadata alone does not establish a claimable entitlement.
+
+Activation starts only after an explicit click. It freezes the selected key
+slots, verifies the current Humble and Steam accounts before collection and
+each Steam submission, and reuses the existing global batch locks. Native
+bundle/content rows with the verified `兑换` action can reveal eligible Steam
+keys. Purchased activation currently requires already revealed keys: an
+unrevealed entry asks you to reveal it in the original game details and retry.
+Multi-key entries run as one batch, with successful slots skipped on retry.
+Selection clears only after all selected Steam slots for that purchase succeed.
+
+Account or view changes stop subsequent submissions; an in-flight result is
+recorded when known. Interrupted Library batches never resume automatically.
+Result details and copying failed keys require the matching account context.
+Humble identity uses an in-memory hash of the verified primary email setting;
+the email itself is not logged or stored. Identity verification failure disables
+activation.
+
+Custom page sizes remain unavailable until the native pagination contract is
+confirmed. The helper does not hide or rebuild native lists to simulate a page
+size. Purchased unrevealed-key requests and automatic platform selection are
+not implemented. Automated tests simulate reveal and activation responses;
+live account and redemption behavior still needs browser verification.
 
 ### Bundle download activation
 
