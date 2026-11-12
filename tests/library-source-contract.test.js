@@ -13,6 +13,30 @@ const response = (body = transport, options = {}) => new Response(body, {
 });
 const collect = (document, fetchAsset) => require(probePath).collectLibrarySourceContract(document, location, fetchAsset);
 
+test('includes compiled Library route chunks while rejecting private routes outside that static shape', async () => {
+    const allowed = [
+        '/_next/static/chunks/app/home/library/page-abc12345.js',
+        '/_next/static/chunks/app/home/library/content/%5BcontentId%5D/page-def67890.js',
+        '/_next/static/chunks/app/home/library/[id]/layout-abcdef12.js',
+    ];
+    const denied = [
+        '/home/library/page-abc12345.js', '/assets/home/library/page-abc12345.js',
+        '/_next/static/chunks/app/user/settings/page-abc12345.js',
+        '/_next/static/chunks/app/home/library/user/page-abc12345.js',
+        '/_next/static/chunks/app/home/library/page-abc12345.js?token=PRIVATE_QUERY',
+    ];
+    const requests = [];
+    const result = await collect(page([...allowed, ...denied]), async url => {
+        requests.push(new URL(url).pathname);
+        return response();
+    });
+    assert.deepEqual(requests.sort(), allowed.slice().sort());
+    assert.equal(result.stats.eligible, allowed.length);
+    assert.equal(result.stats.inspected, allowed.length);
+    assert.ok(!JSON.stringify(result).includes('contentId%5D'));
+    assert.ok(result.assetPaths.every(value => /^\/_next\/static\/\[asset-\d+\]\.js$/.test(value)));
+});
+
 test('reads only existing verified static scripts and emits a bounded contract skeleton', async () => {
     const sources = [null, '', '/assets/client.js?v=PUBLIC_BUILD', '/_next/static/chunks/library.mjs',
         '/api/library.js', '/home/library.js', '/public/client.js', '/ASSETS/a.js', 'https://other.test/assets/a.js',
@@ -23,7 +47,7 @@ test('reads only existing verified static scripts and emits a bounded contract s
         requests.push([url, options]);
         return response(url.includes('client') ? transport : 'const claimKey=(id)=>api.request({url:"/api/keys/claim",method:"POST",data:{id}});');
     });
-    assert.deepEqual(result.assetPaths, ['/assets/[asset-1].js', '/_next/static/[asset-2].mjs']);
+    assert.deepEqual(result.assetPaths, ['/_next/static/[asset-1].mjs', '/assets/[asset-2].js']);
     assert.equal(requests.length, 2);
     for (const [, options] of requests) assert.deepEqual(options, {method: 'GET', cache: 'force-cache', credentials: 'same-origin', redirect: 'error'});
     assert.ok(result.candidates.some(item => item.hint === 'redeemKey' && item.fields.includes('entitlementId') && item.fields.includes('contentId')));
@@ -56,7 +80,8 @@ test('finds named domain transports with relative endpoint fragments and a separ
         'function revealKey(id){return client.post("keys/"+id+"/reveal",{id})}',
         'const translations={redemption:"/entitlements/redemption"};function unrelated(id){return client.post("/entitlements/redemption",{id})}'];
     const result = await collect(page(bodies.map((_, index) => `/assets/${index}.js`)), async () => response(bodies.shift()));
-    assert.deepEqual(result.candidates.map(item => item.hint).sort(), ['claimKey', 'redeemEntitlement', 'revealKey']);
+    assert.deepEqual(result.candidates.filter(item => item.hint !== 'redemption-transport').map(item => item.hint).sort(), ['claimKey', 'redeemEntitlement', 'revealKey']);
+    assert.ok(result.candidates.some(item => item.hint === 'redemption-transport' && item.paths.includes('/entitlements/redemption')));
     assert.ok(result.candidates.some(item => item.paths.includes('/entitlements/') && item.paths.includes('/redeem')));
     assert.ok(result.candidates.some(item => item.fields.includes('keySlotId')));
     assert.ok(JSON.stringify(result).length <= 14000);
@@ -194,9 +219,9 @@ test('never reads inline script text, page state, account data, cookies, storage
     for (const script of document.scripts) Object.defineProperty(script, 'textContent', {get() { throw new Error('read inline'); }});
     const result = await collect(document, async () => response(transport));
     assert.equal(result.candidates.length, 1);
-    assert.deepEqual(await collect(page([null, '/unknown/a.js']), () => { throw new Error('request attempted'); }), {
-        assetPaths: [], reason: 'no verified static asset URLs',
-    });
+    const empty = await collect(page([null, '/unknown/a.js']), () => { throw new Error('request attempted'); });
+    assert.deepEqual(empty.assetPaths, []);
+    assert.equal(empty.reason, 'no verified static asset URLs');
 });
 
 test('console entry point performs only the bounded scan and logs one compact report', async () => {
@@ -208,4 +233,108 @@ test('console entry point performs only the bounded scan and logs one compact re
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(logs.length, 1);
     assert.equal(JSON.parse(logs[0]).candidates.length, 1);
+});
+
+test('reports anonymous scan coverage and distinguishes rejection from an inspected empty asset', async () => {
+    const bodies = [response('const plain=1;'), response('PRIVATE_HTML', {headers: {'content-type': 'text/html'}}),
+        response(transport, {status: 403}), response('<html>PRIVATE_LOGIN</html>'), response('{"private":"PRIVATE_JSON"}'),
+        new Error('PRIVATE_FETCH')];
+    const result = await collect(page(bodies.map((_, index) => `/assets/${index}.js`)), async () => {
+        const value = bodies.shift();
+        if (value instanceof Error) throw value;
+        return value;
+    });
+    assert.equal(result.schemaVersion, 2);
+    assert.deepEqual(result.stats, {eligible: 6, selected: 6, attempted: 6, inspected: 1, omitted: 0, byteBudgetReached: false});
+    assert.deepEqual(result.assetStates.map(item => item.state), ['inspected', 'mime-rejected', 'http-rejected', 'html-rejected', 'json-rejected', 'request-failed']);
+    assert.ok(result.assetStates.every((item, index) => item.assetPath === result.assetPaths[index]));
+    assert.ok(!JSON.stringify(result).includes('PRIVATE_'));
+});
+
+test('prioritizes the last twenty eligible assets and reports omitted inventory', async () => {
+    const requests = [];
+    const result = await collect(page(Array.from({length: 21}, (_, index) => `/assets/${index}.js`)), async url => {
+        requests.push(url);
+        return response(url.endsWith('/20.js') ? transport : 'const plain=1;');
+    });
+    assert.equal(requests.length, 20);
+    assert.ok(!requests.some(url => url.endsWith('/0.js')));
+    assert.ok(requests.some(url => url.endsWith('/20.js')));
+    assert.ok(requests[0].endsWith('/20.js'));
+    assert.equal(result.candidates.length, 1);
+    assert.deepEqual(result.stats, {eligible: 21, selected: 20, attempted: 20, inspected: 20, omitted: 1, byteBudgetReached: false});
+});
+
+test('allows valid array or block JavaScript prefixes while rejecting actual JSON', async () => {
+    const bodies = ['[globalThis].forEach(()=>{' + transport + '});', '{' + transport + '}',
+        '[{"redeemKey":"PRIVATE_JSON"}]'];
+    const result = await collect(page(bodies.map((_, index) => `/assets/${index}.js`)), async () => response(bodies.shift()));
+    assert.equal(result.candidates.length, 2);
+    assert.deepEqual(result.assetStates.map(item => item.state), ['inspected', 'inspected', 'json-rejected']);
+});
+
+test('counts fixed server-action framework signals without emitting action identities or claiming a redemption contract', async () => {
+    const source = 'const n=(0,t.createServerReference)("PRIVATE_ACTION_ID",u.callServer,void 0,u.findSourceMapURL,"redeemKey");'
+        + 'const m=t["createServerReference"]("PRIVATE_OTHER_ID",u["callServer"]);';
+    const result = await collect(page(['/assets/actions.js']), async () => response(source));
+    assert.deepEqual(result.frameworkSignals, {createServerReference: 2, callServer: 2});
+    assert.deepEqual(result.candidates, []);
+    assert.ok(!JSON.stringify(result).includes('PRIVATE_'));
+});
+
+test('reports empty inventory, URL rejection, missing readers, read failures and byte-budget truncation safely', async () => {
+    const empty = await collect(page(['/outside.js']), () => { throw new Error('must not request'); });
+    assert.equal(empty.schemaVersion, 2);
+    assert.deepEqual(empty.stats, {eligible: 0, selected: 0, attempted: 0, inspected: 0, omitted: 0, byteBudgetReached: false});
+    const redirect = response();
+    Object.defineProperty(redirect, 'url', {value: 'https://www.humblebundle.com/login'});
+    const noReader = response();
+    Object.defineProperty(noReader, 'body', {value: null});
+    const unreadable = response(new ReadableStream({pull(controller) { controller.error(new Error('PRIVATE_READ')); }}));
+    const oversized = response(transport, {headers: {'content-type': 'application/javascript', 'content-length': String(4 * 1024 * 1024 + 1)}});
+    const values = [redirect, noReader, unreadable, oversized];
+    const report = await collect(page(values.map((_, index) => `/assets/${index}.js`)), async () => values.shift());
+    assert.deepEqual(report.assetStates.map(item => item.state), ['url-rejected', 'read-unavailable', 'read-failed', 'asset-limit']);
+    const large = () => new ReadableStream({pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024).fill(32)); }});
+    const truncated = await collect(page(Array.from({length: 5}, (_, index) => `/assets/${index}.js`)), async () => response(large()));
+    assert.equal(truncated.stats.byteBudgetReached, true);
+    assert.ok(truncated.assetStates.some(item => item.state === 'byte-budget'));
+    assert.ok(truncated.assetStates.some(item => item.state === 'budget-skipped'));
+    assert.ok(!truncated.assetStates.some(item => item.state === 'read-failed'));
+    assert.ok(!JSON.stringify(report).includes('PRIVATE_'));
+});
+
+test('finds minified relative redemption transports and template static path fragments only', async () => {
+    const bodies = [
+        'function n(e){return t.post("/entitlements/"+e+"/redeem",{entitlementId:e})}',
+        'function n(e){return fetch(`/api/keys/${PRIVATE_DYNAMIC_TOKEN}/redeem`,{method:"POST",body:JSON.stringify({entitlementId:e})})}',
+        'function n(e){return fetch(`/api/PRIVATE_STATIC/${e}/claim`,{method:"POST"})}',
+    ];
+    const result = await collect(page(bodies.map((_, index) => `/assets/${index}.js`)), async () => response(bodies.shift()));
+    assert.ok(result.candidates.some(item => item.paths.includes('/entitlements/') && item.paths.includes('/redeem')));
+    assert.ok(result.candidates.some(item => item.paths.includes('/api/keys/') && item.paths.includes('/redeem')));
+    assert.ok(!JSON.stringify(result).includes('PRIVATE_'));
+});
+
+test('recognizes snake-case and quoted page-size parameters beside minified routing code', async () => {
+    const bodies = ['const per_page=20;function p(){router.push({query:{per_page}})}',
+        'function n(e){const t=new URLSearchParams;t.set("pageSize",String(e));r.push("?"+t)}',
+        'function n(e){const t=new URLSearchParams;t.set("page_size",String(e));r.replace("?"+t)}'];
+    const result = await collect(page(bodies.map((_, index) => `/assets/${index}.js`)), async () => response(bodies.shift()));
+    const parameters = result.candidates.filter(item => item.hint === 'pagination').flatMap(item => item.parameters);
+    assert.ok(['per_page', 'pageSize', 'page_size'].every(name => parameters.includes(name)));
+});
+
+test('reports a byte budget exhausted before another fetch returns as budget truncation', async () => {
+    let release;
+    let cancellations = 0;
+    const delayed = new Promise(resolve => { release = resolve; });
+    const unlimited = () => new ReadableStream({pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024).fill(32)); }, cancel() { if (++cancellations === 2) release(); }});
+    let calls = 0;
+    const result = await collect(page(['/assets/0.js', '/assets/1.js', '/assets/2.js']), async () => {
+        if (calls++ === 0) { await delayed; return response('const plain=1;'); }
+        return response(unlimited());
+    });
+    assert.equal(result.stats.byteBudgetReached, true);
+    assert.ok(!result.assetStates.some(item => item.state === 'read-failed'));
 });

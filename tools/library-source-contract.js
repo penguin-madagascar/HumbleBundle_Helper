@@ -1,5 +1,5 @@
 /* Paste into the Library console to GET already loaded public static JavaScript.
- * At most 20 assets, two requests at once, 4 MiB each / 8 MiB total; cache preferred.
+ * Last 20 eligible assets first, two requests at once, 4 MiB each / 8 MiB total.
  * Reads external script src attributes only, never inline scripts, page state,
  * storage, cookies or handlers. Source is inspected as text and never executed.
  * Prints only allowlisted contract vocabulary, never raw source or unknown values.
@@ -13,16 +13,23 @@
             try {
                 if (!value) return null;
                 const url = new URL(value, location.href), decoded = decodeURIComponent(url.pathname);
+                const libraryChunk = /^\/_next\/static\/chunks\/app\/home\/library(?:\/(?:content|\[(?:id|contentId|bundleId)\]))*\/(?:page|layout|loading|error|not-found)(?:-[a-z\d]{8,64})?\.m?js$/.test(decoded);
+                const privateCandidate = libraryChunk ? decoded.slice('/_next/static/chunks/app/home/library'.length) : decoded;
                 return url.origin === location.origin && /^https?:$/.test(url.protocol) && !url.username && !url.password
                     && /^\/(?:_next\/static|assets)\//.test(url.pathname) && /\.m?js$/i.test(url.pathname) && url.pathname.length <= 256
-                    && !privatePath.test(decoded) && !/token|secret|session|auth|email|user|account/i.test(url.search) ? url : null;
+                    && !privatePath.test(privateCandidate) && !/token|secret|session|auth|email|user|account/i.test(url.search) ? url : null;
             } catch (_) { return null; }
         };
-        const assets = [...new Map(Array.from(document.scripts || [], script => assetURL(script.getAttribute('src')))
-            .filter(Boolean).map(url => [url.href, url])).values()].slice(0, 20);
-        if (!assets.length) return {assetPaths: [], reason: 'no verified static asset URLs'};
+        const eligible = [...new Map(Array.from(document.scripts || [], script => assetURL(script.getAttribute('src')))
+            .filter(Boolean).map(url => [url.href, url])).values()];
+        const assets = eligible.slice(-20).reverse();
         const assetPaths = assets.map((url, index) => `${url.pathname.startsWith('/_next/static/') ? '/_next/static/' : '/assets/'}[asset-${index + 1}].${/\.mjs$/i.test(url.pathname) ? 'mjs' : 'js'}`);
-        const report = {assetPaths, candidates: []};
+        const report = {schemaVersion: 2, assetPaths,
+            assetStates: assetPaths.map(assetPath => ({assetPath, state: 'budget-skipped'})),
+            stats: {eligible: eligible.length, selected: assets.length, attempted: 0,
+                inspected: 0, omitted: eligible.length - assets.length, byteBudgetReached: false},
+            frameworkSignals: {createServerReference: 0, callServer: 0}, candidates: []};
+        if (!assets.length) return {...report, reason: 'no verified static asset URLs'};
         // This lightweight mask only finds candidates. No unknown lexer token or
         // raw source slice can reach output, including ambiguous regex literals.
         const lexical = /"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`|\/\*[\s\S]*?\*\/|\/\/[^\n\r]*/g;
@@ -33,19 +40,34 @@
         const fieldNames = ['id', 'contentId', 'entitlementId', 'entitlementIds', 'keySlotId', 'keyId', 'keyIntegrationId', 'redemptionGroupId', 'redemptionId', 'productId', 'bundleId', 'platform', 'type'];
         const pageNames = ['page', 'pageSize', 'perPage', 'itemsPerPage', 'supportedPageSizes', 'page_size', 'per_page', 'limit', 'offset', 'pageIndex'];
         const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
+        const frameworkNames = ['createServerReference', 'callServer'];
         const unique = values => [...new Set(values)];
         const namesIn = (code, names) => names.filter(name => new RegExp(`\\b${name}\\b`).test(code));
         const inspect = (source, assetPath) => {
-            if (/^\s*[<\[{]/.test(source) || /^\s*(?:<!doctype|<html)/i.test(source)) return;
+            if (/^\s*</.test(source)) return 'html-rejected';
+            if (/^\s*[\[{]/.test(source)) {
+                try { JSON.parse(source); return 'json-rejected'; } catch (_) { /* JavaScript can start with an array or block. */ }
+            }
             const literals = [], words = [];
             const code = source.replace(lexical, (value, offset) => {
                 if (/^["']/.test(value)) {
                     const text = value.slice(1, -1);
                     if (endpoint(text)) literals.push({offset, value: text});
-                    if (methods.has(text) || fieldNames.includes(text) || pageNames.includes(text)) words.push({offset, value: text});
+                    if (methods.has(text) || fieldNames.includes(text) || pageNames.includes(text)
+                        || frameworkNames.includes(text)) words.push({offset, value: text});
+                } else if (value.startsWith('`')) {
+                    // Only static path fragments can become output; interpolation
+                    // contents never leave the source scanner.
+                    for (const part of value.slice(1, -1).split(/\$\{[^}]*\}/)) {
+                        if (endpoint(part)) literals.push({offset, value: part});
+                    }
                 }
                 return ' '.repeat(value.length);
             });
+            for (const name of frameworkNames) {
+                report.frameworkSignals[name] += [...code.matchAll(new RegExp(`\\b${name}\\b`, 'g'))].length
+                    + words.filter(item => item.value === name).length;
+            }
             const transport = value => /\bfetch\s*\(|\.\s*(?:post|put|patch|request)\s*\(/i.test(value);
             const definitions = [...code.matchAll(/\b(redeemKey|claimKey|revealKey|redeemEntitlement|redemption)\s*(?:\([^)]{0,150}\)\s*\{|[:=]\s*(?:async\s*)?(?:function\s*\([^)]{0,150}\)\s*\{|\([^)]{0,150}\)\s*=>\s*\{?|[\w$]+\s*=>\s*\{?))/gi)];
             const add = (start, end, hint) => {
@@ -76,27 +98,38 @@
                     && transport(code.slice(match.index, end))) add(match.index, end, domainNames.find(name => name.toLowerCase() === match[1].toLowerCase()));
             }
             for (const literal of literals) {
-                if (!/^\/api\//.test(literal.value) || !/redeem|claim|reveal|redemption/i.test(literal.value)) continue;
+                if (!/redeem|claim|reveal|redemption/i.test(literal.value)) continue;
                 const start = Math.max(0, literal.offset - 250), end = Math.min(source.length, literal.offset + literal.value.length + 300);
-                if (!definitions.some(match => match.index >= start && match.index < literal.offset) && transport(code.slice(start, literal.offset))) add(start, end, 'api-transport');
+                if (!definitions.some(match => match.index >= start && match.index < literal.offset) && transport(code.slice(start, literal.offset))) {
+                    add(start, end, /^\/api\//.test(literal.value) ? 'api-transport' : 'redemption-transport');
+                }
             }
-            for (const match of code.matchAll(/\b(?:pageSize|perPage|itemsPerPage|supportedPageSizes)\b/g)) {
-                const start = Math.max(0, match.index - 250), end = Math.min(source.length, match.index + 500);
+            const pagingNames = ['pageSize', 'perPage', 'itemsPerPage', 'supportedPageSizes', 'page_size', 'per_page', 'limit'];
+            const pagingOffsets = new Set([...code.matchAll(new RegExp(`\\b(?:${pagingNames.join('|')})\\b`, 'g'))].map(match => match.index));
+            words.filter(item => pagingNames.includes(item.value)).forEach(item => pagingOffsets.add(item.offset));
+            for (const offset of [...pagingOffsets].sort((left, right) => left - right)) {
+                const start = Math.max(0, offset - 250), end = Math.min(source.length, offset + 500);
                 if (/\b(?:router|searchParams|URLSearchParams|pagination|setPage|onPageChange)\b/.test(code.slice(start, end))) add(start, end, 'pagination');
             }
+            return 'inspected';
         };
         let next = 0, bytes = 0;
         const worker = async () => {
             while (next < assets.length && bytes < totalLimit) {
-                const url = assets[next++];
+                const index = next++, url = assets[index], state = report.assetStates[index];
+                report.stats.attempted++;
+                state.state = 'request-failed';
                 try {
                     const response = await fetchAsset(url.href, {method: 'GET', cache: 'force-cache', credentials: 'same-origin', redirect: 'error'});
                     const finalURL = response.url ? assetURL(response.url) : url;
-                    if (!response.ok || !finalURL || finalURL.origin !== url.origin || finalURL.pathname !== url.pathname
-                        || !/^(?:application|text)\/(?:javascript|ecmascript)(?:\s*;|$)/i.test(response.headers.get('content-type') || '')
-                        || Number(response.headers.get('content-length')) > assetLimit) { await response.body?.cancel(); continue; }
+                    const rejected = !response.ok ? 'http-rejected'
+                        : !finalURL || finalURL.origin !== url.origin || finalURL.pathname !== url.pathname ? 'url-rejected'
+                            : !/^(?:application|text)\/(?:javascript|ecmascript)(?:\s*;|$)/i.test(response.headers.get('content-type') || '') ? 'mime-rejected'
+                                : Number(response.headers.get('content-length')) > assetLimit ? 'asset-limit' : null;
+                    if (rejected) { state.state = rejected; await response.body?.cancel(); continue; }
+                    state.state = 'read-failed';
                     const reader = response.body?.getReader();
-                    if (!reader) continue;
+                    if (!reader) { state.state = 'read-unavailable'; continue; }
                     let size = 0, source = '', complete = false;
                     const decoder = new TextDecoder();
                     try {
@@ -104,15 +137,27 @@
                             const {done, value} = await reader.read();
                             if (done) { complete = true; source += decoder.decode(); break; }
                             size += value.byteLength; bytes = Math.min(totalLimit, bytes + value.byteLength);
-                            if (size > assetLimit || bytes >= totalLimit) break;
+                            if (size > assetLimit || bytes >= totalLimit) {
+                                state.state = bytes >= totalLimit ? 'byte-budget' : 'asset-limit';
+                                break;
+                            }
                             source += decoder.decode(value, {stream: true});
                         }
-                    } finally { if (!complete) await reader.cancel(); }
-                    if (complete) inspect(source, assetPaths[assets.indexOf(url)]);
+                    } finally {
+                        if (!complete) {
+                            if (state.state === 'read-failed' && bytes >= totalLimit) state.state = 'byte-budget';
+                            await reader.cancel();
+                        }
+                    }
+                    if (complete) {
+                        state.state = inspect(source, assetPaths[index]);
+                        if (state.state === 'inspected') report.stats.inspected++;
+                    }
                 } catch (_) { /* Report no response body or potentially private error text. */ }
             }
         };
         await Promise.all([worker(), worker()]);
+        report.stats.byteBudgetReached = bytes >= totalLimit;
         while (JSON.stringify(report).length > 14000) report.candidates.pop();
         return report;
     }
