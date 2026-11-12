@@ -820,6 +820,8 @@
             regionAllowed: 'Humble metadata indicates this key can be activated in your Steam region ({country}).',
             regionRestricted: 'Humble metadata indicates this key is restricted in your Steam region ({country}).',
             regionCountryUnavailable: 'Humble activation metadata is available, but your Steam region is unavailable.',
+            libraryRegionNotProvided: 'Key region restrictions: not provided.',
+            libraryNativeKeyNotice: 'Original key notice',
             regionExclusiveCountries: 'Humble allowlist: {countries}',
             regionDisallowedCountries: 'Humble blocklist: {countries}',
             regionCountryList: 'Show {count} country codes from Humble metadata',
@@ -942,6 +944,8 @@
             regionAllowed: 'Humble 元数据表明此 key 可在你的 Steam 地区（{country}）激活。',
             regionRestricted: 'Humble 元数据表明此 key 在你的 Steam 地区（{country}）受限。',
             regionCountryUnavailable: 'Humble 激活元数据可用，但无法获取你的 Steam 地区。',
+            libraryRegionNotProvided: 'Key 区域限制：未提供。',
+            libraryNativeKeyNotice: '原站 Key 提示',
             regionExclusiveCountries: 'Humble 允许列表：{countries}',
             regionDisallowedCountries: 'Humble 禁止列表：{countries}',
             regionCountryList: '显示 Humble 元数据中的 {count} 个国家/地区代码',
@@ -6696,6 +6700,7 @@
                 tile.classList.add('hb-helper-library-card');
             }
         }
+        ensureLibraryRegionWarnings();
     }
 
     function ensurePurchasedLibraryControls() {
@@ -6880,7 +6885,8 @@
         if (!container.isConnected) return;
         if (!canModifyHelperTarget(container)
             || !canModifyHelperTarget(target.placementContainer || target.after || target.before || container)) return;
-        if (!getSteamStoreLinkTargets().some(target => target.container === container
+        const currentTargets = target.library ? getLibrarySteamLinkTargets(container) : getSteamStoreLinkTargets();
+        if (!currentTargets.some(target => target.container === container
             && normalizeSteamTitle(target.title) === normalizedTitle)) return;
 
         if (!app) {
@@ -6950,11 +6956,7 @@
 
     function getSteamStoreLinkTargets() {
         const targets = [];
-        for (const entry of getLibraryGameEntries()) {
-            if (!isSteamBundleItem(entry.item)) continue;
-            targets.push({container: entry.actionHost, placementContainer: entry.actionHost,
-                title: entry.title, library: true});
-        }
+        targets.push(...getLibrarySteamLinkTargets());
         document.querySelectorAll('.tier-item-details-view').forEach((container, detailIndex) => {
             const {title, anchor: titleEl} = findBundleDetailTitle(container, detailIndex);
             if (!title) return;
@@ -8479,15 +8481,85 @@
         return !item || isSteamBundleItem(item);
     }
 
-    function getLibraryGameEntries() {
-        return getLibraryDomEntries().map(entry => {
-            const methods = [...new Set(entry.platformLabels.map(label =>
-                deliveryPlatformAliases[normalizeDeliveryMethod(label)]).filter(Boolean))];
+    function getLibraryFeaturedProduct(entry) {
+        if (!entry.element.matches('[data-testid="product-card"]')) return null;
+        const matches = new Map();
+        for (const props of getLibraryReactProps(entry)) {
+            const products = getLibraryArrayData(getLibraryOwnData(props, 'subscriptionProducts')) || [];
+            for (const product of products) {
+                const title = getLibraryOwnData(product, 'title');
+                const id = getLibraryOwnData(product, 'id');
+                if (typeof title !== 'string' || normalizeSteamTitle(title) !== normalizeSteamTitle(entry.title)
+                    || typeof id !== 'string' || !id.trim()) continue;
+                const methods = getLibraryArrayData(getLibraryOwnData(product, 'deliveryMethods'));
+                if (!methods || methods.some(method => typeof method !== 'string')) continue;
+                const deliveryMethods = [...new Set(methods)].sort();
+                matches.set(JSON.stringify([id, deliveryMethods]), {deliveryMethods});
+            }
+        }
+        return matches.size === 1 ? matches.values().next().value : null;
+    }
+
+    function getLibraryGameEntries({tile, actionHost} = {}) {
+        return getLibraryDomEntries().filter(entry => (!tile || entry.element === tile)
+            && (!actionHost || entry.actionHost === actionHost)).map(entry => {
+            const nativeMethods = entry.platformLabels.filter(label =>
+                !/^(windows|mac|macos|osx|linux|android|ios)$/i.test(normalizeDeliveryMethod(label)));
+            const record = getLibraryRecord(entry);
+            const source = record?.deliveryMethods || (nativeMethods.length ? nativeMethods
+                : getLibraryFeaturedProduct(entry)?.deliveryMethods || []);
+            const methods = [...new Set(source.map(label => {
+                const normalized = normalizeDeliveryMethod(label);
+                return deliveryPlatformAliases[normalized] || normalized;
+            }).filter(Boolean))];
             // Steam plus another delivery option does not prove Steam was selected.
             const deliveryMethods = methods.includes('steam') && methods.length > 1 ? [] : methods;
             return {...entry, tile: entry.element, item: {deliveryMethods},
                 titleHost: entry.titleElement.parentElement, library: true};
         });
+    }
+
+    function getLibrarySteamLinkTargets(actionHost) {
+        return getLibraryGameEntries({actionHost}).filter(entry => isSteamBundleItem(entry.item))
+            .map(entry => ({container: entry.actionHost, placementContainer: entry.actionHost,
+                title: entry.title, library: true}));
+    }
+
+    function ensureLibraryRegionWarnings() {
+        const desired = new Map();
+        for (const entry of getLibraryDomEntries()) {
+            const record = getLibraryRecord(entry);
+            if (!record?.keySlots.length || entry.element.closest('a,button')) continue;
+            const notices = [...new Set(record.keySlots.map(slot => {
+                if (!slot.customDisclaimer) return '';
+                const source = new DOMParser().parseFromString(slot.customDisclaimer, 'text/html');
+                source.querySelectorAll('script,style,iframe,object,embed').forEach(node => node.remove());
+                return source.documentElement.textContent.replace(/\s+/g, ' ').trim();
+            }).filter(Boolean))];
+            desired.set(entry.element, notices);
+        }
+        document.querySelectorAll('.hb-helper-library-region-warning').forEach(panel => {
+            if (!desired.has(panel.parentElement) && canModifyHelperTarget(panel.parentElement)) panel.remove();
+        });
+        for (const [element, notices] of desired) {
+            if (!canModifyHelperTarget(element)) continue;
+            let panel = element.querySelector(':scope > .hb-helper-library-region-warning');
+            const signature = JSON.stringify([currentLanguage, notices]);
+            if (panel?.dataset.hbHelperRegionSignature === signature) continue;
+            if (!panel) {
+                panel = document.createElement('section');
+                panel.className = 'hb-helper-region-restrictions hb-helper-library-region-warning';
+                element.appendChild(panel);
+            }
+            panel.dataset.hbHelperRegionSignature = signature;
+            const heading = document.createElement('strong');
+            heading.textContent = t(notices.length ? 'libraryNativeKeyNotice' : 'libraryRegionNotProvided');
+            panel.replaceChildren(heading, ...notices.map(text => {
+                const notice = document.createElement('div');
+                notice.textContent = text;
+                return notice;
+            }));
+        }
     }
 
     function getModernGameEntries() {
@@ -8831,7 +8903,9 @@
             return;
         }
         const titleEl = viewEl.querySelector('.item-title, .content-choice-title');
-        const modernEntry = titleEl ? null : getModernGameEntries().find(entry => entry.tile === viewEl);
+        const library = getLibraryView().kind !== 'unsupported';
+        const modernEntry = titleEl ? null : (library ? getLibraryGameEntries({tile: viewEl})
+            : getModernGameEntries()).find(entry => entry.tile === viewEl);
         const title = titleEl?.textContent.trim() || modernEntry?.title;
         if (!title) {
             if (viewEl.classList.contains(className)) viewEl.classList.toggle(className, false);
@@ -8844,7 +8918,7 @@
         const app = await findApp(title);
         if (!canModifyHelperTarget(viewEl)) return;
         if (viewEl.classList.contains('hb-helper-non-steam')) return;
-        if (modernEntry && !getModernGameEntries().some(entry =>
+        if (modernEntry && !(library ? getLibraryGameEntries({tile: viewEl}) : getModernGameEntries()).some(entry =>
             entry.tile === viewEl && entry.title === title && isSteamBundleItem(entry.item))) return;
         const marked = Boolean(app && appSet.has(app.appid));
         if (viewEl.classList.contains(className) !== marked) viewEl.classList.toggle(className, marked);
@@ -9547,6 +9621,7 @@
             getLibraryView,
             getLibraryDomEntries,
             getLibraryGameEntries,
+            ensureLibraryRegionWarningsForTest: ensureLibraryRegionWarnings,
             getLibraryEntitlement,
             getLibraryReactProps,
             getLibraryRecord,
