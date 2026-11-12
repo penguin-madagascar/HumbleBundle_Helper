@@ -7439,27 +7439,30 @@
             now = () => Date.now(),
             leaseMs = choiceActivationRunnerLeaseMs,
             recheckSession = options => syncSteamSession(options),
+            isContextCurrent = () => true,
         } = {}
     ) {
         const persist = requireLockScopedBatchPersistence(saveBatch);
-        if (batch.items.some(item => item.status === choiceActivationItemStates.activating)) {
+        const stop = () => {
             cancelUncertainSteamActivationBatch(batch);
             persist(batch);
             return {batch, paused: false, stopped: true};
+        };
+        if (batch.items.some(item => item.status === choiceActivationItemStates.activating)) {
+            return stop();
         }
         const pendingItems = batch.items.filter(
             item => item.status === choiceActivationItemStates.pending
         );
         if (!isNonEmptyString(sessionId) && pendingItems.length > 0) {
-            cancelUncertainSteamActivationBatch(batch);
-            persist(batch);
-            return {batch, paused: false, stopped: true};
+            return stop();
         }
         if (batch.state !== choiceActivationBatchStates.activating) {
             return {batch, paused: false, stopped: true};
         }
 
         for (let index = 0; index < pendingItems.length; index++) {
+            if (!isContextCurrent()) return stop();
             const item = pendingItems[index];
             showProgress(
                 item,
@@ -7473,6 +7476,10 @@
             }
             if (persist(batch) === false) {
                 return {batch, paused: false, stopped: true};
+            }
+            if (!isContextCurrent()) {
+                item.status = choiceActivationItemStates.pending;
+                return stop();
             }
             try {
                 const response = await activateKey(sessionId, item.key);
@@ -7491,6 +7498,7 @@
                     item.code = failure.code;
                 }
             } catch (error) {
+                if (!isContextCurrent()) return stop();
                 item.status = choiceActivationItemStates.steamFailed;
                 item.error = t('steamActivationRequestFailed', {
                     message: error?.message || String(error),
@@ -7502,19 +7510,17 @@
                 } catch (syncError) {
                     recheckedState = {status: 'error', account: null, error: syncError};
                 }
-                if (recheckedState.status !== 'authenticated'
+                if (!isContextCurrent()
+                    || recheckedState.status !== 'authenticated'
                     || !isSteamAccountData(recheckedState.account)) {
                     item.status = choiceActivationItemStates.activating;
                     delete item.error;
                     delete item.code;
-                    cancelUncertainSteamActivationBatch(batch);
-                    if (persist(batch) === false) {
-                        return {batch, paused: false, stopped: true};
-                    }
-                    return {batch, paused: false, stopped: true};
+                    return stop();
                 }
                 sessionId = recheckedState.account.sessionId;
             }
+            if (!isContextCurrent()) return stop();
             if (isNonEmptyString(owner)) {
                 batch.runner.leaseExpiresAt = now() + leaseMs;
             }
@@ -7539,6 +7545,7 @@
         now = () => Date.now(),
         leaseMs = choiceActivationRunnerLeaseMs,
         recheckSession = options => syncSteamSession(options),
+        isContextCurrent = () => true,
     } = {}) {
         const lockResult = await requestChoiceExclusiveLock(
             steamActivationLockName,
@@ -7598,7 +7605,7 @@
                     activateKey,
                     saveBatch,
                     showProgress,
-                    {owner, now, leaseMs, recheckSession}
+                    {owner, now, leaseMs, recheckSession, isContextCurrent}
                 );
                 return {...result, processed: !result.paused && !result.stopped};
             },
