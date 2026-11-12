@@ -7,6 +7,8 @@ const {flightScript, loadUserscript} = require('./helpers/userscript');
 const h = React.createElement;
 const product = {id: 'one', title: 'One', productType: 'humble-choice',
     thumbnail: 'https://example.invalid/one.jpg', deliveryMethods: ['steam']};
+const libraryBundleId = '11111111-1111-1111-1111-111111111111';
+const libraryEntitlement = {id: '22222222-2222-2222-2222-222222222222', title: 'One'};
 const marker = '<script src="/_next/static/chunks/test.js"></script>';
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 
@@ -18,7 +20,25 @@ async function waitFor(check) {
     assert.fail('React hydration or deferred helper refresh did not finish');
 }
 
+function LibraryRow({entitlement}) {
+    return h('div', {className: 'flex flex-col border-0'},
+        h('div', {className: 'flex flex-wrap items-center justify-between gap-4'},
+            h('div', {className: 'flex flex-1 items-center gap-2'},
+                h('div', {className: 'flex flex-wrap items-center justify-start gap-1'},
+                    h('div', {'data-state': '', className: 'flex items-center justify-center', 'aria-label': 'Steam'})),
+                h('div', {className: 'flex flex-1 flex-col justify-center'}, h('div', null, entitlement.title))),
+            h('div', {className: 'flex flex-col gap-1'},
+                h('button', {className: 'flex items-center gap-1 border border-border justify-center', type: 'button'},
+                    h('span', null, 'Reveal key')),
+                h('button', {className: 'justify-center flex items-center gap-1', type: 'button'}, h('span', null, 'Steam')))),
+        h('div', {className: 'overflow-hidden'},
+            h('div', {className: 'flex gap-2'}, h('div'),
+                h('div', {className: 'flex flex-1 flex-col justify-between'}, h('div', {className: 'flex items-center gap-1'})))));
+}
+
 function content(kind) {
+    if (kind === 'library') return h('main', null, h('h1', null, 'Synthetic Library bundle'),
+        h(LibraryRow, {entitlement: libraryEntitlement}));
     if (kind === 'bundle') return h('main', null,
         h('section', {'data-bundle-section': 'games'}, h('button', null, 'One')));
     if (kind === 'landing') return h('main', null, h('section', null,
@@ -41,7 +61,7 @@ function content(kind) {
                         h('div', null, h('div', {className: 'line-clamp-1'}, 'One')))))))));
 }
 
-for (const kind of ['bundle', 'landing', 'member', 'carousel']) {
+for (const kind of ['bundle', 'landing', 'member', 'carousel', 'library']) {
     for (const delayed of [false, true]) {
         test(`${kind}: defers helper insertion until the exact React host commits${delayed ? ' through Suspense' : ''}`, async () => {
             let available = true;
@@ -68,7 +88,7 @@ for (const kind of ['bundle', 'landing', 'member', 'carousel']) {
                 endDate: '2026-12-01T00:00:00Z',
             }}))} : {subscriptionProducts: [product]};
             const pathname = kind === 'landing' ? '/games' : kind === 'member' ? '/membership/home'
-                : kind === 'carousel' ? '/membership' : '/games/test';
+                : kind === 'carousel' ? '/membership' : kind === 'library' ? `/home/library/${libraryBundleId}` : '/games/test';
             const page = loadUserscript({pathname,
                 html: `${marker}<div id="root">${renderToString(h(App))}</div>${flightScript({e: metadata})}`});
             const {api, document, window} = page;
@@ -85,12 +105,14 @@ for (const kind of ['bundle', 'landing', 'member', 'carousel']) {
             try {
                 inject();
                 assert.ok(!controls(), 'server HTML is untouched before hydration starts');
-                const tile = api.getModernChoiceGameEntries()[0]?.tile;
+                const tile = kind === 'library' ? api.getLibraryDomEntries()[0].element
+                    : api.getModernChoiceGameEntries()[0]?.tile;
+                if (kind === 'library') assert.equal(api.getLibraryEntitlement(api.getLibraryDomEntries()[0]), null);
                 if (tile) {
                     await api.markGame(tile, new Set([42]), 'owned', async () => ({appid: 42}));
                     assert.equal(tile.classList.contains('owned'), false);
                 }
-                if (kind === 'carousel') {
+                if (kind === 'carousel' || kind === 'library') {
                     const link = api.ensureSteamStoreLink(api.getSteamStoreLinkTargets()[0]);
                     page.requests[0].onload({status: 200, responseText:
                         '<div class="match" data-ds-appid="42"><div class="match_name">One</div></div>'});
@@ -106,6 +128,7 @@ for (const kind of ['bundle', 'landing', 'member', 'carousel']) {
                 if (delayed) {
                     inject();
                     assert.ok(!controls(), 'the root announcer does not bypass an unhydrated boundary');
+                    if (kind === 'library') assert.equal(api.getLibraryEntitlement(api.getLibraryDomEntries()[0]), null);
                     available = true;
                     release();
                 }
@@ -114,11 +137,24 @@ for (const kind of ['bundle', 'landing', 'member', 'carousel']) {
                     await api.markGame(tile, new Set([42]), 'owned', async () => ({appid: 42}));
                     assert.equal(tile.classList.contains('owned'), true);
                 }
-                if (kind === 'carousel') await waitFor(() => document.querySelector('.hb-helper-steam-store-link'));
+                if (kind === 'carousel' || kind === 'library') {
+                    await waitFor(() => document.querySelector('.hb-helper-steam-store-link'));
+                }
+                if (kind === 'library') {
+                    assert.deepEqual({...api.getLibraryEntitlement(api.getLibraryDomEntries()[0])}, libraryEntitlement);
+                    const link = document.querySelector('.hb-helper-steam-store-link');
+                    assert.equal(link.parentElement.closest('a, button'), null);
+                    assert.equal(controls().closest('a, button'), null);
+                }
                 root.render(h(App));
                 await tick();
                 inject();
                 assert.ok(controls(), 'normal React updates retain a usable target');
+                if (kind === 'library') {
+                    assert.deepEqual({...api.getLibraryEntitlement(api.getLibraryDomEntries()[0])}, libraryEntitlement);
+                    assert.equal(tile.classList.contains('owned'), true);
+                    assert.equal(document.querySelectorAll('.hb-helper-steam-store-link').length, 1);
+                }
                 root.render(h('main', null, 'Next route'));
                 await tick();
                 assert.deepEqual(errors, []);

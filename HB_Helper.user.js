@@ -47,7 +47,8 @@
     }
     [data-testid="bundle-item-card"].owned,
     main button > [data-testid="product-card"].owned,
-    [data-media-index].owned {
+    [data-media-index].owned,
+    .hb-helper-library-card.owned {
       background: rgba(100,255,100,.35) !important;
       outline: 3px solid #64df64 !important;
       outline-offset: -3px !important;
@@ -55,7 +56,8 @@
     }
     [data-testid="bundle-item-card"].wishlist,
     main button > [data-testid="product-card"].wishlist,
-    [data-media-index].wishlist {
+    [data-media-index].wishlist,
+    .hb-helper-library-card.wishlist {
       background: rgba(100,100,255,.35) !important;
       outline: 3px solid #8d9dff !important;
       outline-offset: -3px !important;
@@ -65,7 +67,8 @@
     .choice-content.js-open-choice-modal.hb-helper-non-steam,
     [data-testid="bundle-item-card"].hb-helper-non-steam,
     main button > [data-testid="product-card"].hb-helper-non-steam,
-    [data-media-index].hb-helper-non-steam {
+    [data-media-index].hb-helper-non-steam,
+    .hb-helper-library-card.hb-helper-non-steam {
       background: rgba(59, 130, 246, 0.3) !important;
       outline: 3px solid #51adff !important;
       outline-offset: -3px !important;
@@ -105,6 +108,9 @@
     .hb-helper-platform-title-details > .hb-helper-platform-badges {
       grid-area: 1 / 2 !important;
     }
+    .hb-helper-library-card .hb-helper-platform-title-details > :first-child {
+      grid-area: 1 / 1 !important;
+    }
     .hb-helper-platform-badge {
       box-sizing: border-box !important;
       display: inline-flex !important;
@@ -138,6 +144,29 @@
     #hb-helper-controls {
       box-sizing: border-box !important;
       margin: 8px 0 !important;
+    }
+    .hb-helper-library-status {
+      box-sizing: border-box !important;
+      background: rgba(0, 0, 0, 0.5) !important;
+      border-radius: 4px !important;
+      color: #fff !important;
+      line-height: 1.5 !important;
+      margin: 8px 0 !important;
+      padding: 10px !important;
+    }
+    .hb-helper-library-status button {
+      background: #334155 !important;
+      border: 1px solid #64748b !important;
+      border-radius: 4px !important;
+      color: #e2e8f0 !important;
+      cursor: default !important;
+      font: inherit !important;
+      font-weight: 700 !important;
+      min-height: 32px !important;
+      padding: 5px 10px !important;
+    }
+    .hb-helper-library-status p {
+      margin: 8px 0 0 !important;
     }
     #hb-helper-login-reminder {
       box-sizing: border-box !important;
@@ -715,6 +744,9 @@
             showUnpricedItems: ({count}) =>
                 `Show ${count} unpriced item${count === 1 ? '' : 's'}`,
             unavailable: 'Unavailable',
+            libraryKeyInformationPending: 'Complete key information is not yet available. Use the original redemption controls for now.',
+            libraryActivate: 'Activate selected games',
+            libraryActivateGame: 'Activate this game',
             hbPrice: 'HB: {price}',
             showUnowned: 'Show unowned',
             showAll: 'Show all',
@@ -834,6 +866,9 @@
             regionalPriceUnavailable: '区域价格不可用',
             showUnpricedItems: ({count}) => `显示 ${count} 个无法定价的项目`,
             unavailable: '不可用',
+            libraryKeyInformationPending: '暂时无法读取完整的 Key 信息，请使用原站领取入口。',
+            libraryActivate: '激活所选游戏',
+            libraryActivateGame: '激活此游戏',
             hbPrice: 'HB：{price}',
             showUnowned: '显示未拥有',
             showAll: '显示全部',
@@ -1891,12 +1926,14 @@
     }
 
     function isPriceTotalsPage() {
-        return isGamesBundlePage() || isChoicePage();
+        return isGamesBundlePage() || isChoicePage()
+            || ['bundle', 'content'].includes(getLibraryView().kind);
     }
 
     function getHelperPageMode() {
         if (isLandingSortPage()) return 'landing';
         if (isDownloadsPage()) return 'downloads';
+        if (getLibraryView().kind !== 'unsupported') return 'library';
         if (isPriceTotalsPage()) return 'price-totals';
         return 'unsupported';
     }
@@ -2693,6 +2730,10 @@
     }
 
     function findHelperInsertionPoint() {
+        const library = getLibraryView();
+        if (['bundle', 'content'].includes(library.kind)) {
+            return library.heading ? {anchor: library.heading, position: 'afterend'} : null;
+        }
         if (isGamesBundlePage()) {
             const itemSection = document.querySelector('[data-bundle-section="games"]');
             if (itemSection) return {anchor: itemSection, position: 'beforebegin'};
@@ -2883,7 +2924,10 @@
 
     function buildSteamGiftsSearchUrl() {
         let term;
-        if (isChoicePage()) {
+        const library = getLibraryView();
+        if (['bundle', 'content'].includes(library.kind)) {
+            term = `[Humble Bundle] ${normalizedText(library.heading)}`;
+        } else if (isChoicePage()) {
             term = `[Humble Bundle] ${getChoicePeriod()}`.trim();
         } else {
             const title = getBundleTitle();
@@ -6488,6 +6532,72 @@
         renderChoiceActivationResults();
     }
 
+    function ensureLibraryActivationNotice(controls) {
+        const view = getLibraryView();
+        let notice = controls.querySelector('.hb-helper-library-status');
+        if (!['purchased', 'bundle', 'content'].includes(view.kind)) {
+            notice?.remove();
+            return;
+        }
+        if (!notice) {
+            notice = document.createElement('div');
+            notice.className = 'hb-helper-library-status';
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.disabled = true;
+            button.dataset.hbHelperLibraryAction = 'activate';
+            const reason = document.createElement('p');
+            reason.id = 'hb-helper-library-key-status';
+            reason.setAttribute('role', 'status');
+            button.setAttribute('aria-describedby', reason.id);
+            notice.append(button, reason);
+            controls.appendChild(notice);
+        }
+        setElementTextContent(notice.querySelector('button'), t(view.kind === 'content'
+            ? 'libraryActivateGame' : 'libraryActivate'));
+        setElementTextContent(notice.querySelector('p'), t('libraryKeyInformationPending'));
+    }
+
+    function refreshLibraryCards() {
+        const entries = getLibraryGameEntries();
+        const tiles = new Set(entries.map(entry => entry.tile));
+        document.querySelectorAll('.hb-helper-library-card').forEach(tile => {
+            if (!tiles.has(tile) && canModifyHelperTarget(tile)) {
+                tile.classList.remove('hb-helper-library-card', 'owned', 'wishlist');
+            }
+        });
+        for (const {tile} of entries) {
+            if (!tile.classList.contains('hb-helper-library-card') && canModifyHelperTarget(tile)) {
+                tile.classList.add('hb-helper-library-card');
+            }
+        }
+    }
+
+    function ensurePurchasedLibraryControls() {
+        const view = getLibraryView();
+        if (view.kind !== 'purchased' || !canModifyHelperTarget(view.heading)
+            || !canModifyHelperTarget(view.heading.parentElement)) return;
+        let controls = document.getElementById('hb-helper-library-controls');
+        if (!controls) {
+            controls = document.createElement('div');
+            controls.id = 'hb-helper-library-controls';
+        }
+        let reminder = controls.querySelector('#hb-helper-login-reminder');
+        if (hasSteamAccountData()) reminder?.remove();
+        else {
+            if (!reminder) {
+                reminder = document.createElement('div');
+                reminder.id = 'hb-helper-login-reminder';
+                controls.insertBefore(reminder, controls.firstChild);
+            }
+            renderSteamSessionReminder(reminder, {loggedOutMessageKey: 'steamSyncLoggedOut'});
+        }
+        ensureLibraryActivationNotice(controls);
+        if (view.heading.nextElementSibling !== controls) {
+            view.heading.insertAdjacentElement('afterend', controls);
+        }
+    }
+
     function ensureHelperControls() {
         if (!isPriceTotalsPage()) return null;
         const insertionPoint = findHelperInsertionPoint();
@@ -6537,6 +6647,7 @@
         else if (!choiceActivationCurrent) {
             document.getElementById('hb-helper-choice-activation-controls')?.remove();
         }
+        ensureLibraryActivationNotice(controls);
         const {anchor, position} = insertionPoint;
         if (position === 'beforebegin' && anchor.previousElementSibling !== controls) {
             anchor.insertAdjacentElement('beforebegin', controls);
@@ -6664,6 +6775,8 @@
         link.href = getSteamStoreUrl(app.appid);
         link.dataset.hbHelperTitle = normalizedTitle;
         link.dataset.hbHelperAppid = String(app.appid);
+        if (target.library) link.dataset.hbHelperLibraryLink = 'true';
+        else delete link.dataset.hbHelperLibraryLink;
         removeDuplicateSteamStoreLinks(container, link);
         insertSteamStoreLink(link, target);
     }
@@ -6712,6 +6825,11 @@
 
     function getSteamStoreLinkTargets() {
         const targets = [];
+        for (const entry of getLibraryGameEntries()) {
+            if (!isSteamBundleItem(entry.item)) continue;
+            targets.push({container: entry.actionHost, placementContainer: entry.actionHost,
+                title: entry.title, library: true});
+        }
         document.querySelectorAll('.tier-item-details-view').forEach((container, detailIndex) => {
             const {title, anchor: titleEl} = findBundleDetailTitle(container, detailIndex);
             if (!title) return;
@@ -6802,6 +6920,19 @@
         }
         if (downloadOrderRouteKey !== undefined || downloadOrderMapping) {
             resetDownloadOrderPage();
+        }
+        const library = getLibraryView();
+        refreshLibraryCards();
+        if (library.kind !== 'purchased') document.getElementById('hb-helper-library-controls')?.remove();
+        if (['purchased', 'bundles', 'vault'].includes(library.kind)) {
+            clearPriceHelperUi();
+            refreshNonSteamGameMarkers();
+            ensureSteamStoreLinks();
+            if (library.kind === 'purchased') {
+                ensurePurchasedLibraryControls();
+                if (hasSteamAccountData()) markVisibleGames();
+            }
+            return;
         }
         if (!isPriceTotalsPage()) return;
         refreshNonSteamGameMarkers();
@@ -6904,6 +7035,7 @@
         const element = node?.nodeType === 3 ? node.parentElement : node;
         return Boolean(element?.closest?.([
             '#hb-helper-controls',
+            '#hb-helper-library-controls',
             '#hb-helper-choice-activation-controls',
             '#hb-helper-choice-activation-results',
             '.hb-helper-region-restrictions',
@@ -7734,6 +7866,11 @@
             || recoverStaleChoiceCollection;
 
         if (mode !== 'downloads') leaveDownloadOrderPage();
+        if (mode !== 'library') {
+            document.getElementById('hb-helper-library-controls')?.remove();
+            document.querySelectorAll('[data-hb-helper-library-link]').forEach(removeSteamStoreLink);
+            refreshLibraryCards();
+        }
 
         if (mode === 'landing') {
             clearPriceHelperUi();
@@ -8093,7 +8230,7 @@
         return [...getModernGameEntries().map(entry => {
             const memberRow = entry.tile.querySelector('[data-testid="product-card-footer"] [class~="group/product-title"]');
             const bundleTitle = entry.tile.querySelector('.line-clamp-2');
-            return {...entry, titleHost: memberRow || bundleTitle?.parentElement};
+            return {...entry, titleHost: entry.titleHost || memberRow || bundleTitle?.parentElement};
         }), ...legacy];
     }
 
@@ -8143,7 +8280,8 @@
     }
 
     function refreshNonSteamGameMarkers() {
-        const entries = isPriceTotalsPage() ? getNonSteamGameEntries() : [];
+        const entries = isPriceTotalsPage() || getLibraryView().kind === 'purchased'
+            ? getNonSteamGameEntries() : [];
         const markedTiles = new Set();
         const desiredBadges = new Map();
         for (const entry of entries) {
@@ -8151,10 +8289,11 @@
             if (!badges.length) continue;
             markedTiles.add(entry.tile);
             if (canModifyHelperTarget(entry.tile)) {
-                entry.tile.classList.add('hb-helper-non-steam');
-                entry.tile.classList.remove('owned', 'wishlist');
+                if (!entry.tile.classList.contains('hb-helper-non-steam')) entry.tile.classList.add('hb-helper-non-steam');
+                if (entry.tile.classList.contains('owned')) entry.tile.classList.remove('owned');
+                if (entry.tile.classList.contains('wishlist')) entry.tile.classList.remove('wishlist');
             }
-            if (entry.titleHost) desiredBadges.set(entry.titleHost, {badges, details: false});
+            if (entry.titleHost) desiredBadges.set(entry.titleHost, {badges, details: Boolean(entry.library)});
             const section = entry.tile.closest('section[aria-label="Media carousel"]');
             if (!section) continue;
             const headings = Array.from(section.parentElement.querySelectorAll('h3'))
@@ -8175,7 +8314,8 @@
         for (const [host, {badges, details}] of desiredBadges) {
             if (!canModifyHelperTarget(host)) continue;
             const previous = Array.from(host.children).find(child => child.classList.contains('hb-helper-platform-badges'));
-            host.classList.add(details ? 'hb-helper-platform-title-details' : 'hb-helper-platform-title-row');
+            const className = details ? 'hb-helper-platform-title-details' : 'hb-helper-platform-title-row';
+            if (!host.classList.contains(className)) host.classList.add(className);
             if (previous?.dataset.hbHelperPlatforms === JSON.stringify(badges)) continue;
             previous?.remove();
             host.appendChild(createPlatformBadges(badges));
@@ -8214,7 +8354,19 @@
         return !item || isSteamBundleItem(item);
     }
 
+    function getLibraryGameEntries() {
+        return getLibraryDomEntries().map(entry => {
+            const methods = [...new Set(entry.platformLabels.map(label =>
+                deliveryPlatformAliases[normalizeDeliveryMethod(label)]).filter(Boolean))];
+            // Steam plus another delivery option does not prove Steam was selected.
+            const deliveryMethods = methods.includes('steam') && methods.length > 1 ? [] : methods;
+            return {...entry, tile: entry.element, item: {deliveryMethods},
+                titleHost: entry.titleElement.parentElement, library: true};
+        });
+    }
+
     function getModernGameEntries() {
+        if (getLibraryView().kind !== 'unsupported') return getLibraryGameEntries();
         if (isChoicePage()) return getModernChoiceGameEntries();
         if (!isGamesBundlePage()) return [];
         const items = getBundleItemsByTitle();
@@ -8550,18 +8702,18 @@
     async function markGame(viewEl, appSet, className, findApp = findSteamApp) {
         if (!canModifyHelperTarget(viewEl)) return;
         if (viewEl.classList.contains('hb-helper-non-steam')) {
-            viewEl.classList.toggle(className, false);
+            if (viewEl.classList.contains(className)) viewEl.classList.toggle(className, false);
             return;
         }
         const titleEl = viewEl.querySelector('.item-title, .content-choice-title');
         const modernEntry = titleEl ? null : getModernGameEntries().find(entry => entry.tile === viewEl);
         const title = titleEl?.textContent.trim() || modernEntry?.title;
         if (!title) {
-            viewEl.classList.toggle(className, false);
+            if (viewEl.classList.contains(className)) viewEl.classList.toggle(className, false);
             return;
         }
         if (modernEntry ? !isSteamBundleItem(modernEntry.item) : !shouldMatchSteamTitle(title)) {
-            viewEl.classList.toggle(className, false);
+            if (viewEl.classList.contains(className)) viewEl.classList.toggle(className, false);
             return;
         }
         const app = await findApp(title);
@@ -8569,7 +8721,8 @@
         if (viewEl.classList.contains('hb-helper-non-steam')) return;
         if (modernEntry && !getModernGameEntries().some(entry =>
             entry.tile === viewEl && entry.title === title && isSteamBundleItem(entry.item))) return;
-        viewEl.classList.toggle(className, Boolean(app && appSet.has(app.appid)));
+        const marked = Boolean(app && appSet.has(app.appid));
+        if (viewEl.classList.contains(className) !== marked) viewEl.classList.toggle(className, marked);
     }
 
     // Owned Games Check: Check a single game element and mark it as owned if it matches the user's owned app set
@@ -9268,6 +9421,7 @@
             isDownloadsPage,
             getLibraryView,
             getLibraryDomEntries,
+            getLibraryGameEntries,
             getLibraryEntitlement,
             getHelperPageMode,
             isPriceTotalsPageForTest: isPriceTotalsPage,

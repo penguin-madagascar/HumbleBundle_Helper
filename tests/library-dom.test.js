@@ -29,7 +29,7 @@ test('Purchased view uses the selected native tab, localized H2, adjacent form, 
     assert.equal(view.form, document.querySelector('main form'));
     assert.equal(view.featuredRegion, document.querySelector('main [role="region"]'));
     assert.equal(document.querySelector('main h1'), null);
-    assert.equal(api.getHelperPageMode(), 'unsupported');
+    assert.equal(api.getHelperPageMode(), 'library');
 });
 
 test('Purchased descriptors read only native title and platform labels and keep actions outside the link', () => {
