@@ -137,3 +137,15 @@ test('unknown routes or tabs remain unsupported without enabling a helper contro
         assert.equal(api.getLibraryDomEntries().length, 0);
     }
 });
+
+test('unrevealed detail rows accept the verified single Redeem action without counting helper checkboxes', () => {
+    for (const action of ['<button type="button">兑换</button>', '<div class="flex flex-col gap-1"><button type="button">兑换</button></div>']) {
+        const nativeRow = `<div class="flex flex-col border-0"><div class="flex flex-wrap items-center justify-between gap-4">${leftHeader('Unrevealed game')}${action}</div><div class="overflow-hidden"></div></div>`;
+        const {api, document} = open(`<main><h1>Unrevealed game</h1>${nativeRow}</main>`, `/home/library/content/${contentId}`);
+        assert.deepEqual(entriesWithoutElements(api.getLibraryDomEntries()), [{title: 'Unrevealed game', platformLabels: ['Steam', 'Windows'], routeContentId: contentId}]);
+        const checkbox = document.createElement('button');
+        checkbox.className = 'hb-helper-library-selection-toggle';
+        document.querySelector('.flex-1.flex-col').appendChild(checkbox);
+        assert.equal(api.getLibraryDomEntries().length, 1);
+    }
+});

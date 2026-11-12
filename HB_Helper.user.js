@@ -1854,8 +1854,9 @@
                 if (!link) continue;
                 routeContentId = link[1];
             } else {
+                const buttons = header.querySelectorAll('button:not(.hb-helper-library-selection-toggle)');
                 if (!header.matches('div.flex.flex-wrap.items-center.justify-between')
-                    || header.querySelectorAll(':scope > div:last-child > button').length !== 2) continue;
+                    || buttons.length < 1 || buttons.length > 2) continue;
             }
             const titleColumn = header.querySelector('div.flex.flex-1.flex-col.justify-center');
             const titleElement = titleColumn?.firstElementChild;
