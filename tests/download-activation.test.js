@@ -77,7 +77,25 @@ function createDocument() {
         return element.tagName.toLowerCase() === selector.toLowerCase();
     }
     function descendants(root) {
-        return root.children.flatMap(child => [child, ...descendants(child)]);
+        return root.children.flatMap(child =>
+            child.nodeType === 1 ? [child, ...descendants(child)] : []
+        );
+    }
+    function textNode(value) {
+        return {
+            nodeType: 3,
+            children: [],
+            parentNode: null,
+            get parentElement() { return this.parentNode; },
+            textContent: String(value),
+            remove() {
+                if (this.parentNode) {
+                    const index = this.parentNode.children.indexOf(this);
+                    if (index >= 0) this.parentNode.children.splice(index, 1);
+                }
+                this.parentNode = null;
+            },
+        };
     }
     function queryAll(root, selector) {
         const selectors = selector.split(',').map(part => part.trim());
@@ -115,7 +133,11 @@ function createDocument() {
                 child.parentNode = this;
                 return child;
             },
-            append(...items) { items.forEach(item => this.appendChild(item)); },
+            append(...items) {
+                items.forEach(item => this.appendChild(
+                    typeof item === 'string' ? textNode(item) : item
+                ));
+            },
             prepend(...items) {
                 [...items].reverse().forEach(item => this.insertBefore(item, this.firstChild));
             },
@@ -217,6 +239,7 @@ function createDocument() {
         title: 'Downloads',
         visibilityState: 'visible',
         createElement: element,
+        createTextNode: textNode,
         addEventListener: events.addEventListener,
         removeEventListener: events.removeEventListener,
         dispatchEvent: events.dispatchEvent,
