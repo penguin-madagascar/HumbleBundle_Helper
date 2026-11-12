@@ -1874,39 +1874,42 @@
         return entries;
     }
 
-    // Only the observed direct entitlement prop binds a native row to an identity.
-    function getLibraryEntitlement(entry) {
+    function getLibraryOwnData(object, key, allowArray = false) {
+        if (!object || typeof object !== 'object' || (!allowArray && Array.isArray(object))) return undefined;
+        const page = typeof unsafeWindow === 'undefined' ? window : unsafeWindow;
+        const descriptor = (page.Object || Object).getOwnPropertyDescriptor(object, key);
+        return descriptor && Object.hasOwn(descriptor, 'value') && typeof descriptor.value !== 'function'
+            ? descriptor.value : undefined;
+    }
+
+    // Follow only the committed host's actual child path, never an alternate's props.
+    function getLibraryReactProps(entry) {
         try {
             const page = typeof unsafeWindow === 'undefined' ? window : unsafeWindow;
             const objectApi = page.Object || Object;
-            const readData = (object, key) => {
-                if (!object || typeof object !== 'object' || Array.isArray(object)) return undefined;
-                const descriptor = objectApi.getOwnPropertyDescriptor(object, key);
-                return descriptor && Object.hasOwn(descriptor, 'value') && typeof descriptor.value !== 'function'
-                    ? descriptor.value : undefined;
-            };
+            const readData = getLibraryOwnData;
             const element = readData(entry, 'element');
             const titleElement = readData(entry, 'titleElement');
             const title = readData(entry, 'title');
             if (!element?.isConnected || !titleElement || !element.contains(titleElement)
                 || typeof title !== 'string' || !normalizeSteamTitle(title)
-                || normalizeSteamTitle(normalizedText(titleElement)) !== normalizeSteamTitle(title)) return null;
+                || normalizeSteamTitle(normalizedText(titleElement)) !== normalizeSteamTitle(title)) return [];
             const keys = objectApi.getOwnPropertyNames(element).filter(key => key.startsWith('__reactFiber$'));
-            if (keys.length !== 1) return null;
+            if (keys.length !== 1) return [];
             let root = readData(element, keys[0]);
-            if (readData(root, 'stateNode') !== element) return null;
+            if (readData(root, 'stateNode') !== element) return [];
             const visited = new Set();
             for (let depth = 0; depth < 128; depth += 1) {
-                if (!root || visited.has(root)) return null;
+                if (!root || visited.has(root)) return [];
                 visited.add(root);
                 const parent = readData(root, 'return');
                 if (parent === null) break;
                 root = parent;
             }
-            if (readData(root, 'tag') !== 3 || readData(root, 'return') !== null) return null;
+            if (readData(root, 'tag') !== 3 || readData(root, 'return') !== null) return [];
             const current = readData(readData(root, 'stateNode'), 'current');
             if (readData(current, 'tag') !== 3
-                || readData(readData(current, 'memoizedState'), 'isDehydrated')) return null;
+                || readData(readData(current, 'memoizedState'), 'isDehydrated')) return [];
 
             // DOM expandos may retain an alternate. Use the committed tree's actual
             // child path, since shared React children may also retain old return links.
@@ -1916,7 +1919,7 @@
             for (let count = 0; pending.length && count < 20000; count += 1) {
                 const item = pending.pop();
                 const {fiber} = item;
-                if (seen.has(fiber)) return null;
+                if (seen.has(fiber)) return [];
                 seen.add(fiber);
                 if (readData(fiber, 'tag') === 5 && readData(fiber, 'stateNode') === element) {
                     ancestry = [fiber, ...item.ancestry].slice(0, 16);
@@ -1927,13 +1930,24 @@
                 if (sibling) pending.push({fiber: sibling, ancestry: item.ancestry});
                 if (child) pending.push({fiber: child, ancestry: [fiber, ...item.ancestry].slice(0, 15)});
             }
-            if (!ancestry) return null;
-            const routeContentId = readData(entry, 'routeContentId');
+            return ancestry ? ancestry.map(fiber => readData(fiber, 'memoizedProps'))
+                .filter(props => props && typeof props === 'object' && !Array.isArray(props)) : [];
+        } catch (_) {
+            // Unavailable page-realm expandos or descriptors leave the row unbound.
+            return [];
+        }
+    }
+
+    // Preserve the original identity-only reader for callers that need no key data.
+    function getLibraryEntitlement(entry) {
+        try {
+            const title = getLibraryOwnData(entry, 'title');
+            const routeContentId = getLibraryOwnData(entry, 'routeContentId');
             let result = null;
-            for (const fiber of ancestry) {
-                const entitlement = readData(readData(fiber, 'memoizedProps'), 'entitlement');
-                const id = readData(entitlement, 'id');
-                const entitlementTitle = readData(entitlement, 'title');
+            for (const props of getLibraryReactProps(entry)) {
+                const entitlement = getLibraryOwnData(props, 'entitlement');
+                const id = getLibraryOwnData(entitlement, 'id');
+                const entitlementTitle = getLibraryOwnData(entitlement, 'title');
                 if (typeof id !== 'string' || !id.trim() || typeof entitlementTitle !== 'string'
                     || !normalizeSteamTitle(entitlementTitle)) continue;
                 if (normalizeSteamTitle(entitlementTitle) !== normalizeSteamTitle(title)
@@ -1943,7 +1957,94 @@
             }
             return result;
         } catch (_) {
-            // Unavailable page-realm expandos or descriptors leave the row unbound.
+            return null;
+        }
+    }
+
+    function getLibraryArrayData(value) {
+        if (!Array.isArray(value)) return null;
+        const length = getLibraryOwnData(value, 'length', true);
+        if (length > 1000) return null;
+        const values = [];
+        for (let index = 0; index < length; index += 1) {
+            values.push(getLibraryOwnData(value, String(index), true));
+        }
+        return values;
+    }
+
+    function getLibraryKeySlot(entitlement) {
+        const id = getLibraryOwnData(entitlement, 'id');
+        const title = getLibraryOwnData(entitlement, 'title');
+        if (typeof id !== 'string' || !id.trim() || typeof title !== 'string'
+            || !normalizeSteamTitle(title)) return null;
+        const formatted = getLibraryOwnData(getLibraryOwnData(entitlement, 'redemptionData'), 'keyFormatted');
+        const slot = {id, title};
+        const type = getLibraryOwnData(entitlement, 'type');
+        if (typeof type === 'string') slot.type = type;
+        const key = typeof formatted === 'string' ? formatted.trim().toUpperCase() : '';
+        slot.keyFormatted = /^[A-Z0-9]{5}(?:-[A-Z0-9]{5}){2,4}$/.test(key) ? key : null;
+        const disclaimer = getLibraryOwnData(entitlement, 'customDisclaimer');
+        if (typeof disclaimer === 'string') slot.customDisclaimer = disclaimer;
+        for (const field of ['expired', 'preOrdered', 'outOfStock', 'redeemable']) {
+            const value = getLibraryOwnData(entitlement, field);
+            if (typeof value === 'boolean') slot[field] = value;
+        }
+        const giftStatus = getLibraryOwnData(entitlement, 'giftStatus');
+        if (typeof giftStatus === 'string') slot.giftStatus = giftStatus;
+        slot.directRedeem = getLibraryOwnData(entitlement, 'directRedeem') === null ? null : 'unsupported';
+        return slot;
+    }
+
+    // Schema 3 item ids identify purchases; only each key's own id identifies its slot.
+    function getLibraryRecord(entry) {
+        try {
+            const propsList = getLibraryReactProps(entry);
+            const nativeTitle = normalizeSteamTitle(getLibraryOwnData(entry, 'title'));
+            const routeContentId = getLibraryOwnData(entry, 'routeContentId');
+            const matchesRow = object => {
+                const id = getLibraryOwnData(object, 'id');
+                const title = getLibraryOwnData(object, 'title');
+                return typeof id === 'string' && id.trim() && typeof title === 'string'
+                    && normalizeSteamTitle(title) === nativeTitle && (!routeContentId || id === routeContentId);
+            };
+            let result = null;
+            const accept = record => {
+                if (result && JSON.stringify(result) !== JSON.stringify(record)) return false;
+                result = record;
+                return true;
+            };
+            for (const props of propsList) {
+                const item = getLibraryOwnData(props, 'item');
+                if (!matchesRow(item)) continue;
+                const keys = getLibraryArrayData(getLibraryOwnData(getLibraryOwnData(item, 'entitlements'), 'keys'));
+                if (!keys) return null;
+                const keySlots = keys.map(getLibraryKeySlot);
+                if (keySlots.some(slot => !slot) || new Set(keySlots.map(slot => slot.id)).size !== keySlots.length) return null;
+                const record = {id: getLibraryOwnData(item, 'id'), title: getLibraryOwnData(item, 'title')};
+                const contentId = getLibraryOwnData(item, 'contentId');
+                if (contentId !== undefined) {
+                    if (typeof contentId !== 'string' || !contentId.trim()) return null;
+                    record.contentId = contentId;
+                }
+                const methods = getLibraryOwnData(item, 'deliveryMethods');
+                if (methods !== undefined) {
+                    const deliveryMethods = getLibraryArrayData(methods);
+                    if (!deliveryMethods || deliveryMethods.some(method => typeof method !== 'string')) return null;
+                    record.deliveryMethods = deliveryMethods;
+                }
+                record.keySlots = keySlots;
+                if (!accept(record)) return null;
+            }
+            if (result) return result;
+            for (const props of propsList) {
+                const entitlement = getLibraryOwnData(props, 'entitlement');
+                if (!entitlement) continue;
+                const slot = getLibraryKeySlot(entitlement);
+                if (!slot) continue;
+                if (!matchesRow(entitlement) || !accept({id: slot.id, title: slot.title, keySlots: [slot]})) return null;
+            }
+            return result;
+        } catch (_) {
             return null;
         }
     }
@@ -9446,6 +9547,8 @@
             getLibraryDomEntries,
             getLibraryGameEntries,
             getLibraryEntitlement,
+            getLibraryReactProps,
+            getLibraryRecord,
             getHelperPageMode,
             isPriceTotalsPageForTest: isPriceTotalsPage,
             validateDownloadOrder,
