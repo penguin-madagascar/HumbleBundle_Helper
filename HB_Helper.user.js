@@ -165,6 +165,44 @@
       min-height: 32px !important;
       padding: 5px 10px !important;
     }
+    .hb-helper-library-status button:not(:disabled) {
+      cursor: pointer !important;
+    }
+    .hb-helper-library-status button + button {
+      margin-left: 6px !important;
+    }
+    .hb-helper-library-status button:disabled {
+      opacity: .6 !important;
+    }
+    .hb-helper-library-selection-toggle {
+      align-items: center !important;
+      background: #334155 !important;
+      border: 1px solid #94a3b8 !important;
+      border-radius: 4px !important;
+      color: #fff !important;
+      cursor: pointer !important;
+      display: inline-flex !important;
+      font: inherit !important;
+      justify-content: center !important;
+      margin: 6px !important;
+      min-height: 32px !important;
+      padding: 4px 10px !important;
+    }
+    .hb-helper-library-selection-toggle[aria-checked="true"] {
+      background: #2563a6 !important;
+      border-color: #93c5fd !important;
+    }
+    .hb-helper-library-selection-toggle:focus-visible {
+      outline: 2px solid #fff !important;
+      outline-offset: 2px !important;
+    }
+    .hb-helper-library-selected {
+      outline: 2px solid #60a5fa !important;
+      outline-offset: -2px !important;
+    }
+    .hb-helper-library-select-mode {
+      cursor: pointer !important;
+    }
     .hb-helper-library-status p {
       margin: 8px 0 0 !important;
     }
@@ -747,6 +785,7 @@
             libraryKeyInformationPending: 'Complete key information is not yet available. Use the original redemption controls for now.',
             libraryActivate: 'Activate selected games',
             libraryActivateGame: 'Activate this game',
+            librarySelectGame: 'Select {title}',
             hbPrice: 'HB: {price}',
             showUnowned: 'Show unowned',
             showAll: 'Show all',
@@ -871,6 +910,7 @@
             libraryKeyInformationPending: '暂时无法读取完整的 Key 信息，请使用原站领取入口。',
             libraryActivate: '激活所选游戏',
             libraryActivateGame: '激活此游戏',
+            librarySelectGame: '选择 {title}',
             hbPrice: 'HB：{price}',
             showUnowned: '显示未拥有',
             showAll: '显示全部',
@@ -6661,6 +6701,211 @@
         renderChoiceActivationResults();
     }
 
+    // Library selection belongs only to this live native view; it is never stored.
+    const selectedLibraryRecordIds = new Set();
+    let librarySelectionMode = false;
+    let librarySelectionContext;
+    let librarySelectionGeneration = 0;
+    let libraryUnownedSelectionPending = false;
+
+    function getLibrarySelectionContext(view = getLibraryView()) {
+        if (!['purchased', 'bundle', 'content'].includes(view.kind)) return null;
+        return {
+            route: `${getHelperRouteFingerprint()}\n${location.hash || ''}`,
+            kind: view.kind,
+            heading: view.heading,
+            form: view.form,
+            tab: view.form?.previousElementSibling?.querySelector('[role="tab"][aria-selected="true"]') || null,
+        };
+    }
+
+    function isSameLibrarySelectionContext(left, right) {
+        return Boolean(left && right && left.route === right.route && left.kind === right.kind
+            && left.heading === right.heading && left.form === right.form && left.tab === right.tab);
+    }
+
+    function resetLibrarySelection() {
+        selectedLibraryRecordIds.clear();
+        librarySelectionMode = false;
+        librarySelectionContext = undefined;
+        libraryUnownedSelectionPending = false;
+        librarySelectionGeneration += 1;
+        document.querySelectorAll('.hb-helper-library-selected, .hb-helper-library-select-mode').forEach(tile => {
+            if (canModifyHelperTarget(tile)) {
+                tile.classList.remove('hb-helper-library-selected', 'hb-helper-library-select-mode');
+            }
+        });
+    }
+
+    function getEligibleLibrarySelectionEntries() {
+        if (!['purchased', 'bundle'].includes(getLibraryView().kind)) return [];
+        return getLibraryGameEntries().flatMap(entry => {
+            if (!isSteamBundleItem(entry.item)) return [];
+            const record = getLibraryRecord(entry);
+            if (!record) return [];
+            // Product metadata may decorate a card, but only the bound purchase or
+            // the native row can prove its selected redemption platform.
+            const methods = record.deliveryMethods ?? entry.platformLabels.filter(label =>
+                !/^(windows|mac|macos|osx|linux|android|ios)$/i.test(normalizeDeliveryMethod(label)));
+            const steamOnly = methods.length > 0 && methods.every(method =>
+                deliveryPlatformAliases[normalizeDeliveryMethod(method)] === 'steam');
+            const slotIds = new Set(record.keySlots.map(slot => slot.id));
+            return steamOnly && slotIds.size > 0 ? [{...entry, record}] : [];
+        });
+    }
+
+    function refreshLibrarySelection(pendingNotice = null) {
+        const context = getLibrarySelectionContext();
+        if (!isSameLibrarySelectionContext(librarySelectionContext, context)) {
+            resetLibrarySelection();
+            librarySelectionContext = context;
+        }
+        const entries = getEligibleLibrarySelectionEntries();
+        const entriesByHost = new Map(entries.map(entry => [entry.actionHost, entry]));
+        const entriesByTile = new Map(entries.map(entry => [entry.tile, entry]));
+        document.querySelectorAll('.hb-helper-library-selection-toggle').forEach(button => {
+            if (!entriesByHost.has(button.parentElement) && canModifyHelperTarget(button.parentElement)) button.remove();
+        });
+        document.querySelectorAll('.hb-helper-library-selected, .hb-helper-library-select-mode').forEach(tile => {
+            if (!entriesByTile.has(tile) && canModifyHelperTarget(tile)) {
+                tile.classList.remove('hb-helper-library-selected', 'hb-helper-library-select-mode');
+            }
+        });
+        if (!context) {
+            document.querySelectorAll('.hb-helper-library-status').forEach(notice => notice.remove());
+            return;
+        }
+        for (const entry of entries) {
+            const {tile, actionHost, record} = entry;
+            if (!actionHost || actionHost.closest('a, button')
+                || !canModifyHelperTarget(tile) || !canModifyHelperTarget(actionHost)) continue;
+            let button = Array.from(actionHost.children).find(child => child.classList.contains('hb-helper-library-selection-toggle'));
+            if (!button) {
+                button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'hb-helper-library-selection-toggle';
+                button.setAttribute('role', 'checkbox');
+                button.addEventListener('click', handleLibrarySelectionEvent);
+                button.addEventListener('keydown', handleLibrarySelectionEvent);
+                actionHost.appendChild(button);
+            }
+            const checked = selectedLibraryRecordIds.has(record.id);
+            button.setAttribute('aria-label', t('librarySelectGame', {title: entry.title}));
+            button.setAttribute('aria-checked', String(checked));
+            setElementTextContent(button, checked ? '☑' : '☐');
+            if (tile.classList.contains('hb-helper-library-selected') !== checked) {
+                tile.classList.toggle('hb-helper-library-selected', checked);
+            }
+            if (tile.classList.contains('hb-helper-library-select-mode') !== librarySelectionMode) {
+                tile.classList.toggle('hb-helper-library-select-mode', librarySelectionMode);
+            }
+        }
+        const notices = new Set(document.querySelectorAll('.hb-helper-library-status'));
+        if (pendingNotice) notices.add(pendingNotice);
+        notices.forEach(notice => {
+            const selectButton = notice.querySelector('[data-hb-helper-library-action="select"]');
+            if (selectButton) {
+                selectButton.disabled = entries.length === 0;
+                selectButton.setAttribute('aria-pressed', String(librarySelectionMode));
+                setElementTextContent(selectButton, t(librarySelectionMode ? 'choiceSelectDone' : 'choiceSelect'));
+            }
+            const unownedButton = notice.querySelector('[data-hb-helper-library-action="select-unowned"]');
+            if (unownedButton) {
+                unownedButton.disabled = !hasSteamAccountData() || entries.length === 0 || libraryUnownedSelectionPending;
+                unownedButton.title = hasSteamAccountData() ? '' : t('loginFilterOwned');
+            }
+            const clearButton = notice.querySelector('[data-hb-helper-library-action="clear"]');
+            if (clearButton) clearButton.disabled = selectedLibraryRecordIds.size === 0 && !libraryUnownedSelectionPending;
+            setElementTextContent(notice.querySelector('.hb-helper-library-selection-status'),
+                t('choiceSelectedCount', {count: selectedLibraryRecordIds.size}));
+        });
+    }
+
+    function setLibrarySelectionMode(enabled) {
+        refreshLibrarySelection();
+        librarySelectionMode = Boolean(enabled && ['purchased', 'bundle'].includes(getLibraryView().kind));
+        refreshLibrarySelection();
+    }
+
+    function clearLibrarySelection() {
+        resetLibrarySelection();
+        refreshLibrarySelection();
+    }
+
+    function handleLibrarySelectionEvent(event) {
+        if (event.type === 'keydown' && ![' ', 'Enter'].includes(event.key)) return;
+        const target = event.target?.nodeType === 3 ? event.target.parentElement : event.target;
+        const button = target?.closest?.('.hb-helper-library-selection-toggle');
+        if (event.type === 'keydown' && !button) return;
+        if (target?.closest?.('.hb-helper-steam-store-link, .hb-helper-steam-store-row')) return;
+        if (!button && (!librarySelectionMode || isInsideHelperUi(target))) return;
+        refreshLibrarySelection();
+        if (!button && (!librarySelectionMode || isInsideHelperUi(target))) return;
+        const entry = getEligibleLibrarySelectionEntries().find(candidate => button
+            ? candidate.actionHost === button.parentElement
+            : candidate.tile.contains(target) || candidate.actionHost.contains(target));
+        if (!entry || !canModifyHelperTarget(entry.tile) || !canModifyHelperTarget(entry.actionHost)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        if (selectedLibraryRecordIds.has(entry.record.id)) selectedLibraryRecordIds.delete(entry.record.id);
+        else selectedLibraryRecordIds.add(entry.record.id);
+        // A user edit supersedes an unfinished ownership lookup.
+        librarySelectionGeneration += 1;
+        libraryUnownedSelectionPending = false;
+        refreshLibrarySelection();
+    }
+
+    function handleLibraryViewEvent(event) {
+        if (!getLibrarySelectionContext()) return;
+        const target = event.target?.nodeType === 3 ? event.target.parentElement : event.target;
+        if (!target?.closest || isInsideHelperUi(target)) return;
+        const main = document.querySelector('main, [role="main"]');
+        const inNativePanel = main?.contains(target) || target.closest('[role="dialog"], [role="menu"], [role="listbox"]');
+        if (!inNativePanel) return;
+        const nativeInput = ['input', 'change', 'submit'].includes(event.type);
+        const nativeTab = target.closest('[role="tab"]');
+        const control = target.closest('button, a, input, select, label, [role="menuitem"], [role="option"]');
+        const insideEntry = getLibraryDomEntries().some(entry => entry.element.contains(target));
+        if (!nativeInput && !nativeTab && (!control || insideEntry)) return;
+        clearLibrarySelection();
+        schedulePageRefresh();
+    }
+
+    async function selectUnownedLibraryEntries({findApp = findSteamApp} = {}) {
+        refreshLibrarySelection();
+        if (!hasSteamAccountData() || libraryUnownedSelectionPending) return;
+        const entries = [...new Map(getEligibleLibrarySelectionEntries().map(entry => [entry.record.id, entry])).values()];
+        if (!entries.length) return;
+        const context = librarySelectionContext;
+        const account = steamSessionState.account;
+        const owned = new Set(account.ownedApps);
+        const generation = ++librarySelectionGeneration;
+        const isCurrent = () => generation === librarySelectionGeneration
+            && isSameLibrarySelectionContext(context, getLibrarySelectionContext())
+            && hasSteamAccountData() && steamSessionState.account === account;
+        libraryUnownedSelectionPending = true;
+        refreshLibrarySelection();
+        try {
+            const unowned = new Set();
+            for (const entry of entries) {
+                if (!isCurrent()) return;
+                const app = await findApp(entry.title);
+                if (!isCurrent()) return;
+                if (app?.appid && !owned.has(Number(app.appid))) unowned.add(entry.record.id);
+            }
+            if (!isCurrent()) return;
+            selectedLibraryRecordIds.clear();
+            unowned.forEach(id => selectedLibraryRecordIds.add(id));
+            librarySelectionMode = true;
+        } finally {
+            if (generation === librarySelectionGeneration) {
+                libraryUnownedSelectionPending = false;
+                refreshLibrarySelection();
+            }
+        }
+    }
+
     function ensureLibraryActivationNotice(controls) {
         const view = getLibraryView();
         let notice = controls.querySelector('.hb-helper-library-status');
@@ -6682,9 +6927,39 @@
             notice.append(button, reason);
             controls.appendChild(notice);
         }
-        setElementTextContent(notice.querySelector('button'), t(view.kind === 'content'
+        const selectable = ['purchased', 'bundle'].includes(view.kind);
+        for (const [action, label, handler] of [
+            ['select-unowned', 'choiceSelectUnowned', () => selectUnownedLibraryEntries().catch(error => {
+                console.warn('[HB-Helper] Select unowned Library games failed:', error);
+            })],
+            ['select', 'choiceSelect', () => setLibrarySelectionMode(!librarySelectionMode)],
+            ['clear', 'choiceClearSelection', clearLibrarySelection],
+        ]) {
+            let button = notice.querySelector(`[data-hb-helper-library-action="${action}"]`);
+            if (!selectable) {
+                button?.remove();
+                continue;
+            }
+            if (!button) {
+                button = document.createElement('button');
+                button.type = 'button';
+                button.dataset.hbHelperLibraryAction = action;
+                button.addEventListener('click', handler);
+                notice.insertBefore(button, notice.querySelector('p'));
+            }
+            if (action !== 'select') setElementTextContent(button, t(label));
+        }
+        let selectionStatus = notice.querySelector('.hb-helper-library-selection-status');
+        if (selectable && !selectionStatus) {
+            selectionStatus = document.createElement('p');
+            selectionStatus.className = 'hb-helper-library-selection-status';
+            selectionStatus.setAttribute('role', 'status');
+            notice.appendChild(selectionStatus);
+        } else if (!selectable) selectionStatus?.remove();
+        setElementTextContent(notice.querySelector('[data-hb-helper-library-action="activate"]'), t(view.kind === 'content'
             ? 'libraryActivateGame' : 'libraryActivate'));
-        setElementTextContent(notice.querySelector('p'), t('libraryKeyInformationPending'));
+        setElementTextContent(notice.querySelector('#hb-helper-library-key-status'), t('libraryKeyInformationPending'));
+        refreshLibrarySelection(notice);
     }
 
     function refreshLibraryCards() {
@@ -7041,6 +7316,7 @@
     }
 
     function refreshHelperPage(forcePriceReload = false, {skipDownloadRemap = false} = {}) {
+        refreshLibrarySelection();
         if (isDownloadsPage()) {
             refreshDownloadOrderPage({remap: !skipDownloadRemap});
             return;
@@ -7168,6 +7444,7 @@
             '.hb-helper-region-restrictions',
             '.hb-helper-steam-store-link',
             '.hb-helper-steam-store-row',
+            '.hb-helper-library-selection-toggle',
             '.hb-helper-platform-badges',
             '.hb-helper-download-mapping-warning',
             '.hb-helper-download-mapping-summary-warning',
@@ -7257,6 +7534,12 @@
         document.addEventListener('click', handleChoiceSelectionClick, true);
         document.addEventListener('click', handleDownloadSelectionEvent, true);
         document.addEventListener('keydown', handleDownloadSelectionEvent, true);
+        document.addEventListener('click', handleLibrarySelectionEvent, true);
+        document.addEventListener('keydown', handleLibrarySelectionEvent, true);
+        for (const type of ['click', 'input', 'change', 'submit']) {
+            document.addEventListener(type, handleLibraryViewEvent, true);
+        }
+        window.addEventListener('pagehide', resetLibrarySelection);
         document.addEventListener('click', event => {
             if (!isInsideHelperUi(event.target)) schedulePageRefresh();
         }, true);
@@ -7994,6 +8277,8 @@
 
         if (mode !== 'downloads') leaveDownloadOrderPage();
         if (mode !== 'library') {
+            resetLibrarySelection();
+            refreshLibrarySelection();
             document.getElementById('hb-helper-library-controls')?.remove();
             document.querySelectorAll('[data-hb-helper-library-link]').forEach(removeSteamStoreLink);
             refreshLibraryCards();
@@ -9625,6 +9910,12 @@
             getLibraryEntitlement,
             getLibraryReactProps,
             getLibraryRecord,
+            refreshLibrarySelectionForTest: refreshLibrarySelection,
+            getSelectedLibraryRecordIdsForTest: () => new Set(selectedLibraryRecordIds),
+            setLibrarySelectionModeForTest: setLibrarySelectionMode,
+            handleLibrarySelectionEventForTest: handleLibrarySelectionEvent,
+            handleLibraryViewEventForTest: handleLibraryViewEvent,
+            selectUnownedLibraryEntriesForTest: selectUnownedLibraryEntries,
             getHelperPageMode,
             isPriceTotalsPageForTest: isPriceTotalsPage,
             validateDownloadOrder,
