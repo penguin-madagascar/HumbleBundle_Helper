@@ -786,6 +786,22 @@
             libraryActivate: 'Activate selected games',
             libraryActivateGame: 'Activate this game',
             librarySelectGame: 'Select {title}',
+            libraryActivationReady: 'Select Steam games, then choose Activate.',
+            libraryActivationVerifying: 'Verifying Humble Bundle and Steam accounts…',
+            libraryActivationAccountRequired: 'Verified Humble Bundle and Steam account identities are required before activation.',
+            libraryActivationStopped: 'The account, Library view, or selection changed. Remaining keys were not submitted.',
+            libraryActivationComplete: 'Activation finished. Review each key below.',
+            libraryActivationRecovered: 'An unfinished Library activation batch exists. Cancel it before starting another batch. It will not submit keys automatically.',
+            libraryActivationUnknownBatch: 'An interrupted empty activation batch has an unidentified source. Clean it up explicitly to unlock activation; no keys will be submitted.',
+            libraryActivationRecoverUnknown: 'Clean up interrupted batch (unidentified source)',
+            libraryActivationVerifyResults: 'Verify accounts to view results',
+            libraryActivationRecoveredCancelled: 'The interrupted batch was cancelled. Any request that had already started has an uncertain result; check Steam before retrying.',
+            libraryActivationCancel: 'Cancel',
+            libraryActivationActivated: 'Activated',
+            libraryActivationPending: 'Waiting for Steam activation',
+            libraryActivationActivating: 'Activating on Steam',
+            libraryPurchasedRevealUnsupported: 'Open the original game details and reveal this key, then retry activation.',
+            librarySteamSlotUnsupported: 'This key slot is not eligible for verified Steam redemption.',
             hbPrice: 'HB: {price}',
             showUnowned: 'Show unowned',
             showAll: 'Show all',
@@ -912,6 +928,22 @@
             libraryActivate: '激活所选游戏',
             libraryActivateGame: '激活此游戏',
             librarySelectGame: '选择 {title}',
+            libraryActivationReady: '选择 Steam 游戏后点击激活。',
+            libraryActivationVerifying: '正在验证 Humble Bundle 和 Steam 账号…',
+            libraryActivationAccountRequired: '必须验证 Humble Bundle 和 Steam 账号身份后才能激活。',
+            libraryActivationStopped: '账号、游戏库页面或选择已更改，其余 Key 未提交。',
+            libraryActivationComplete: '激活已结束，请查看下方每个 Key 的结果。',
+            libraryActivationRecovered: '存在未完成的游戏库激活批次，请先取消再开始新批次。不会自动提交 Key。',
+            libraryActivationUnknownBatch: '存在来源未识别的空激活批次。请手动清理后继续，不会提交任何 Key。',
+            libraryActivationRecoverUnknown: '清理中断批次（来源未识别）',
+            libraryActivationVerifyResults: '验证账号并查看结果',
+            libraryActivationRecoveredCancelled: '已取消中断批次。已开始的请求结果不确定，请先在 Steam 中确认后再重试。',
+            libraryActivationCancel: '取消',
+            libraryActivationActivated: '已激活',
+            libraryActivationPending: '等待 Steam 激活',
+            libraryActivationActivating: '正在 Steam 激活',
+            libraryPurchasedRevealUnsupported: '请打开原站游戏详情页显示此 Key，再重试激活。',
+            librarySteamSlotUnsupported: '此 Key 不符合已验证的 Steam 兑换条件。',
             hbPrice: 'HB：{price}',
             showUnowned: '显示未拥有',
             showAll: '显示全部',
@@ -7005,6 +7037,7 @@
             if (clearButton) clearButton.disabled = selectedLibraryRecordIds.size === 0 && !libraryUnownedSelectionPending;
             setElementTextContent(notice.querySelector('.hb-helper-library-selection-status'),
                 t('choiceSelectedCount', {count: selectedLibraryRecordIds.size}));
+            renderLibraryActivationState(notice);
         });
     }
 
@@ -7093,6 +7126,433 @@
         }
     }
 
+    let libraryActivationOperation;
+    let libraryActivationResultContext;
+    let libraryActivationMessage;
+    let libraryActivationBatchListener;
+
+    function getLibrarySteamPrincipal(account) {
+        const id = account?.steamAccountId;
+        return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
+            && Number(id) <= 4294967295 ? id : null;
+    }
+
+    function getLibraryActivationEntries(view = getLibraryView()) {
+        if (view.kind !== 'content') return getEligibleLibrarySelectionEntries();
+        return getLibraryGameEntries().flatMap(entry => {
+            const record = getLibraryRecord(entry);
+            return record ? [{...entry, record}] : [];
+        });
+    }
+
+    function isExclusiveLibrarySteamRecord(record, platformLabels = []) {
+        const methods = record.deliveryMethods ?? platformLabels.filter(label =>
+            !/^(windows|mac|macos|osx|linux|android|ios)$/i.test(normalizeDeliveryMethod(label)));
+        return methods.length > 0 && methods.every(method =>
+            deliveryPlatformAliases[normalizeDeliveryMethod(method)] === 'steam');
+    }
+
+    function captureLibraryActivationSnapshot({
+        view = getLibraryView(), entries = getLibraryActivationEntries(view),
+        selection = selectedLibraryRecordIds,
+    } = {}) {
+        if (!['purchased', 'bundle', 'content'].includes(view.kind)) return null;
+        const items = new Map();
+        for (const entry of entries) {
+            const record = entry.record;
+            if (!record || (view.kind !== 'content' && !selection.has(record.id))
+                || !isExclusiveLibrarySteamRecord(record, entry.platformLabels)) continue;
+            for (const slot of record.keySlots) {
+                if (slot.type !== 'steam') continue;
+                const identity = JSON.stringify([record.id, slot.id]);
+                const copy = {entitlementId: record.id, keySlotId: slot.id,
+                    title: slot.title || record.title, recordTitle: record.title,
+                    contentId: record.contentId ?? null, slot: {...slot}};
+                if (items.has(identity) && JSON.stringify(items.get(identity)) !== JSON.stringify(copy)) return null;
+                items.set(identity, copy);
+            }
+        }
+        if (!items.size) return null;
+        return Object.freeze({kind: view.kind,
+            routeFingerprint: `${getHelperRouteFingerprint()}\n${location.hash || ''}`,
+            selectionIds: Object.freeze(sortedActivationSelectionIds(selection)),
+            items: Object.freeze([...items.values()].map(item => Object.freeze({
+                ...item, slot: Object.freeze(item.slot),
+            }))),
+        });
+    }
+
+    function captureLibraryActivationContext(snapshot) {
+        return {snapshot, view: getLibrarySelectionContext(), generation: librarySelectionGeneration,
+            controls: document.querySelector('.hb-helper-library-status'),
+            principal: null, cancelled: false};
+    }
+
+    function isLibraryActivationContextCurrent(context) {
+        return Boolean(context && !context.cancelled
+            && context.generation === librarySelectionGeneration
+            && isSameLibrarySelectionContext(context.view, getLibrarySelectionContext())
+            && context.controls?.isConnected
+            && context.controls === document.querySelector('.hb-helper-library-status')
+            && (context.snapshot.kind === 'content'
+                || activationSelectionIdsMatch(context.snapshot.selectionIds, selectedLibraryRecordIds))
+            && (!context.principal || (hasSteamAccountData()
+                && getLibrarySteamPrincipal(steamSessionState.account) === context.principal)));
+    }
+
+    async function revealLibraryActivationItem(item, snapshot, {
+        isContextCurrent, revealKey = revealLibrarySteamKey,
+    }) {
+        if (!isContextCurrent()) throw new Error(t('libraryActivationStopped'));
+        if (item.slot.type !== 'steam' || item.slot.directRedeem !== null) {
+            throw new Error(t('librarySteamSlotUnsupported'));
+        }
+        // Read the exact live slot first. A native "hide revealed" update can
+        // remove the row, so already revealed keys also belong to the frozen click.
+        let key = null;
+        try {
+            key = getLibrarySteamRevealBindings(item).key;
+        } catch (error) {
+            if (error.code !== 'missing') throw new Error(t('librarySteamSlotUnsupported'));
+        }
+        key ||= item.slot.keyFormatted;
+        if (typeof key === 'string' && /^[A-Z0-9]{5}(?:-[A-Z0-9]{5}){2,4}$/.test(key)) return key;
+        if (snapshot.kind === 'purchased') throw new Error(t('libraryPurchasedRevealUnsupported'));
+        if (item.slot.expired !== false || item.slot.preOrdered !== false
+            || item.slot.outOfStock !== false || item.slot.redeemable !== true) {
+            throw new Error(t('librarySteamSlotUnsupported'));
+        }
+        return revealKey({entitlementId: item.entitlementId, keySlotId: item.keySlotId}, {isContextCurrent});
+    }
+
+    function reconcileLibraryActivationSelection(snapshot, batch, scope) {
+        if (batch?.state !== choiceActivationBatchStates.complete
+            || !activationScopesMatch(inferActivationBatchScope(batch), {kind: 'library', scope})) return;
+        const statuses = new Map(batch.items.map(item => [item.id, item.status]));
+        for (const recordId of new Set(snapshot.items.map(item => item.entitlementId))) {
+            const slots = snapshot.items.filter(item => item.entitlementId === recordId);
+            if (slots.every(item => statuses.get(encodeLibraryActivationItemId(scope, recordId, item.keySlotId))
+                === choiceActivationItemStates.activated)) selectedLibraryRecordIds.delete(recordId);
+        }
+    }
+
+    async function refreshLibraryActivationOwnership(batch, {syncSession, principal, lockManager}) {
+        return runChoiceOwnershipRefreshWork(batch.id, {
+            lockManager,
+            loadAccount: async () => {
+                const account = await fetchFreshSteamAccountAfterActivation(syncSession);
+                if (getLibrarySteamPrincipal(account) !== principal) throw new Error(t('libraryActivationStopped'));
+                return account;
+            },
+            reconcileClasses: async (owned, wishlist, account) =>
+                applySteamSessionState({status: 'authenticated', account, error: null}),
+        });
+    }
+
+    async function runDirectLibraryActivation(snapshot, {
+        loadIdentity = loadLibraryHumbleIdentity, syncSession = syncSteamSession,
+        hashScope = hashDownloadOrderKey, collectWork = runChoiceCollectionWork,
+        activationWork = runSteamActivationWork, revealKey = revealLibrarySteamKey,
+        postKey = postSteamActivationKey, refreshOwnership = refreshLibraryActivationOwnership,
+        collectionOptions = {}, activationOptions = {}, isContextCurrent = () => true,
+        onPrincipal = () => {}, onStatus = () => {}, onProgress = () => {},
+    } = {}) {
+        if (!snapshot?.items?.length) return {started: false, invalidSelection: true};
+        let humbleIdentity;
+        let principal;
+        let invalidated = false;
+        let resultContext;
+        const contextCurrent = () => !invalidated && isContextCurrent();
+        const verifyAccounts = async (capture = false) => {
+            try {
+                if (!contextCurrent()) return false;
+                const freshIdentity = await loadIdentity();
+                if (!contextCurrent() || !/^[0-9a-f]{64}$/.test(freshIdentity || '')) return false;
+                if (!capture && freshIdentity !== humbleIdentity) {
+                    invalidated = true;
+                    if (resultContext) resultContext.accountsVerified = false;
+                    return false;
+                }
+                const state = await syncSession({force: true});
+                const freshPrincipal = getLibrarySteamPrincipal(state?.account);
+                if (!contextCurrent() || state?.status !== 'authenticated'
+                    || !isSteamAccountData(state.account) || !freshPrincipal) return false;
+                if (!capture && freshPrincipal !== principal) {
+                    invalidated = true;
+                    if (resultContext) resultContext.accountsVerified = false;
+                    return false;
+                }
+                if (capture) {
+                    humbleIdentity = freshIdentity;
+                    principal = freshPrincipal;
+                    onPrincipal(principal);
+                }
+                return contextCurrent() ? state.account.sessionId : false;
+            } catch (_) {
+                return false;
+            }
+        };
+        onStatus(t('libraryActivationVerifying'));
+        const initialSession = await verifyAccounts(true);
+        if (!initialSession) return {started: false, authenticationRequired: true, stale: !contextCurrent()};
+        let scope;
+        try {
+            scope = await hashScope(JSON.stringify(['library-v1', humbleIdentity, principal,
+                snapshot.kind, snapshot.routeFingerprint]));
+        } catch (_) {
+            return {started: false, authenticationRequired: true};
+        }
+        if (!contextCurrent()) return {started: false, stale: true};
+        if (!/^[0-9a-f]{64}$/.test(scope || '')) return {started: false, authenticationRequired: true};
+        resultContext = {scope, kind: snapshot.kind, routeFingerprint: snapshot.routeFingerprint,
+            view: getLibrarySelectionContext(), routeGeneration: helperRouteTransitionGeneration,
+            principal, accountsVerified: true,
+            verifyAccounts: async () => {
+                try {
+                    const identity = await loadIdentity();
+                    if (identity !== humbleIdentity) return false;
+                    const state = await syncSession({force: true});
+                    return state?.status === 'authenticated' && isSteamAccountData(state.account)
+                        && getLibrarySteamPrincipal(state.account) === principal;
+                } catch (_) {
+                    return false;
+                }
+            },
+        };
+        const candidates = snapshot.items.map(item => ({...item,
+            id: encodeLibraryActivationItemId(scope, item.entitlementId, item.keySlotId)}));
+        // Collection can wait for another tab's lock; verify again at the claim boundary.
+        const collection = await collectWork(candidates, {...collectionOptions,
+            selectionScope: {kind: 'library', scope}, isContextCurrent: contextCurrent,
+            onBatchStarted: batch => {
+                libraryActivationResultContext = resultContext;
+                onProgress(batch);
+            },
+            onProgress: item => onStatus(t('choiceRevealProgress', {title: item.title,
+                current: candidates.findIndex(candidate => candidate.id === item.id) + 1, total: candidates.length})),
+            revealKey: async item => {
+                if (!await verifyAccounts()) {
+                    invalidated = true;
+                    throw new Error(t('libraryActivationStopped'));
+                }
+                return revealLibraryActivationItem(item, snapshot, {isContextCurrent: contextCurrent, revealKey});
+            },
+        });
+        if (!collection?.started) return collection;
+        libraryActivationResultContext = resultContext;
+        let result = collection;
+        if (collection.pendingCount > 0) {
+            const activation = await activationWork({...activationOptions,
+                sessionId: initialSession, activateKey: postKey, isContextCurrent: contextCurrent,
+                beforeSubmit: () => verifyAccounts(), recheckSession: options => syncSession(options),
+                showProgress: (item, index, total) => {
+                    onStatus(t('steamActivationProgress', {title: item.title, current: index + 1, total}));
+                    onProgress(getChoiceActivationBatch());
+                },
+            });
+            result = {...collection, ...activation, activation};
+        }
+        const batch = result.batch || getChoiceActivationBatch();
+        if (batch?.state === choiceActivationBatchStates.complete) {
+            if (isContextCurrent()) reconcileLibraryActivationSelection(snapshot, batch, scope);
+            await refreshOwnership(batch, {syncSession, principal,
+                lockManager: activationOptions.lockManager || collectionOptions.lockManager});
+        }
+        return {...result, scope, batch: getChoiceActivationBatch() || batch};
+    }
+
+    async function startLibraryActivation(options = {}) {
+        if (libraryActivationOperation) return {started: false, busy: true};
+        refreshLibrarySelection();
+        // Nothing asynchronous may precede the copy of the user's exact choices.
+        const snapshot = captureLibraryActivationSnapshot();
+        if (!snapshot) return {started: false, invalidSelection: true};
+        if (isChoiceActivationBatchActive()) return {started: false, busy: true};
+        const context = captureLibraryActivationContext(snapshot);
+        libraryActivationOperation = context;
+        const setStatus = message => {
+            libraryActivationMessage = {controls: context.controls, message};
+            renderLibraryActivationState(context.controls);
+        };
+        try {
+            const result = await runDirectLibraryActivation(snapshot, {...options,
+                isContextCurrent: () => isLibraryActivationContextCurrent(context)
+                    && (options.isContextCurrent?.() ?? true),
+                onPrincipal: principal => { context.principal = principal; },
+                onStatus: setStatus, onProgress: () => renderLibraryActivationState(context.controls),
+            });
+            setStatus(result?.message || (result?.stale || result?.stopped ? t('libraryActivationStopped')
+                : result?.authenticationRequired ? t('libraryActivationAccountRequired')
+                    : result?.busy ? t('activationBusy')
+                        : result?.started ? t('libraryActivationComplete') : t('libraryActivationStopped')));
+            return result;
+        } catch (_) {
+            setStatus(t('libraryActivationStopped'));
+            return {started: false, stopped: true};
+        } finally {
+            if (libraryActivationOperation === context) libraryActivationOperation = undefined;
+            refreshLibrarySelection();
+        }
+    }
+
+    async function cancelLibraryActivation({lockManager} = {}) {
+        librarySelectionGeneration += 1;
+        if (libraryActivationOperation) {
+            libraryActivationOperation.cancelled = true;
+            libraryActivationMessage = {controls: libraryActivationOperation.controls, message: t('libraryActivationStopped')};
+            renderLibraryActivationState(libraryActivationOperation.controls);
+            return {cancelled: true};
+        }
+        const current = getChoiceActivationBatch();
+        if (current?.state === choiceActivationBatchStates.collecting && current.items.length === 0) {
+            const recovery = await recoverStaleChoiceCollection({lockManager});
+            document.querySelectorAll('.hb-helper-library-status').forEach(renderLibraryActivationState);
+            return recovery;
+        }
+        // A recovered batch may belong to an interrupted page. Both existing
+        // locks are required before turning any known in-flight item uncertain.
+        const result = await requestChoiceExclusiveLock(choiceCollectionLockName, () =>
+            requestChoiceExclusiveLock(steamActivationLockName, () => {
+                const batch = getChoiceActivationBatch();
+                if (inferActivationBatchScope(batch)?.kind !== 'library'
+                    || !isChoiceActivationBatchActive(batch)) return {cancelled: false};
+                const cancelled = cancelUncertainSteamActivationBatch(JSON.parse(JSON.stringify(batch)));
+                cancelled.ownershipRefresh = {state: choiceActivationOwnershipStates.failed,
+                    owner: null, leaseExpiresAt: null, error: t('choiceOwnershipRefreshWarning')};
+                GM_setValue(steamActivationBatchKey, cancelled);
+                libraryActivationMessage = {controls: document.querySelector('.hb-helper-library-status'),
+                    message: t('libraryActivationRecoveredCancelled')};
+                return {cancelled: true, batch: cancelled};
+            }, {lockManager, ifAvailable: true}), {lockManager, ifAvailable: true});
+        document.querySelectorAll('.hb-helper-library-status').forEach(renderLibraryActivationState);
+        return result;
+    }
+
+    function isLibraryActivationResultViewCurrent(context) {
+        return Boolean(context && context.kind === getLibraryView().kind
+            && isSameLibrarySelectionContext(context.view, getLibrarySelectionContext())
+            && context.routeFingerprint === `${getHelperRouteFingerprint()}\n${location.hash || ''}`);
+    }
+
+    async function verifyLibraryActivationResults(context = libraryActivationResultContext) {
+        if (context !== libraryActivationResultContext || !isLibraryActivationResultViewCurrent(context)
+            || context.verifying) return false;
+        context.accountsVerified = false;
+        context.verifying = true;
+        document.querySelectorAll('.hb-helper-library-status').forEach(renderLibraryActivationState);
+        const verified = await context.verifyAccounts();
+        context.verifying = false;
+        context.accountsVerified = Boolean(verified && context === libraryActivationResultContext
+            && isLibraryActivationResultViewCurrent(context)
+            && steamSessionState.status === 'authenticated'
+            && getLibrarySteamPrincipal(steamSessionState.account) === context.principal);
+        if (context.accountsVerified) context.routeGeneration = helperRouteTransitionGeneration;
+        else libraryActivationMessage = {controls: document.querySelector('.hb-helper-library-status'),
+            message: t('libraryActivationAccountRequired')};
+        document.querySelectorAll('.hb-helper-library-status').forEach(renderLibraryActivationState);
+        return context.accountsVerified;
+    }
+
+    function renderLibraryActivationState(notice) {
+        if (!notice) return;
+        const batch = getChoiceActivationBatch();
+        const batchScope = inferActivationBatchScope(batch);
+        const active = isChoiceActivationBatchActive(batch);
+        const unknownEmpty = batch?.state === choiceActivationBatchStates.collecting && batch.items.length === 0;
+        const recovered = active && batchScope?.kind === 'library' && !libraryActivationOperation;
+        const button = notice.querySelector('[data-hb-helper-library-action="activate"]');
+        const snapshot = captureLibraryActivationSnapshot();
+        if (button) button.disabled = Boolean(libraryActivationOperation || active || !snapshot
+            || !hasSteamAccountData() || !getLibrarySteamPrincipal(steamSessionState.account));
+        const cancel = notice.querySelector('[data-hb-helper-library-action="cancel"]');
+        if (cancel) {
+            cancel.hidden = !libraryActivationOperation && !(active && batchScope?.kind === 'library') && !unknownEmpty;
+            cancel.disabled = Boolean(libraryActivationOperation?.cancelled);
+            setElementTextContent(cancel, t(unknownEmpty && !libraryActivationOperation
+                ? 'libraryActivationRecoverUnknown' : 'libraryActivationCancel'));
+        }
+        setElementTextContent(notice.querySelector('#hb-helper-library-key-status'), unknownEmpty && !libraryActivationOperation
+            ? t('libraryActivationUnknownBatch') : recovered
+            ? t('libraryActivationRecovered') : active && batchScope?.kind !== 'library'
+                ? t('activationBusy') : libraryActivationMessage?.controls === notice
+                    ? libraryActivationMessage.message : t(snapshot ? 'libraryActivationReady' : 'libraryKeyInformationPending'));
+        const results = notice.querySelector('.hb-helper-library-results');
+        if (!results) return;
+        const resultContext = libraryActivationResultContext;
+        const matchesResultView = batchScope?.kind === 'library'
+            && batchScope.scope === libraryActivationResultContext?.scope
+            && isLibraryActivationResultViewCurrent(resultContext);
+        if (resultContext && (!isLibraryActivationResultViewCurrent(resultContext)
+            || resultContext.routeGeneration !== helperRouteTransitionGeneration
+            || getLibrarySteamPrincipal(steamSessionState.account) !== resultContext.principal
+            || (!libraryActivationOperation && !resultContext.verifying
+                && steamSessionState.status !== 'authenticated'))) resultContext.accountsVerified = false;
+        const verifyButton = notice.querySelector('[data-hb-helper-library-action="verify-results"]');
+        if (verifyButton) {
+            verifyButton.hidden = !matchesResultView || resultContext.accountsVerified || Boolean(libraryActivationOperation);
+            verifyButton.disabled = Boolean(resultContext?.verifying);
+        }
+        const showDetails = matchesResultView && resultContext.accountsVerified
+            && getLibrarySteamPrincipal(steamSessionState.account) === resultContext.principal;
+        const signature = showDetails ? JSON.stringify([currentLanguage, batch.id,
+            batch.state, batch.ownershipRefresh, batch.items.map(item => ({id: item.id,
+                title: item.title, status: item.status, error: item.error, code: item.code,
+                copyAvailable: Boolean(item.key)}))]) : '';
+        if (results.dataset.hbHelperLibrarySignature === signature) return;
+        results.dataset.hbHelperLibrarySignature = signature;
+        results.replaceChildren();
+        if (!showDetails) return;
+        const summary = document.createElement('p');
+        summary.textContent = t('choiceActivationSummary', getChoiceActivationCounts(batch));
+        results.appendChild(summary);
+        const feedback = document.createElement('p');
+        feedback.className = 'hb-helper-library-copy-feedback';
+        feedback.setAttribute('role', 'status');
+        for (const item of batch.items) {
+            const row = document.createElement('div');
+            row.className = 'hb-helper-choice-result-row';
+            const detail = document.createElement('div');
+            const status = item.status === choiceActivationItemStates.activated ? t('libraryActivationActivated')
+                : item.status === choiceActivationItemStates.activating ? t('libraryActivationActivating')
+                    : item.status === choiceActivationItemStates.pending ? t('libraryActivationPending')
+                        : item.error || t('librarySteamSlotUnsupported');
+            const parsed = parseLibraryActivationItemId(item.id);
+            const siblings = batch.items.filter(candidate =>
+                parseLibraryActivationItemId(candidate.id)?.entitlementId === parsed?.entitlementId);
+            const label = siblings.length > 1 ? `${item.title} (key ${siblings.indexOf(item) + 1}/${siblings.length})` : item.title;
+            detail.textContent = `${label}: ${status}`;
+            row.appendChild(detail);
+            if (item.status === choiceActivationItemStates.steamFailed && item.key) {
+                const copy = document.createElement('button');
+                copy.type = 'button';
+                copy.textContent = t('choiceCopyFailedKey', {title: label});
+                copy.addEventListener('click', async () => {
+                    if (!await verifyLibraryActivationResults(resultContext)) return;
+                    if (resultContext !== libraryActivationResultContext || !resultContext.accountsVerified
+                        || !isLibraryActivationResultViewCurrent(resultContext)
+                        || resultContext.routeGeneration !== helperRouteTransitionGeneration
+                        || steamSessionState.status !== 'authenticated'
+                        || getLibrarySteamPrincipal(steamSessionState.account) !== resultContext.principal) return;
+                    const current = getChoiceActivationBatch();
+                    const currentItem = current?.id === batch.id
+                        ? current.items.find(candidate => candidate.id === item.id) : null;
+                    if (currentItem?.status === choiceActivationItemStates.steamFailed && currentItem.key) {
+                        copySteamFailedKey(current, currentItem,
+                            notice.querySelector('.hb-helper-library-copy-feedback') || feedback);
+                    }
+                });
+                row.appendChild(copy);
+            }
+            results.appendChild(row);
+        }
+        if (batch.ownershipRefresh.state === choiceActivationOwnershipStates.failed) {
+            const warning = document.createElement('p');
+            warning.textContent = batch.ownershipRefresh.error || t('choiceOwnershipRefreshWarning');
+            results.appendChild(warning);
+        }
+        results.appendChild(feedback);
+    }
+
     function ensureLibraryActivationNotice(controls) {
         const view = getLibraryView();
         let notice = controls.querySelector('.hb-helper-library-status');
@@ -7107,13 +7567,34 @@
             button.type = 'button';
             button.disabled = true;
             button.dataset.hbHelperLibraryAction = 'activate';
+            button.addEventListener('click', () => startLibraryActivation());
             const reason = document.createElement('p');
             reason.id = 'hb-helper-library-key-status';
             reason.setAttribute('role', 'status');
             button.setAttribute('aria-describedby', reason.id);
             notice.append(button, reason);
             controls.appendChild(notice);
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.dataset.hbHelperLibraryAction = 'cancel';
+            cancel.addEventListener('click', () => cancelLibraryActivation());
+            notice.appendChild(cancel);
+            const results = document.createElement('div');
+            results.className = 'hb-helper-library-results';
+            results.setAttribute('aria-live', 'polite');
+            notice.appendChild(results);
+            const verifyResults = document.createElement('button');
+            verifyResults.type = 'button';
+            verifyResults.dataset.hbHelperLibraryAction = 'verify-results';
+            verifyResults.addEventListener('click', () => verifyLibraryActivationResults());
+            notice.appendChild(verifyResults);
         }
+        if (libraryActivationBatchListener === undefined) {
+            libraryActivationBatchListener = GM_addValueChangeListener(steamActivationBatchKey, () =>
+                document.querySelectorAll('.hb-helper-library-status').forEach(renderLibraryActivationState)) ?? true;
+        }
+        setElementTextContent(notice.querySelector('[data-hb-helper-library-action="cancel"]'), t('libraryActivationCancel'));
+        setElementTextContent(notice.querySelector('[data-hb-helper-library-action="verify-results"]'), t('libraryActivationVerifyResults'));
         const selectable = ['purchased', 'bundle'].includes(view.kind);
         for (const [action, label, handler] of [
             ['select-unowned', 'choiceSelectUnowned', () => selectUnownedLibraryEntries().catch(error => {
@@ -7145,7 +7626,6 @@
         } else if (!selectable) selectionStatus?.remove();
         setElementTextContent(notice.querySelector('[data-hb-helper-library-action="activate"]'), t(view.kind === 'content'
             ? 'libraryActivateGame' : 'libraryActivate'));
-        setElementTextContent(notice.querySelector('#hb-helper-library-key-status'), t('libraryKeyInformationPending'));
         refreshLibrarySelection(notice);
     }
 
@@ -10118,6 +10598,12 @@
             getLibraryReactProps,
             getLibraryRecord,
             revealLibrarySteamKey,
+            captureLibraryActivationSnapshotForTest: captureLibraryActivationSnapshot,
+            runDirectLibraryActivationForTest: runDirectLibraryActivation,
+            startLibraryActivationForTest: startLibraryActivation,
+            cancelLibraryActivationForTest: cancelLibraryActivation,
+            renderLibraryActivationStateForTest: renderLibraryActivationState,
+            ensurePurchasedLibraryControlsForTest: ensurePurchasedLibraryControls,
             refreshLibrarySelectionForTest: refreshLibrarySelection,
             getSelectedLibraryRecordIdsForTest: () => new Set(selectedLibraryRecordIds),
             setLibrarySelectionModeForTest: setLibrarySelectionMode,
