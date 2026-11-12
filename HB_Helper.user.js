@@ -1816,6 +1816,80 @@
         return entries;
     }
 
+    // Only the observed direct entitlement prop binds a native row to an identity.
+    function getLibraryEntitlement(entry) {
+        try {
+            const page = typeof unsafeWindow === 'undefined' ? window : unsafeWindow;
+            const objectApi = page.Object || Object;
+            const readData = (object, key) => {
+                if (!object || typeof object !== 'object' || Array.isArray(object)) return undefined;
+                const descriptor = objectApi.getOwnPropertyDescriptor(object, key);
+                return descriptor && Object.hasOwn(descriptor, 'value') && typeof descriptor.value !== 'function'
+                    ? descriptor.value : undefined;
+            };
+            const element = readData(entry, 'element');
+            const titleElement = readData(entry, 'titleElement');
+            const title = readData(entry, 'title');
+            if (!element?.isConnected || !titleElement || !element.contains(titleElement)
+                || typeof title !== 'string' || !normalizeSteamTitle(title)
+                || normalizeSteamTitle(normalizedText(titleElement)) !== normalizeSteamTitle(title)) return null;
+            const keys = objectApi.getOwnPropertyNames(element).filter(key => key.startsWith('__reactFiber$'));
+            if (keys.length !== 1) return null;
+            let root = readData(element, keys[0]);
+            if (readData(root, 'stateNode') !== element) return null;
+            const visited = new Set();
+            for (let depth = 0; depth < 128; depth += 1) {
+                if (!root || visited.has(root)) return null;
+                visited.add(root);
+                const parent = readData(root, 'return');
+                if (parent === null) break;
+                root = parent;
+            }
+            if (readData(root, 'tag') !== 3 || readData(root, 'return') !== null) return null;
+            const current = readData(readData(root, 'stateNode'), 'current');
+            if (readData(current, 'tag') !== 3
+                || readData(readData(current, 'memoizedState'), 'isDehydrated')) return null;
+
+            // DOM expandos may retain an alternate. Use the committed tree's actual
+            // child path, since shared React children may also retain old return links.
+            const pending = [{fiber: current, ancestry: []}];
+            const seen = new Set();
+            let ancestry;
+            for (let count = 0; pending.length && count < 20000; count += 1) {
+                const item = pending.pop();
+                const {fiber} = item;
+                if (seen.has(fiber)) return null;
+                seen.add(fiber);
+                if (readData(fiber, 'tag') === 5 && readData(fiber, 'stateNode') === element) {
+                    ancestry = [fiber, ...item.ancestry].slice(0, 16);
+                    break;
+                }
+                const sibling = readData(fiber, 'sibling');
+                const child = readData(fiber, 'child');
+                if (sibling) pending.push({fiber: sibling, ancestry: item.ancestry});
+                if (child) pending.push({fiber: child, ancestry: [fiber, ...item.ancestry].slice(0, 15)});
+            }
+            if (!ancestry) return null;
+            const routeContentId = readData(entry, 'routeContentId');
+            let result = null;
+            for (const fiber of ancestry) {
+                const entitlement = readData(readData(fiber, 'memoizedProps'), 'entitlement');
+                const id = readData(entitlement, 'id');
+                const entitlementTitle = readData(entitlement, 'title');
+                if (typeof id !== 'string' || !id.trim() || typeof entitlementTitle !== 'string'
+                    || !normalizeSteamTitle(entitlementTitle)) continue;
+                if (normalizeSteamTitle(entitlementTitle) !== normalizeSteamTitle(title)
+                    || (routeContentId && id !== routeContentId)
+                    || (result && result.id !== id)) return null;
+                result = {id, title: entitlementTitle};
+            }
+            return result;
+        } catch (_) {
+            // Unavailable page-realm expandos or descriptors leave the row unbound.
+            return null;
+        }
+    }
+
     function isPriceTotalsPage() {
         return isGamesBundlePage() || isChoicePage();
     }
@@ -9194,6 +9268,7 @@
             isDownloadsPage,
             getLibraryView,
             getLibraryDomEntries,
+            getLibraryEntitlement,
             getHelperPageMode,
             isPriceTotalsPageForTest: isPriceTotalsPage,
             validateDownloadOrder,
