@@ -3091,6 +3091,42 @@
         return fetchHumbleAccountCurrencyCode();
     }
 
+    async function loadLibraryHumbleIdentity({
+        request = gmRequest,
+        cryptoProvider = globalThis.crypto,
+    } = {}) {
+        try {
+            const html = await request(
+                `https://www.humblebundle.com/user/settings?_=${Date.now()}`,
+                'text',
+                {headers: {'Cache-Control': 'no-cache'}}
+            );
+            if (typeof html !== 'string') return null;
+            const settingsPage = new DOMParser().parseFromString(html, 'text/html');
+            const emails = new Set();
+            for (const heading of settingsPage.querySelectorAll('h3')) {
+                if (!/^(?:邮箱地址|Email(?: address)?)$/i.test(normalizedText(heading))) continue;
+                const row = heading.parentElement?.parentElement;
+                const values = Array.from(row?.children || [])
+                    .filter(value => value.matches('p.text-muted-foreground.mt-1.text-sm'));
+                if (values.length !== 1 || values[0].childElementCount !== 0) return null;
+                const email = values[0].textContent.trim();
+                const parts = email.split('@');
+                // Conservative full addresses only; masked values cannot identify an account.
+                if (email.length > 254 || parts.length !== 2 || parts[0].length > 64
+                    || !/^[a-z0-9!#$%&'+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'+/=?^_`{|}~-]+)*$/i.test(parts[0])
+                    || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(parts[1])) {
+                    return null;
+                }
+                emails.add(email);
+            }
+            if (emails.size !== 1) return null;
+            return await hashDownloadOrderKey(`humble-account:v1:${emails.values().next().value}`, cryptoProvider);
+        } catch (error) {
+            return null;
+        }
+    }
+
     function buildSteamGiftsSearchUrl() {
         let term;
         const library = getLibraryView();
@@ -9985,6 +10021,7 @@
             getSteamCountryCode,
             findHumbleAccountCurrencyCode,
             resolveHumbleCurrencyCode,
+            loadLibraryHumbleIdentity,
             applySteamSessionState,
             clearSteamAccountDerivedState,
             getSteamDerivedStateForTest,
