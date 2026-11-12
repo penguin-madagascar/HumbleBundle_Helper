@@ -1,7 +1,7 @@
 # Humble Bundle Helper
 
-Tampermonkey userscript for Humble Bundle game bundles, Humble Choice, and
-download pages.
+Tampermonkey userscript for Humble Bundle game bundles, Humble Choice,
+download pages, and the redesigned Library.
 
 ## Features
 
@@ -30,6 +30,9 @@ download pages.
   purchased bundle order pages.
 - Supports the redesigned Next.js bundle listings, game bundle cards, and Choice
   carousel, including navigation between pages without a full reload.
+- Adds selection and account-verified activation to supported Library entries,
+  with prices and region notices on bundle and content details. Purchased
+  activation currently requires already revealed keys.
 - Shows Humble-provided Steam activation restrictions before reveal in Choice
   game dialogs and with the same presentation on Humble download pages.
 - Supports English and Chinese script UI.
@@ -339,5 +342,7 @@ run the regression suite, and check userscript syntax. The userscript itself
 has no added runtime dependency. Redesign tests use reduced page markup,
 controlled data responses, and real React hydration (including delayed
 Suspense boundaries) without revealing or activating keys. The hydration
-adapter uses `unsafeWindow` only to inspect React's committed DOM-node
-bookkeeping, without reading component props or account data.
+guard uses `unsafeWindow` to identify committed React hosts. The Library
+adapter also reads narrowly matched native entitlement props to associate
+purchases with their key slots. Steam session credentials and the Humble
+account identity are verified separately rather than inferred from those props.
