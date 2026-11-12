@@ -286,3 +286,56 @@ test('prioritizes paging fields over product arrays within the same component pr
     assert.ok(fields.some(field => field.path === '$.pageInfo.totalPages' && field.value === 4));
     assert.ok(fields.length <= 40);
 });
+
+test('reports primitive field names inside the observed row and aggregate entitlement objects', () => {
+    for (const pathname of ['/home/library', `/home/library/${bundleId}`, `/home/library/content/${contentId}`]) {
+        const fixture = page(`<main><div class="flex flex-col border-0"><a href="/home/library/content/${contentId}">Downloads</a></div></main>`, pathname);
+        const record = {id: contentId, title, type: 'PRIVATE_TYPE', key: 'AAAAA-BBBBB-CCCCC', keyType: 'steam',
+            revealedKeyValue: 'PRIVATE_REVEALED', redemptionToken: 'PRIVATE_TOKEN', isClaimed: true, canRedeem: false,
+            deliveryKind: 'PRIVATE_DELIVERY', claimDescriptor: {claimState: 'PRIVATE_STATE'}};
+        const aggregate = {tag: 0, memoizedProps: {payload: {id: bundleId, title, entitlements: {keys: [record]}}}, return: null};
+        const row = {tag: 0, memoizedProps: {entitlement: record, AlicePrivate: 'PRIVATE_ACCOUNT'}, return: aggregate};
+        Object.defineProperty(fixture.document.querySelector('a'), '__reactFiber$PRIVATE', {value: row});
+        const result = collect(fixture);
+        const fields = result.client.components.flatMap(component => component.fields);
+        for (const suffix of ['.type', '.key', '.revealedKeyValue', '.redemptionToken', '.isClaimed', '.canRedeem', '.deliveryKind', '.claimDescriptor.claimState']) {
+            assert.ok(fields.some(field => field.path === `$.entitlement${suffix}`), `row missing ${suffix}`);
+            assert.ok(fields.some(field => field.path.endsWith(`.entitlements.keys[]${suffix}`)), `aggregate missing ${suffix}`);
+        }
+        const ids = fields.filter(field => field.path === '$.entitlement.id' || field.path.endsWith('.entitlements.keys[].id'));
+        assert.equal(ids[0].alias, ids[1].alias);
+        assert.ok(ids.every(field => field.matchesRouteUUID));
+        assert.ok(fields.some(field => field.path === '$.entitlement.redemptionToken' && field.type === 'string' && !field.alias));
+        for (const secret of ['PRIVATE_', 'AAAAA-BBBBB-CCCCC', 'AlicePrivate']) assert.ok(!JSON.stringify(result).includes(secret));
+    }
+});
+
+test('masks dynamic domain dictionary names and leaves sensitive subtrees type-only', () => {
+    const fixture = page(`<main><a href="/home/library/content/${contentId}">Downloads</a></main>`);
+    const record = {id: contentId, keyMap: {AlicePrivate: {id: 'PRIVATE_ID'}, [bundleId]: {key: 'PRIVATE_KEY'}},
+        metadata: {'AAAAA-BBBBB-CCCCC': 'PRIVATE_KEY', 'person@example.test': 'PRIVATE_EMAIL'},
+        extraMetadata: {aliceprivate: {id: 'PRIVATE_DYNAMIC_ACCOUNT'}},
+        account: {id: 'PRIVATE_ACCOUNT', name: 'AlicePrivate'}, sessionId: 'PRIVATE_SESSION', privateKey: 'PRIVATE_KEY'};
+    Object.defineProperty(record, 'claimable', {enumerable: true, get() { throw Error('domain getter invoked'); }});
+    Object.defineProperty(fixture.document.querySelector('a'), '__reactFiber$PRIVATE', {value: {tag: 0, memoizedProps: {entitlement: record}, return: null}});
+    const result = collect(fixture);
+    const fields = result.client.components.flatMap(component => component.fields);
+    assert.ok(fields.some(field => field.path === '$.entitlement.account' && field.type === 'object'));
+    assert.ok(!fields.some(field => field.path.startsWith('$.entitlement.account.')));
+    assert.ok(!fields.some(field => field.path === '$.entitlement.sessionId' && field.alias));
+    assert.ok(fields.some(field => field.path.includes('[entry]')));
+    for (const secret of ['PRIVATE_', 'AAAAA-BBBBB-CCCCC', 'person@example.test', 'AlicePrivate', 'aliceprivate', bundleId]) assert.ok(!JSON.stringify(result).includes(secret));
+});
+
+test('reports missing primitive paging names only within known paging containers', () => {
+    const fixture = page('<main><nav aria-label="pagination"><a href="/home/library">Next</a></nav></main>');
+    const props = {pageInfo: {pageSize: 25, endReached: false, pageMode: 'PRIVATE_MODE', visiblePages: [1, 2]},
+        AlicePrivate: false, outsideUnknown: 'PRIVATE_OUTSIDE'};
+    Object.defineProperty(fixture.document.querySelector('a'), '__reactFiber$PRIVATE', {value: {tag: 0, memoizedProps: props, return: null}});
+    const result = collect(fixture);
+    const fields = result.client.components.flatMap(component => component.fields);
+    for (const name of ['endReached', 'pageMode', 'visiblePages']) assert.ok(fields.some(field => field.path === `$.pageInfo.${name}`));
+    assert.ok(!JSON.stringify(result).includes('AlicePrivate'));
+    assert.ok(!JSON.stringify(result).includes('outsideUnknown'));
+    assert.ok(!JSON.stringify(result).includes('PRIVATE'));
+});

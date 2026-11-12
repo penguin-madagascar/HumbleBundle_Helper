@@ -23,7 +23,7 @@
         };
         const main = document.querySelector('main, [role="main"]');
         const root = main || document.body;
-        const result = {schemaVersion: 2, contract: 'unknown', route: route(location.href), queryKeys: queryKeys(location.search),
+        const result = {schemaVersion: 3, contract: 'unknown', route: route(location.href), queryKeys: queryKeys(location.search),
             title: label(document.title), mainFound: Boolean(main), headings: [], tabs: [], routes: [], pagination: [], dataAttributes: [], mainHTML: '', fields: [],
             sources: {jsonDocuments: 0, flightRecords: 0, skippedScripts: 0}};
         const semanticWords = words('library purchased bundle bundles content contents entitlement entitlements key keys slot slots product products thumbnail image footer title header body details card item items pagination page size selected provider drm platform state status testid test id index active type trigger radix collection orientation grid flex block hidden relative absolute overflow auto wrap gap row col cols start end center justify between text font bold medium rounded border button tab tabs list panel menu download downloads action actions');
@@ -186,42 +186,51 @@
         const plain = value => { if (!value || typeof value !== 'object') return false; const proto = Object.getPrototypeOf(value); return Array.isArray(value) || proto === null || Object.getPrototypeOf(proto) === null; };
         const routeIds = new Set([result.route, ...result.routes].map(value => value.uuid?.toLowerCase()).filter(Boolean));
         const propPriority = key => /^(?:pageinfo|pagination|paging|page|pages|pagesize|pagecount|totalpages|totalcount|currentpage|perpage|pageindex|pagenumber|limit|offset|total|count|totalitems|supportedsizes|onpagechange|onpagesizechange)$/.test(normalizeField(key)) ? 2 : Number(domainField(key));
+        const ordinaryField = key => /^[a-z][a-zA-Z0-9_]{0,63}$/.test(key) && !/^[a-f\d]{16,}$/i.test(key) && !/[A-Z\d]{12,}/.test(key);
+        const sensitiveField = key => /session|token|csrf|cookie|privatekey|secret|password|email|account|username|auth/.test(normalizeField(key));
         const propSchema = props => {
-            const fields = [], visited = new Set(), seen = new Set();
+            const fields = [], visited = new Map(), seen = new Set();
             let scanned = 0;
-            const visit = (value, path = '$', key = '', depth = 0) => {
+            const visit = (value, path = '$', key = '', depth = 0, domain = '', terminal = false) => {
                 if (++scanned > 500 || depth > 10 || fields.length >= 40) return;
                 const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
                 if (type === 'object' || type === 'array') {
-                    if (!plain(value) || visited.has(value) || Object.hasOwn(value, '$$typeof')) return;
-                    visited.add(value);
+                    const scope = domain ? 2 : 1;
+                    if (!plain(value) || ((visited.get(value) || 0) & scope) || Object.hasOwn(value, '$$typeof')) return;
+                    visited.set(value, (visited.get(value) || 0) | scope);
                 }
-                if (key && safeField(key) && key !== 'children') {
+                if (key && (safeField(key) || (domain && (ordinaryField(key) || key === '[entry]'))) && key !== 'children') {
                     const field = {path, type};
-                    if (type === 'string' && /(?:title|name|status|state|platform|provider|drm|keytype|deliverymethod)$/.test(normalizeField(key)) && label(value) !== '[redacted]') field.label = label(value);
-                    if ((type === 'string' || type === 'number') && /^(?:id|(?:content|entitlement|keyslot|product|subscriptionentitlement|purchase|bundle|provider|platform)id)$/.test(normalizeField(key))) {
+                    if (!terminal && type === 'string' && /(?:title|name|status|state|platform|provider|drm|keytype|deliverymethod)$/.test(normalizeField(key)) && label(value) !== '[redacted]') field.label = label(value);
+                    if (!terminal && (type === 'string' || type === 'number') && (/^(?:id|(?:content|entitlement|keyslot|product|subscriptionentitlement|purchase|bundle|provider|platform)id)$/.test(normalizeField(key)) || (domain && /(?:id|identifier)$/.test(normalizeField(key))))) {
                         field.alias = alias(value);
                         if (type === 'string' && routeIds.has(value.toLowerCase())) field.matchesRouteUUID = true;
                         if (value === result.route.uuid) field.matchesCurrentRouteUUID = true;
                     }
-                    if (type === 'number' && Number.isFinite(value) && value >= 0 && value <= 1000000 && /^(?:page|pages|pagesize|pagecount|totalpages|totalcount|currentpage|perpage|pageindex|pagenumber|limit|offset|total|count|totalitems|supportedsizes)$/.test(normalizeField(key))) field.value = value;
+                    if (!terminal && type === 'number' && Number.isFinite(value) && value >= 0 && value <= 1000000 && /^(?:page|pages|pagesize|pagecount|totalpages|totalcount|currentpage|perpage|pageindex|pagenumber|limit|offset|total|count|totalitems|supportedsizes)$/.test(normalizeField(key))) field.value = value;
                     const identity = JSON.stringify(field);
                     if (!seen.has(identity)) { seen.add(identity); fields.push(field); }
                 }
+                if (terminal) return;
                 if (type === 'array') {
                     for (let index = 0; index < Math.min(own(value, 'length'), 12); index++) {
                         const descriptor = Object.getOwnPropertyDescriptor(value, index);
-                        if (descriptor && Object.hasOwn(descriptor, 'value')) visit(descriptor.value, `${path}[]`, key, depth + 1);
+                        if (descriptor && Object.hasOwn(descriptor, 'value')) visit(descriptor.value, `${path}[]`, key, depth + 1, domain);
                     }
                 }
                 else if (type === 'object' && value) {
-                    for (const name of Object.keys(value).slice(0, 100).sort((left, right) => propPriority(right) - propPriority(left))) {
-                        if (/session|token|csrf|cookie|privatekey|secret|password|email|account|username|auth/.test(normalizeField(name)) || ['key', '_owner', 'return', 'child', 'sibling', 'stateNode', 'memoizedState', 'ref', 'type', 'elementType'].includes(name)) continue;
+                    const names = Object.keys(value).slice(0, 100);
+                    const dictionary = domain && (/(?:map|dictionary|lookup|byid|bykey|byname|byprovider|byplatform)$/.test(normalizeField(key))
+                        || (!/^(?:entitlement|entitlements|pageinfo|pagination|paging)$/.test(normalizeField(key)) && names.length > 0 && names.every(name => !safeField(name) && plain(own(value, name)))));
+                    for (const name of names.sort((left, right) => propPriority(right) - propPriority(left))) {
+                        if ((!domain && (sensitiveField(name) || name === 'key' || name === 'type')) || ['_owner', 'return', 'child', 'sibling', 'stateNode', 'memoizedState', 'ref', 'elementType'].includes(name)) continue;
                         const descriptor = Object.getOwnPropertyDescriptor(value, name);
                         if (!descriptor || !Object.hasOwn(descriptor, 'value')) continue;
                         const item = descriptor.value;
-                        if (!safeField(name) && !plain(item)) continue;
-                        visit(item, fieldPath(path, name), name, depth + 1);
+                        if (!domain && !safeField(name) && !plain(item)) continue;
+                        const named = !dictionary && (safeField(name) || (domain && ordinaryField(name)));
+                        const childDomain = plain(item) && /^(?:entitlement|entitlements|pageinfo|pagination|paging)$/.test(normalizeField(name)) ? normalizeField(name) : domain;
+                        visit(item, domain ? `${path}${named ? `.${name}` : '[entry]'}` : fieldPath(path, name), named ? name : (domain ? '[entry]' : name), depth + 1, childDomain, Boolean(domain && (sensitiveField(name) || name === 'key')));
                     }
                 }
             };
