@@ -17,7 +17,8 @@
                 const privateCandidate = libraryChunk ? decoded.slice('/_next/static/chunks/app/home/library'.length) : decoded;
                 return url.origin === location.origin && /^https?:$/.test(url.protocol) && !url.username && !url.password
                     && /^\/(?:_next\/static|assets)\//.test(url.pathname) && /\.m?js$/i.test(url.pathname) && url.pathname.length <= 256
-                    && !privatePath.test(privateCandidate) && !/token|secret|session|auth|email|user|account/i.test(url.search) ? url : null;
+                    && !privatePath.test(privateCandidate) && !/token|secret|session|auth|email|user|account/i.test(url.search)
+                    && ![...url.searchParams.keys()].some(key => /token|secret|session|auth|email|user|account/i.test(key)) ? url : null;
             } catch (_) { return null; }
         };
         const eligible = [...new Map(Array.from(document.scripts || [], script => assetURL(script.getAttribute('src')))

@@ -37,6 +37,19 @@ test('includes compiled Library route chunks while rejecting private routes outs
     assert.ok(result.assetPaths.every(value => /^\/_next\/static\/\[asset-\d+\]\.js$/.test(value)));
 });
 
+test('rejects encoded credential query names before issuing any static request', async () => {
+    const requests = [];
+    const result = await collect(page([
+        '/assets/a.js?%74oken=PRIVATE_QUERY',
+        '/_next/static/chunks/app/home/library/page-abc12345.js?%73ession=PRIVATE_QUERY',
+        '/assets/a.js?%61uth=PRIVATE_QUERY',
+    ]), async url => { requests.push(url); return response(); });
+    assert.equal(requests.length, 0);
+    assert.equal(result.stats.eligible, 0);
+    assert.equal(result.stats.attempted, 0);
+    assert.ok(!JSON.stringify(result).includes('PRIVATE_QUERY'));
+});
+
 test('reads only existing verified static scripts and emits a bounded contract skeleton', async () => {
     const sources = [null, '', '/assets/client.js?v=PUBLIC_BUILD', '/_next/static/chunks/library.mjs',
         '/api/library.js', '/home/library.js', '/public/client.js', '/ASSETS/a.js', 'https://other.test/assets/a.js',
