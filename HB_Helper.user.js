@@ -2094,6 +2094,104 @@
         }
     }
 
+    function librarySteamRevealError(code, message) {
+        const error = new Error(message);
+        error.code = code;
+        return error;
+    }
+
+    function getLibrarySteamRevealBindings({entitlementId, keySlotId}) {
+        const records = getLibraryDomEntries().flatMap(entry => {
+            const record = getLibraryRecord(entry);
+            return record?.id === entitlementId ? [{entry, record}] : [];
+        });
+        const bindings = records.flatMap(({entry, record}) => {
+            const slot = record.keySlots.find(candidate => candidate.id === keySlotId);
+            return slot ? [{entry, record, slot}] : [];
+        });
+        if (!bindings.length) throw librarySteamRevealError('missing', 'Exact native Library key slot is unavailable');
+        const identities = new Set(bindings.map(({record}) => JSON.stringify([
+            record.title, record.contentId ?? null,
+            record.keySlots.map(slot => [slot.id, slot.title, slot.type ?? null])
+                .sort((left, right) => left[0].localeCompare(right[0])),
+        ])));
+        if (bindings.length !== records.length || identities.size !== 1) {
+            throw librarySteamRevealError('ambiguous', 'Native Library key-slot mapping is ambiguous');
+        }
+        for (const {entry, record, slot} of bindings) {
+            const methods = record.deliveryMethods ?? entry.platformLabels.filter(label =>
+                !/^(windows|mac|macos|osx|linux|android|ios)$/i.test(normalizeDeliveryMethod(label)));
+            if (slot.type !== 'steam' || slot.directRedeem !== null || !methods.length
+                || !methods.every(method => deliveryPlatformAliases[normalizeDeliveryMethod(method)] === 'steam')) {
+                throw librarySteamRevealError('unsupported', 'Native Library key slot is not verified for Steam reveal');
+            }
+        }
+        const keys = new Set(bindings.map(({slot}) => slot.keyFormatted).filter(Boolean));
+        if (keys.size > 1) throw librarySteamRevealError('ambiguous', 'Native Library key data is ambiguous');
+        return {bindings, key: keys.values().next().value || null};
+    }
+
+    async function waitForLibrarySteamKey(readKey) {
+        for (let attempt = 0; attempt < 33; attempt += 1) {
+            const key = readKey();
+            if (key) return key;
+            if (attempt < 32) await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        return null;
+    }
+
+    // The controller verifies both accounts before invoking this native reveal action.
+    async function revealLibrarySteamKey({entitlementId, keySlotId}, {
+        isContextCurrent = () => true, waitForKey = waitForLibrarySteamKey,
+    } = {}) {
+        const nativeContext = getLibrarySelectionContext();
+        const contextCurrent = () => isSameLibrarySelectionContext(nativeContext, getLibrarySelectionContext())
+            && isContextCurrent();
+        if (!contextCurrent()) throw librarySteamRevealError('cancelled', 'Library reveal context changed before dispatch');
+        if (!isNonEmptyString(entitlementId) || !isNonEmptyString(keySlotId)) {
+            throw librarySteamRevealError('missing', 'Exact native Library key-slot identity is required');
+        }
+        const target = {entitlementId, keySlotId};
+        const {bindings, key} = getLibrarySteamRevealBindings(target);
+        if (key) return key;
+        if (bindings.some(({record, slot}) => record.keySlots.length !== 1
+            || slot.expired !== false || slot.preOrdered !== false || slot.outOfStock !== false
+            || slot.redeemable !== true)) {
+            throw librarySteamRevealError('unsupported', 'Native Library key slot is not eligible for the verified reveal action');
+        }
+        const {entry} = bindings[0];
+        const header = entry.element.firstElementChild;
+        const buttons = header?.matches('div.flex.flex-wrap.items-center.justify-between')
+            ? Array.from(header.querySelectorAll('button:not(.hb-helper-library-selection-toggle)')) : [];
+        const button = buttons[0];
+        if (buttons.length !== 1 || normalizedText(button) !== '兑换' || !isVisibleElement(button)
+            || button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true') {
+            throw librarySteamRevealError('unsupported', 'Verified native Library reveal button is unavailable');
+        }
+        if (!contextCurrent() || !button.isConnected) {
+            throw librarySteamRevealError('cancelled', 'Library reveal context changed before dispatch');
+        }
+        const readKey = () => {
+            const revealedKey = getLibrarySteamRevealBindings(target).key;
+            // Preserve a definite in-flight claim before cancellation stops the batch.
+            if (revealedKey) return revealedKey;
+            if (!contextCurrent()) throw librarySteamRevealError('uncertain', 'Library reveal context changed after dispatch');
+            return null;
+        };
+        try {
+            button.click();
+            const immediateKey = readKey();
+            if (immediateKey) return immediateKey;
+            await waitForKey(readKey);
+            const revealedKey = readKey();
+            if (revealedKey) return revealedKey;
+        } catch (_) {
+            // Dispatch may already have claimed the key. Never retry a native click.
+            throw librarySteamRevealError('uncertain', 'Native Library reveal outcome is uncertain');
+        }
+        throw librarySteamRevealError('uncertain', 'Native Library key was not confirmed before timeout');
+    }
+
     function isPriceTotalsPage() {
         return isGamesBundlePage() || isChoicePage()
             || ['bundle', 'content'].includes(getLibraryView().kind);
@@ -9946,6 +10044,7 @@
             getLibraryEntitlement,
             getLibraryReactProps,
             getLibraryRecord,
+            revealLibrarySteamKey,
             refreshLibrarySelectionForTest: refreshLibrarySelection,
             getSelectedLibraryRecordIdsForTest: () => new Set(selectedLibraryRecordIds),
             setLibrarySelectionModeForTest: setLibrarySelectionMode,
