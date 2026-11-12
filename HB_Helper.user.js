@@ -3058,6 +3058,32 @@
         return lockResult.value;
     }
 
+    function encodeLibraryActivationItemId(viewScope, entitlementId, keySlotId) {
+        const identity = [viewScope, entitlementId, keySlotId];
+        if (!identity.every(isNonEmptyString)) {
+            throw new TypeError('Library key IDs require a view, entitlement, and key-slot identity.');
+        }
+        return `library:v1:${encodeURIComponent(JSON.stringify(identity))}`;
+    }
+
+    function parseLibraryActivationItemId(id) {
+        const prefix = 'library:v1:';
+        if (typeof id !== 'string' || !id.startsWith(prefix)) return null;
+        try {
+            const identity = JSON.parse(decodeURIComponent(id.slice(prefix.length)));
+            if (!Array.isArray(identity)
+                || identity.length !== 3
+                || !identity.every(isNonEmptyString)
+                || encodeLibraryActivationItemId(...identity) !== id) {
+                return null;
+            }
+            const [viewScope, entitlementId, keySlotId] = identity;
+            return {viewScope, entitlementId, keySlotId};
+        } catch (_) {
+            return null;
+        }
+    }
+
     function inferActivationBatchScope(batch) {
         if (!Array.isArray(batch?.items) || batch.items.length === 0) return null;
         const ids = batch.items.map(item => item?.id);
@@ -3066,22 +3092,34 @@
             return null;
         }
         let kind;
-        let downloadScope;
+        let scope;
+        const librarySlots = new Set();
         for (const id of ids) {
-            if (id.startsWith('download:')) {
+            const decoded = decodeChoiceActivationItemId(id);
+            if (!decoded) return null;
+            if (decoded.gameId.startsWith('library:')) {
+                const parsed = parseLibraryActivationItemId(decoded.gameId);
+                if (!parsed || decoded.keyIndex !== 0 || (kind && kind !== 'library')) {
+                    return null;
+                }
+                // View identity is separate from the physical entitlement/key slot.
+                const slot = JSON.stringify([parsed.entitlementId, parsed.keySlotId]);
+                if ((scope && scope !== parsed.viewScope) || librarySlots.has(slot)) return null;
+                kind = 'library';
+                scope = parsed.viewScope;
+                librarySlots.add(slot);
+            } else if (id.startsWith('download:')) {
                 const parsed = parseDownloadActivationItemId(id);
-                if (!parsed || kind === 'choice') return null;
+                if (!parsed || (kind && kind !== 'download')) return null;
                 kind = 'download';
-                if (downloadScope && downloadScope !== parsed.scope) return null;
-                downloadScope = parsed.scope;
+                if (scope && scope !== parsed.scope) return null;
+                scope = parsed.scope;
             } else {
-                if (kind === 'download') return null;
+                if (kind && kind !== 'choice') return null;
                 kind = 'choice';
             }
         }
-        return kind === 'download'
-            ? {kind, scope: downloadScope}
-            : {kind: 'choice'};
+        return kind === 'choice' ? {kind} : {kind, scope};
     }
 
     function preflightActivationSelection(selectedItems) {
@@ -9067,6 +9105,8 @@
             upsertDownloadRegionWarnings,
             revealDownloadSteamKey,
             postHumbleDownloadKey,
+            encodeLibraryActivationItemId,
+            parseLibraryActivationItemId,
             inferActivationBatchScope,
             getActivationBatchPresentation,
             reconcileActivationSelectionStorageFromBatch,
