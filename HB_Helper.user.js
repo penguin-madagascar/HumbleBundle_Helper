@@ -508,7 +508,8 @@
       text-align: center !important;
       font-weight: 700 !important;
     }
-    #hb-helper-price-summary .hb-helper-match-details {
+    #hb-helper-price-summary .hb-helper-match-details,
+    #hb-helper-price-summary .hb-helper-other-platform-details {
       margin-top: 4px !important;
     }
     .hb-helper-disclosure summary {
@@ -729,6 +730,7 @@
             matchedItems: '{matched}/{selected} Steam items identified ({scope})',
             allSteamItemsOwned: '🎉 All items are owned 🎉',
             otherRedemption: 'Other redemption platform',
+            otherPlatformItems: 'Other platform items ({count})',
             miscellaneousItem: 'Miscellaneous item',
             subscriptionItem: 'Subscription',
             couponItem: 'Coupon',
@@ -847,6 +849,7 @@
             matchedItems: '已识别 {matched}/{selected} 个 Steam 项目（{scope}）',
             allSteamItemsOwned: '🎉 已全部拥有 🎉',
             otherRedemption: '其他兑换平台',
+            otherPlatformItems: '其他平台项目（{count}）',
             miscellaneousItem: '杂项',
             subscriptionItem: '订阅',
             couponItem: '优惠券',
@@ -1100,7 +1103,7 @@
     let choiceOwnershipRefreshTimer;
     let landingSortRefreshTimer;
     let priceTotalsRunId = 0;
-    let lastPriceTitlesKey = '';
+    let lastPriceInputKey = '';
     let lastPriceResult;
     let priceScope = 'all';
     let landingPageDataCache;
@@ -7479,7 +7482,7 @@
         clearChoiceRegionRestrictionPanels();
         choiceRegionDisclosureState = undefined;
         priceTotalsRunId += 1;
-        lastPriceTitlesKey = '';
+        lastPriceInputKey = '';
         lastPriceResult = undefined;
         document.getElementById('hb-helper-controls')?.remove();
         document.getElementById('steamgifts-discussion')?.remove();
@@ -7878,6 +7881,22 @@
         }), ...legacy];
     }
 
+    function getVisibleOtherPlatformItems() {
+        const items = new Map();
+        for (const entry of getNonSteamGameEntries()) {
+            if (entry.tile.getClientRects().length === 0) continue;
+            const badges = getNonSteamPlatformBadges(entry);
+            if (!badges.length) continue;
+            const key = normalizeSteamTitle(entry.title);
+            if (!items.has(key)) items.set(key, {title: entry.title, platforms: new Map()});
+            const item = items.get(key);
+            for (const badge of badges) item.platforms.set(badge.id, badge.label);
+        }
+        return Array.from(items.values(), item => ({
+            title: item.title, platforms: [...item.platforms.values()],
+        }));
+    }
+
     function createPlatformBadges(badges) {
         const group = document.createElement('span');
         group.className = 'hb-helper-platform-badges';
@@ -8056,11 +8075,28 @@
         ));
     }
 
-    function createPriceTotalsContent(result, detailsOpen, staleVisible) {
+    function appendOtherPlatformDetails(summary, items, open) {
+        if (!items.length) return;
+        const group = document.createElement('div');
+        group.className = 'hb-helper-match-group';
+        const list = document.createElement('ul');
+        for (const {title, platforms} of items) {
+            const item = document.createElement('li');
+            item.textContent = `${title} — ${platforms.join(' / ')}`;
+            list.appendChild(item);
+        }
+        group.appendChild(list);
+        summary.appendChild(createHelperDisclosure(
+            t('otherPlatformItems', {count: items.length}), [group],
+            {className: 'hb-helper-other-platform-details', open}
+        ));
+    }
+
+    function createPriceTotalsContent(result, detailsOpen, otherPlatformsOpen, staleVisible) {
         const content = document.createElement('div');
 
         const {
-            region, currencyCode, humbleCurrencyCode, exchangeRate, games
+            region, currencyCode, humbleCurrencyCode, exchangeRate, games, otherPlatformItems = []
         } = result;
         const canFilterOwned = ownedApps && hasSteamAccountData();
         if (!canFilterOwned) priceScope = 'all';
@@ -8160,6 +8196,7 @@
             state.append(body, notice);
             content.appendChild(state);
         }
+        appendOtherPlatformDetails(content, otherPlatformItems, otherPlatformsOpen);
         return content;
     }
 
@@ -8168,9 +8205,10 @@
         const summary = document.getElementById('hb-helper-price-summary');
         if (!summary) return;
         const detailsOpen = Boolean(summary.querySelector('.hb-helper-match-details')?.open);
+        const otherPlatformsOpen = Boolean(summary.querySelector('.hb-helper-other-platform-details')?.open);
         const staleVisible = expectedRunId === undefined
             && summary.querySelector('.hb-helper-price-stale')?.style.visibility === 'visible';
-        const content = createPriceTotalsContent(result, detailsOpen, staleVisible);
+        const content = createPriceTotalsContent(result, detailsOpen, otherPlatformsOpen, staleVisible);
         if (expectedRunId !== undefined && expectedRunId !== priceTotalsRunId) return;
         lastPriceResult = result;
         summary.replaceChildren(...content.children);
@@ -8195,15 +8233,18 @@
     function schedulePriceTotalsReload(force = false) {
         if (!hasSteamAccountData()) return;
         const titles = [...new Set(getVisibleGameTitles())];
-        if (titles.length === 0) {
-            priceTotalsRunId++;
-            lastPriceTitlesKey = '';
+        const titlesKey = [...titles].sort().join('\n');
+        const otherPlatformItems = getVisibleOtherPlatformItems();
+        const contextKey = getPriceResultContextKey();
+        const inputKey = JSON.stringify([contextKey, titlesKey, otherPlatformItems]);
+        if (!force && inputKey === lastPriceInputKey) return;
+        lastPriceInputKey = inputKey;
+        if (!force && lastPriceResult?.titlesKey === titlesKey
+            && lastPriceResult.contextKey === contextKey
+            && lastPriceResult.runId === priceTotalsRunId) {
+            renderPriceTotals({...lastPriceResult, otherPlatformItems});
             return;
         }
-
-        const titlesKey = [...titles].sort().join('\n');
-        if (!force && titlesKey === lastPriceTitlesKey) return;
-        lastPriceTitlesKey = titlesKey;
         loadPriceTotals(titles);
     }
 
@@ -8212,6 +8253,8 @@
         const runId = ++priceTotalsRunId;
         const summary = document.getElementById('hb-helper-price-summary');
         const contextKey = getPriceResultContextKey();
+        const otherPlatformItems = getVisibleOtherPlatformItems();
+        const titlesKey = [...titles].sort().join('\n');
         const previousResult = lastPriceResult?.contextKey === contextKey
             ? lastPriceResult
             : undefined;
@@ -8227,7 +8270,7 @@
         const fetchRate = dependencies.fetchExchangeRate || fetchExchangeRate;
 
         try {
-            const humbleCurrencyCodePromise = resolveCurrency();
+            const humbleCurrencyCodePromise = titles.length ? resolveCurrency() : Promise.resolve(null);
             const resolvedGames = await Promise.all(titles.map(async title => {
                 const app = await findApp(title);
                 return {title, appId: app?.appid || null};
@@ -8267,6 +8310,9 @@
 
             const nextResult = {
                 contextKey,
+                titlesKey,
+                runId,
+                otherPlatformItems,
                 region: steamCountryCode,
                 currencyCode,
                 humbleCurrencyCode,
@@ -9041,6 +9087,7 @@
             waitForPageRefreshForTest: () => pageRefreshPromise,
             getPriceTotalsRunIdForTest: () => priceTotalsRunId,
             loadPriceTotalsForTest: loadPriceTotals,
+            schedulePriceTotalsReloadForTest: schedulePriceTotalsReload,
             getSelectedChoiceGameIdsForTest: getSelectedChoiceGameIds,
             renderChoiceActivationResultsForTest: renderChoiceActivationResults,
             shouldRefreshForPageMutationsForTest: shouldRefreshForPageMutations,

@@ -103,6 +103,13 @@ game's detail heading. Games offering Steam alongside another platform keep
 their normal Steam ownership and wishlist behavior. Missing platform metadata
 is left unmarked, and Windows, Mac, and Linux are treated as operating systems.
 
+Expand `Other platform items` or `其他平台项目` in the Steam price summary to
+see the currently included non-Steam games and miscellaneous products with
+their platform or item names. This list follows the active bundle filters,
+stays available in both Steam ownership scopes, and retains its own expanded
+state across scope changes and price refreshes. These items do not contribute
+to Steam price totals.
+
 On the Humble Games, Bundles, Books, and Software landing pages, sorting
 controls appear next to each bundle section heading. Use `Default` to restore
 Humble's original order, `Ending Soon` to show bundles closest to ending first,
