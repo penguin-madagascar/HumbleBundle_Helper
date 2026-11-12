@@ -833,6 +833,7 @@
             choiceRevealFailed: 'Could not reveal a Steam key for {title}',
             choiceModalCloseFailed: 'Could not safely close the Humble details dialog for {title}. The key was not queued.',
             choiceHumbleFailureReason: 'Humble did not provide a Steam key for this game.',
+            libraryCollectionCancelled: 'Library collection cancelled before this key was submitted',
             choiceActivationSummary: '{total} processed: {activated} activated, {humbleFailed} Humble key retrieval failure(s), {steamFailed} Steam activation failure(s), {pending} pending.',
             choiceHumbleFailureGroup: 'Humble key retrieval failures',
             choiceSteamFailureGroup: 'Steam activation failures',
@@ -958,6 +959,7 @@
             choiceRevealFailed: '无法显示 {title} 的 Steam key',
             choiceModalCloseFailed: '无法安全关闭 {title} 的 Humble 详情弹窗，因此未将此 key 加入队列。',
             choiceHumbleFailureReason: 'Humble 未能为此游戏提供 Steam key。',
+            libraryCollectionCancelled: 'Library 领取已取消，此 key 尚未提交',
             choiceActivationSummary: '共处理 {total} 个：已激活 {activated} 个，Humble key 获取失败 {humbleFailed} 个，Steam 激活失败 {steamFailed} 个，等待处理 {pending} 个。',
             choiceHumbleFailureGroup: 'Humble key 获取失败',
             choiceSteamFailureGroup: 'Steam 激活失败',
@@ -5272,6 +5274,19 @@
         }
     }
 
+    function getLibraryActivatedRetryItemIds(previousBatch, selectedItems, scope) {
+        if (previousBatch?.state !== choiceActivationBatchStates.complete
+            || !activationScopesMatch(inferActivationBatchScope(previousBatch), scope)) {
+            return new Set();
+        }
+        const activatedSlots = new Set(previousBatch.items
+            .filter(item => item.status === choiceActivationItemStates.activated)
+            .map(item => decodeChoiceActivationItemId(item.id).gameId));
+        return new Set(selectedItems
+            .filter(item => activatedSlots.has(decodeChoiceActivationItemId(item.id).gameId))
+            .map(item => item.id));
+    }
+
     function createChoiceCollectionFailureItem(selectedItem, keyIndex, error) {
         return {
             id: encodeChoiceActivationItemId(selectedItem.id, keyIndex),
@@ -5453,6 +5468,9 @@
                 && !activationScopesMatch(selectionScope, initialPreflight.scope))) {
             return {started: false, invalidSelection: true};
         }
+        if (initialPreflight.scope.kind === 'library' && typeof revealKey !== 'function') {
+            throw new TypeError('A Library single-key reveal callback is required.');
+        }
         if (!isContextCurrent()) return {started: false, stale: true};
         const lockResult = await requestChoiceExclusiveLock(
             choiceCollectionLockName,
@@ -5509,14 +5527,29 @@
                     return {started: false, invalidSelection: true};
                 }
                 if (!isContextCurrent()) return {started: false, stale: true};
-                const useSingleKeyCollection = finalPreflight.scope.kind === 'download'
+                const isLibraryCollection = finalPreflight.scope.kind === 'library';
+                const useSingleKeyCollection = isLibraryCollection
+                    || finalPreflight.scope.kind === 'download'
                     || (typeof revealKey === 'function' && typeof revealKeys !== 'function');
+                const libraryActivatedIds = isLibraryCollection
+                    ? getLibraryActivatedRetryItemIds(previousBatch, candidates, finalPreflight.scope)
+                    : new Set();
                 const retryStates = useSingleKeyCollection
                     ? null
                     : getChoiceCollectionRetryStates(previousBatch, candidates);
                 const batch = createChoiceActivationBatch(owner);
                 if (retryStates) {
                     appendChoiceActivatedMarkers(batch, candidates, retryStates);
+                }
+                for (const item of candidates) {
+                    if (libraryActivatedIds.has(item.id)) {
+                        batch.items.push({
+                            id: item.id,
+                            title: item.title,
+                            key: null,
+                            status: choiceActivationItemStates.activated,
+                        });
+                    }
                 }
                 GM_setValue(steamActivationBatchKey, batch);
                 const saveBatch = nextBatch => saveChoiceActivationBatchIfCurrent(
@@ -5527,7 +5560,7 @@
                 const collected = useSingleKeyCollection
                     ? await collectSingleKeyActivationBatch(
                         batch,
-                        candidates,
+                        candidates.filter(item => !libraryActivatedIds.has(item.id)),
                         async item => {
                             onProgress(item);
                             return revealKey(item);
@@ -5551,6 +5584,23 @@
                         {isContextCurrent}
                     );
                 if (collected?.stale) {
+                    if (isLibraryCollection) {
+                        const representedIds = new Set(batch.items.map(item =>
+                            decodeChoiceActivationItemId(item.id).gameId
+                        ));
+                        for (const item of candidates) {
+                            if (representedIds.has(decodeChoiceActivationItemId(item.id).gameId)) {
+                                continue;
+                            }
+                            batch.items.push({
+                                id: item.id,
+                                title: item.title,
+                                key: null,
+                                status: choiceActivationItemStates.humbleFailed,
+                                error: t('libraryCollectionCancelled'),
+                            });
+                        }
+                    }
                     if (batch.items.length === 0) {
                         const stored = getChoiceActivationBatch();
                         if (stored?.id === batch.id && stored.runner.owner === owner) {
@@ -5647,6 +5697,7 @@
             }
             return {reconciled: false, invalidScope: true};
         }
+        if (batchScope.kind === 'library') return {reconciled: true, updated: false};
 
         const successfulIds = batch.items
             .filter(item => item.status === choiceActivationItemStates.activated)
