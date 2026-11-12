@@ -210,6 +210,7 @@ test('the locked runner forwards its context guard and persists cancellation whi
         owner: 'current-owner',
         sessionId: 'synthetic-session',
         isContextCurrent: () => current,
+        beforeSubmit: async () => true,
         activateKey: async () => { submissions += 1; return successResponse; },
         lockManager: {
             async request(name, options, callback) {

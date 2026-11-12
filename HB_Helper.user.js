@@ -8190,6 +8190,7 @@
             leaseMs = choiceActivationRunnerLeaseMs,
             recheckSession = options => syncSteamSession(options),
             isContextCurrent = () => true,
+            beforeSubmit,
         } = {}
     ) {
         const persist = requireLockScopedBatchPersistence(saveBatch);
@@ -8214,6 +8215,19 @@
         for (let index = 0; index < pendingItems.length; index++) {
             if (!isContextCurrent()) return stop();
             const item = pendingItems[index];
+            if (beforeSubmit !== undefined) {
+                let verifiedSession;
+                try {
+                    verifiedSession = await beforeSubmit();
+                } catch (_) {
+                    return stop();
+                }
+                if (!isContextCurrent()) return stop();
+                if (verifiedSession !== true) {
+                    if (!isNonEmptyString(verifiedSession)) return stop();
+                    sessionId = verifiedSession;
+                }
+            }
             showProgress(
                 item,
                 index,
@@ -8295,7 +8309,8 @@
         now = () => Date.now(),
         leaseMs = choiceActivationRunnerLeaseMs,
         recheckSession = options => syncSteamSession(options),
-        isContextCurrent = () => true,
+        isContextCurrent,
+        beforeSubmit,
     } = {}) {
         const lockResult = await requestChoiceExclusiveLock(
             steamActivationLockName,
@@ -8303,6 +8318,11 @@
                 const current = getChoiceActivationBatch();
                 if (!current || current.state !== choiceActivationBatchStates.activating) {
                     return {processed: false, batch: current};
+                }
+                if (inferActivationBatchScope(current)?.kind === 'library'
+                    && (typeof isContextCurrent !== 'function'
+                        || typeof beforeSubmit !== 'function')) {
+                    return {processed: false, libraryContextRequired: true, batch: current};
                 }
 
                 const batch = JSON.parse(JSON.stringify(current));
@@ -8355,7 +8375,7 @@
                     activateKey,
                     saveBatch,
                     showProgress,
-                    {owner, now, leaseMs, recheckSession, isContextCurrent}
+                    {owner, now, leaseMs, recheckSession, isContextCurrent, beforeSubmit}
                 );
                 return {...result, processed: !result.paused && !result.stopped};
             },
