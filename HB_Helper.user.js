@@ -1454,13 +1454,33 @@
         const sessionId = String(html).match(
             /\bg_sessionID\s*=\s*["']([^"']+)["']/
         )?.[1] || '';
-        return {
+        const session = {
             loggedIn: typeof userInfo.logged_in === 'boolean' ? userInfo.logged_in : null,
             countryCode: typeof userInfo.country_code === 'string'
                 ? userInfo.country_code.toUpperCase()
                 : '',
             sessionId,
         };
+        if (session.loggedIn === true) {
+            const inlineScripts = Array.from(steamPage.querySelectorAll?.('script:not([src])') || [])
+                .filter(script => !script.type || /^(?:text|application)\/javascript$/i.test(script.type))
+                .map(script => script.textContent.replace(
+                    /"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g,
+                    match => ' '.repeat(match.length)
+                ));
+            const sessionScripts = inlineScripts.filter(script => /\bvar\s+g_sessionID\s*=/.test(script));
+            // Steam's observed inline bootstrap starts with g_AccountID. Keep unrelated
+            // script records and nested declarations outside this identity contract.
+            const accountIds = (sessionScripts.length ? sessionScripts : inlineScripts)
+                .filter(script => /^\s*var\s+g_AccountID\s*=/.test(script))
+                .flatMap(script => Array.from(script.matchAll(/\bvar\s+g_AccountID\s*=\s*([^;]*);/g),
+                    match => match[1].trim()));
+            if (accountIds.length && accountIds.every(accountId => /^[1-9]\d*$/.test(accountId)
+                && Number(accountId) <= 0xFFFFFFFF && accountId === accountIds[0])) {
+                session.steamAccountId = accountIds[0];
+            }
+        }
+        return session;
     }
 
     function createSteamSessionSynchronizer({
@@ -1552,6 +1572,7 @@
                             ownedApps: userData.rgOwnedApps,
                             wishlistApps: userData.rgWishlist,
                             sessionId: session.sessionId,
+                            ...(session.steamAccountId ? {steamAccountId: session.steamAccountId} : {}),
                         },
                         error: null,
                     });
